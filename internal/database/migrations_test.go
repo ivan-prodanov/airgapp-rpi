@@ -133,9 +133,9 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 
-	// v19: Disney+ dropped; Twitch added. The active system filter set is
-	// now Tesla AP/Nav, Maps & Time, YouTube, Netflix, Twitch.
-	for _, want := range []string{"Tesla AP/Nav", "Maps & Time", "YouTube", "Netflix", "Twitch"} {
+	// v22: "Tesla AP/Nav"->"Nav", "Maps & Time"->"Maps", plus new
+	// System-group filters Time / Grok / Connectivity.
+	for _, want := range []string{"Nav", "Maps", "Time", "Grok", "Connectivity", "YouTube", "Netflix", "Twitch"} {
 		var isSys int
 		err := db.QueryRow(
 			"SELECT is_system FROM filters WHERE name=?", want,
@@ -172,76 +172,75 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 		t.Errorf("Disney+ domain rows survived v19: %d", disneyDomains)
 	}
 
-	// Tesla AP/Nav: nav-only Tesla-specific domains. Crucially NO Google
-	// maps endpoints — those live in Maps & Time after v18.
-	wantTesla := map[string]bool{
-		"daws.tesla.services":           true,
-		"apmv3.go.tesla.services":       true,
-		"maps-eu-prd.go.tesla.services": true,
+	// Nav (v22, was "Tesla AP/Nav"): Tesla nav/driving data only. v22 moved
+	// maps-eu-prd to Maps; Google maps live in Maps.
+	wantNav := map[string]bool{
+		"daws.tesla.services":     true,
+		"apmv3.go.tesla.services": true,
 	}
-	gotTesla := filterDomainSet(t, db, "Tesla AP/Nav")
-	if len(gotTesla) != len(wantTesla) {
-		t.Errorf("Tesla AP/Nav has %d domains, want exactly %d", len(gotTesla), len(wantTesla))
+	gotNav := filterDomainSet(t, db, "Nav")
+	if len(gotNav) != len(wantNav) {
+		t.Errorf("Nav has %d domains, want exactly %d", len(gotNav), len(wantNav))
 	}
-	for d := range wantTesla {
-		if !gotTesla[d] {
-			t.Errorf("Tesla AP/Nav missing %q", d)
+	for d := range wantNav {
+		if !gotNav[d] {
+			t.Errorf("Nav missing %q", d)
 		}
 	}
-	for d := range gotTesla {
-		if !wantTesla[d] {
-			t.Errorf("Tesla AP/Nav has unexpected %q — must be Tesla-nav only", d)
+	for d := range gotNav {
+		if !wantNav[d] {
+			t.Errorf("Nav has unexpected %q — must be Tesla-nav only", d)
 		}
 	}
-	// Specifically: maps.googleapis.com must NOT be on Tesla AP/Nav (v18
-	// moved it to Maps & Time).
-	if gotTesla["maps.googleapis.com"] {
-		t.Errorf("Tesla AP/Nav still contains maps.googleapis.com — v18 was supposed to move it to Maps & Time")
+	if gotNav["maps.googleapis.com"] || gotNav["maps-eu-prd.go.tesla.services"] {
+		t.Errorf("Nav still contains a map host — v22 moved those to Maps")
 	}
 
-	// Maps & Time: 10 domains after v19 (v18 seeded 5; v19 added the
-	// internal map-tile pool mt0..mt3.google.com + www.googleapis.com).
+	// Maps (v22, was "Maps & Time"): Google map hosts + the Tesla maps
+	// backend. v22 moved pool.ntp.org out to Time and maps-eu-prd in from Nav.
 	wantMaps := map[string]bool{
-		"mt.l.google.com":       true,
-		"mt0.google.com":        true,
-		"mt1.google.com":        true,
-		"mt2.google.com":        true,
-		"mt3.google.com":        true,
-		"tile.googleapis.com":   true,
-		"maps.googleapis.com":   true,
-		"places.googleapis.com": true,
-		"pool.ntp.org":          true,
-		"www.googleapis.com":    true,
+		"mt.l.google.com":               true,
+		"mt0.google.com":                true,
+		"mt1.google.com":                true,
+		"mt2.google.com":                true,
+		"mt3.google.com":                true,
+		"tile.googleapis.com":           true,
+		"maps.googleapis.com":           true,
+		"places.googleapis.com":         true,
+		"www.googleapis.com":            true,
+		"maps-eu-prd.go.tesla.services": true,
 	}
-	gotMaps := filterDomainSet(t, db, "Maps & Time")
+	gotMaps := filterDomainSet(t, db, "Maps")
 	if len(gotMaps) != len(wantMaps) {
-		t.Errorf("Maps & Time has %d domains, want exactly %d", len(gotMaps), len(wantMaps))
+		t.Errorf("Maps has %d domains, want exactly %d", len(gotMaps), len(wantMaps))
 	}
 	for d := range wantMaps {
 		if !gotMaps[d] {
-			t.Errorf("Maps & Time missing %q", d)
+			t.Errorf("Maps missing %q", d)
 		}
+	}
+	if gotMaps["pool.ntp.org"] {
+		t.Errorf("Maps still has pool.ntp.org — v22 moved it to Time")
 	}
 
 	// YouTube: 15 domains after v19 (v18 brought it to 13; v19 added
 	// lh3.googleusercontent.com + oauth2.googleapis.com — the latter
 	// seeded DISABLED as a deliberate toggle for YT Music sign-in).
 	wantYT := map[string]bool{
-		"accounts.google.bg":         true,
-		"accounts.google.com":        true,
-		"fonts.googleapis.com":       true,
-		"fonts.gstatic.com":          true,
-		"gds.google.com":             true,
-		"ggpht.com":                  true,
-		"googlevideo.com":            true,
-		"lh3.googleusercontent.com":  true, // v19
-		"oauth2.googleapis.com":      true, // v19, seeded disabled
-		"www.google.com":             true,
-		"www.gstatic.com":            true,
-		"youtu.be":                   true,
-		"youtube-ui.l.google.com":    true,
-		"youtube.com":                true,
-		"ytimg.com":                  true,
+		"accounts.google.bg":        true,
+		"accounts.google.com":       true,
+		"fonts.googleapis.com":      true,
+		"fonts.gstatic.com":         true,
+		"gds.google.com":            true,
+		"ggpht.com":                 true,
+		"googlevideo.com":           true,
+		"lh3.googleusercontent.com": true, // v19
+		"oauth2.googleapis.com":     true, // v19, seeded disabled
+		"www.gstatic.com":           true, // www.google.com moved to Connectivity in v22
+		"youtu.be":                  true,
+		"youtube-ui.l.google.com":   true,
+		"youtube.com":               true,
+		"ytimg.com":                 true,
 	}
 	gotYT := filterDomainSet(t, db, "YouTube")
 	if len(gotYT) != len(wantYT) {
@@ -287,12 +286,57 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 		t.Errorf("Twitch is_system = %d, want 1 (v19 promotes manual Twitch filters too)", twitchIsSys)
 	}
 
+	// v22 System-group additions: Time, Grok, Connectivity + the coupled
+	// UDP ports.
+	if got := filterDomainSet(t, db, "Time"); !got["pool.ntp.org"] || len(got) != 1 {
+		t.Errorf("Time domains = %v, want exactly {pool.ntp.org}", got)
+	}
+	gotGrok := filterDomainSet(t, db, "Grok")
+	for _, d := range []string{"assistant-api.prd.euw1.vn.cloud.tesla.com", "assistant-api.prd.na.vn.cloud.tesla.com"} {
+		if !gotGrok[d] {
+			t.Errorf("Grok missing %q", d)
+		}
+	}
+	if gotC := filterDomainSet(t, db, "Connectivity"); !gotC["www.google.com"] || !gotC["google.com"] {
+		t.Errorf("Connectivity = %v, want www.google.com + google.com", gotC)
+	}
+	if filterDomainSet(t, db, "YouTube")["www.google.com"] {
+		t.Errorf("www.google.com still in YouTube — v22 should have moved it to Connectivity")
+	}
+	for _, tc := range []struct {
+		filter string
+		port   int
+	}{{"Time", 123}, {"Grok", 18113}} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM filter_udp_ports fup JOIN filters f ON f.id=fup.preset_id WHERE f.name=? AND fup.port=?`, tc.filter, tc.port).Scan(&n); err != nil {
+			t.Fatalf("count udp port: %v", err)
+		}
+		if n != 1 {
+			t.Errorf("%s should have exactly one udp port %d (found %d)", tc.filter, tc.port, n)
+		}
+	}
+	// Grok ships DISABLED (opt-in) and in the System group.
+	var grokEnabled int
+	var grokGrp string
+	if err := db.QueryRow("SELECT enabled, grp FROM filters WHERE name='Grok'").Scan(&grokEnabled, &grokGrp); err != nil {
+		t.Fatalf("read Grok: %v", err)
+	}
+	if grokEnabled != 0 {
+		t.Errorf("Grok ships enabled=%d, want 0 (opt-in)", grokEnabled)
+	}
+	if grokGrp != "System" {
+		t.Errorf("Grok grp=%q, want System", grokGrp)
+	}
+
 	// Seed enabled-state invariants. YouTube has ONE intentionally-
 	// disabled row (oauth2.googleapis.com); everything else seeded by
 	// the system filters must be enabled.
 	enabledFilters := map[string]int{
-		"Tesla AP/Nav": 0, // 0 disabled rows
-		"Maps & Time":  0,
+		"Nav":          0, // 0 disabled rows
+		"Maps":         0,
+		"Time":         0,
+		"Grok":         0, // filter is OFF but its domain rows are enabled
+		"Connectivity": 0,
 		"Twitch":       0,
 		"YouTube":      1, // exactly oauth2.googleapis.com is off
 	}

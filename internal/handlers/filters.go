@@ -147,6 +147,13 @@ func (h *FiltersHandler) SetEnabled(w http.ResponseWriter, r *http.Request) {
 		JSONError(w, http.StatusInternalServerError, "saved but failed to apply DNS: "+err.Error())
 		return
 	}
+	// A filter may also carry UDP ports (filter_udp_ports) that open in
+	// lockstep with its enable flag — re-apply the firewall so a toggle
+	// adds/removes those forward-chain accepts (Grok's 18113, Time's 123).
+	if err := h.firewall.Apply(); err != nil {
+		JSONError(w, http.StatusInternalServerError, "saved but failed to apply firewall: "+err.Error())
+		return
+	}
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

@@ -26,6 +26,7 @@ var protectedDeny = []string{
 	"mo.tesla.services",     // manufacturing
 	"eng.go.tesla.services", // engineering nav (navsrv.eng.go.tesla.services)
 	"vn.cloud.tesla.com",    // vehicle-network cloud — hermes/device/apf/assistant, every region
+	"vn.cloud.tesla.cn",     // vehicle-network cloud, China region (.cn TLD — hermes/device/telemetry)
 	"obs.tesla.com",         // Sentry / dashcam upload
 	"teslamotors.com",       // mothership, firmware, toolbox, corp, remote-access-registry
 	"tslans.net",            // hermes cellular fallback, factory provisioning
@@ -45,17 +46,34 @@ var protectedDeny = []string{
 	"tesla-hermes-snapshot-eng-eu.s3.eu-central-1.amazonaws.com",
 }
 
+// assistantExempt is the narrow carve-out from the vn.cloud.tesla.com apex
+// deny: the Grok / in-car voice-assistant hosts. These are EXACT hostnames,
+// never a suffix — so the apex keeps denying hermes/device/web/apf and any
+// future regional service, and ONLY these specific assistant endpoints
+// become allow-able. Audited safe: per-host leaf cert (no wildcard, no
+// cross-service SAN), a disjoint ELB from hermes, VIN-mTLS + QUIC voice
+// only, and it carries no log-grab/integrity-audit channel. It is opened
+// via the Grok system filter, not by default.
+var assistantExempt = map[string]bool{
+	"assistant-api.prd.euw1.vn.cloud.tesla.com": true, // EU
+	"assistant-api.prd.na.vn.cloud.tesla.com":   true, // NA
+	"assistant-api.prd.cnn1.vn.cloud.tesla.cn":  true, // CN
+}
+
 // isProtectedDenied reports whether domain is — or is a sub-domain of — a
 // protected Tesla endpoint, in which case it must never be reached
-// regardless of any allow-list entry. The connman captive-check host is
-// the single exemption: it sits under a denied apex (vn.tesla.services)
-// but is benign and is spoofed locally on :80, so it must stay resolvable.
+// regardless of any allow-list entry. Two exemptions sit under denied
+// apexes but are explicitly allowed: the connman captive-check host
+// (benign, spoofed locally on :80) and the exact Grok assistant hosts.
 func isProtectedDenied(domain string) bool {
 	d := strings.ToLower(strings.TrimSpace(domain))
 	if d == "" {
 		return false
 	}
 	if d == spoofConnManHost {
+		return false
+	}
+	if assistantExempt[d] {
 		return false
 	}
 	for _, p := range protectedDeny {
