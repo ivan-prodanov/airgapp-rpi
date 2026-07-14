@@ -22,7 +22,11 @@ var blockedSamples = []string{
 	"hermes-api.prd.eu.vn.cloud.tesla.com",
 	"hermes-prd1.i.tslans.net",
 	"device-api.prd.eu.vn.cloud.tesla.com",
-	"assistant-api.prd.euw1.vn.cloud.tesla.com",
+	// NOTE: assistant-api.prd.*.vn.cloud.tesla.com is DELIBERATELY allow-able
+	// now (the Grok carve-out — see protected.go assistantExempt and
+	// protected_carveout_test.go). It is voice/QUIC only, disjoint ELB from
+	// hermes, per-host cert, no log-grab. The apex still denies everything
+	// else under vn.cloud.tesla.com, which the samples below assert.
 	"telemetry-prd.ap.tesla.services",
 	"telemetry-prd.vn.tesla.services",
 	"logupload-prod.vn.tesla.services",

@@ -47,8 +47,16 @@
         </div>
     </div>
 
-    <!-- Filter cards -->
-    <template x-for="f in filters" :key="f.id">
+    <!-- Filter cards, grouped by heading (e.g. "System") -->
+    <template x-for="grp in groups()" :key="grp.name">
+    <div class="filter-group">
+        <template x-if="grp.name">
+            <div style="margin:22px 0 10px; display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;">
+                <span style="font-size:13px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--fg-dim);" x-text="grp.name"></span>
+                <span style="font-size:12px; color:var(--fg-mute);">car system services — toggle each independently</span>
+            </div>
+        </template>
+        <template x-for="f in grp.filters" :key="f.id">
         <div class="filter-card" :class="(f.is_system ? 'is-system ' : '') + (expanded.has(f.id) ? 'is-open' : '')">
             <div class="filter-head" @click="toggleExpand(f.id)" role="button" tabindex="0"
                  @keydown.enter.prevent="toggleExpand(f.id)" @keydown.space.prevent="toggleExpand(f.id)">
@@ -142,6 +150,8 @@
                 </table>
             </div>
         </div>
+        </template>
+    </div>
     </template>
 </div>
 {{end}}
@@ -164,6 +174,26 @@ function filtersApp() {
         },
 
         enabledCount(f) { return (f.domains || []).filter(d => d.enabled).length; },
+
+        // Group filters by their `group` field for the UI. Known groups
+        // (System) come first in a fixed order; ungrouped filters render
+        // last under a blank heading.
+        groups() {
+            const order = ['System'];
+            const by = {};
+            for (const f of this.filters) {
+                const g = f.group || '';
+                (by[g] = by[g] || []).push(f);
+            }
+            const names = Object.keys(by).sort((a, b) => {
+                const ia = order.indexOf(a), ib = order.indexOf(b);
+                if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+                if (a === '') return 1;
+                if (b === '') return -1;
+                return a.localeCompare(b);
+            });
+            return names.map(n => ({ name: n, filters: by[n] }));
+        },
 
         getOrInit(id) {
             if (!this.addForm[id]) this.addForm[id] = { domain: '', why: '' };

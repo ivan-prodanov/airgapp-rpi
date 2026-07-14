@@ -129,6 +129,42 @@ func (s *FirewallService) loadDeviceSnapshot() (deviceSnapshot, error) {
 	return snap, rows.Err()
 }
 
+// filterUDPPorts returns the distinct UDP destination ports opened by all
+// currently-enabled filters (e.g. Grok's 18113, Time's 123). Each becomes a
+// forward-chain accept for every filtered device — this is how a system
+// preset opens its QUIC/NTP port in lockstep with its DNS allow-list. It is
+// dst-agnostic on purpose: the default-deny resolver already confines which
+// IPs the device can reach on that port (its "SNI", effectively), and the
+// pool/ELB IPs rotate, so pinning would go stale.
+func (s *FirewallService) filterUDPPorts() []int {
+	if s.db == nil {
+		return nil
+	}
+	rows, err := s.db.Query(`
+		SELECT DISTINCT fup.port
+		FROM filter_udp_ports fup
+		JOIN filters f ON f.id = fup.preset_id
+		WHERE f.enabled = 1
+		ORDER BY fup.port ASC`)
+	if err != nil {
+		log.Printf("[FIREWALL] filter udp ports query: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var ports []int
+	for rows.Next() {
+		var p int
+		if err := rows.Scan(&p); err != nil {
+			log.Printf("[FIREWALL] scan udp port: %v", err)
+			return nil
+		}
+		if p >= 1 && p <= 65535 {
+			ports = append(ports, p)
+		}
+	}
+	return ports
+}
+
 func (s *FirewallService) Apply() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -254,6 +290,17 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 		}
 		for _, line := range s.buildRuleLines(r) {
 			fmt.Fprintf(&b, "        %s\n", line)
+		}
+	}
+	// System-preset UDP ports (Grok QUIC/18113, Time NTP/123, …). Each
+	// enabled filter's UDP ports open for every filtered device, in lockstep
+	// with that filter's DNS allow-list. `ct state new` logs one
+	// [NETFILTER-ACCEPT] per flow (not per packet) so the activity monitor
+	// shows the preset as allowed rather than the traffic silently vanishing;
+	// established/reply packets are already accepted at the top of the chain.
+	for _, port := range s.filterUDPPorts() {
+		for _, mac := range snap.filtered {
+			fmt.Fprintf(&b, "        ether saddr %s udp dport %d ct state new log prefix \"[NETFILTER-ACCEPT] \" accept\n", mac, port)
 		}
 	}
 	b.WriteString("        ct state new log prefix \"[NETFILTER-DROP] \" drop\n")

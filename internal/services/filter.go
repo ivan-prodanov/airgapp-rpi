@@ -34,8 +34,8 @@ func NewFilterService(db *sql.DB) *FilterService {
 
 func (s *FilterService) List() ([]models.Filter, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, description, is_system, enabled, created_at
-		FROM filters ORDER BY is_system DESC, name ASC
+		SELECT id, name, description, is_system, enabled, grp, created_at
+		FROM filters ORDER BY grp DESC, is_system DESC, name ASC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list filters: %w", err)
@@ -46,7 +46,7 @@ func (s *FilterService) List() ([]models.Filter, error) {
 	for rows.Next() {
 		var f models.Filter
 		var sys, en int
-		if err := rows.Scan(&f.ID, &f.Name, &f.Description, &sys, &en, &f.CreatedAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.Name, &f.Description, &sys, &en, &f.Group, &f.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan filter: %w", err)
 		}
 		f.IsSystem = sys == 1
@@ -60,9 +60,9 @@ func (s *FilterService) Get(id int64) (models.Filter, error) {
 	var f models.Filter
 	var sys, en int
 	err := s.db.QueryRow(`
-		SELECT id, name, description, is_system, enabled, created_at
+		SELECT id, name, description, is_system, enabled, grp, created_at
 		FROM filters WHERE id = ?
-	`, id).Scan(&f.ID, &f.Name, &f.Description, &sys, &en, &f.CreatedAt)
+	`, id).Scan(&f.ID, &f.Name, &f.Description, &sys, &en, &f.Group, &f.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return f, ErrFilterNotFound
 	}

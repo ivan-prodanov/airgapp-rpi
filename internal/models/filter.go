@@ -18,7 +18,11 @@ type Filter struct {
 	Description string    `json:"description"`
 	IsSystem    bool      `json:"is_system"`
 	Enabled     bool      `json:"enabled"`
-	CreatedAt   time.Time `json:"created_at"`
+	// Group is an optional UI heading a filter is nested under (e.g.
+	// "System" for Nav/Maps/Time/Grok/Connectivity). Empty = ungrouped.
+	// Stored in the filters.grp column ("group" is a SQL reserved word).
+	Group     string    `json:"group"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // FilterDomain is one allow-list entry inside a filter. New rows are

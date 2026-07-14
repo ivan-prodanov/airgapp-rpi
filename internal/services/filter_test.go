@@ -80,9 +80,9 @@ func TestCreateDomain_DisabledAndProtectedAndDescription(t *testing.T) {
 func TestSystemFilterCannotBeDeleted(t *testing.T) {
 	db := memDB(t)
 	fs := NewFilterService(db)
-	id := filterID(t, db, "Tesla AP/Nav")
+	id := filterID(t, db, "Nav") // v22 renamed "Tesla AP/Nav" -> "Nav"
 	if err := fs.Delete(id); !errors.Is(err, ErrSystemFilter) {
-		t.Errorf("Delete(Tesla AP/Nav) = %v, want ErrSystemFilter", err)
+		t.Errorf("Delete(Nav) = %v, want ErrSystemFilter", err)
 	}
 }
 

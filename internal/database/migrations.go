@@ -785,6 +785,93 @@ var migrations = []string{
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_tesla_client_tokens_hash ON tesla_client_tokens(token_hash);`,
+
+	// v22: couple UDP ports to filters + group filters into a "System"
+	// bundle of independent sub-filters (Nav / Maps / Time / Grok /
+	// Connectivity).
+	//
+	//   * filter_udp_ports lets a filter open UDP dest-ports for filtered
+	//     devices while it is enabled — QUIC/18113 for Grok, NTP/123 for
+	//     Time. The forward-chain generator emits one accept per
+	//     (filtered MAC, port); DNS default-deny still confines which IPs
+	//     the device can reach on that port (its SNI, effectively).
+	//   * filters.grp groups filters under a heading in the UI. '' = ungrouped.
+	//
+	// The reshape is deterministic against the v15–v19 system-filter seed:
+	//   Tesla AP/Nav -> Nav   (drop maps-eu-prd, it moves to Maps)
+	//   Maps & Time  -> Maps  (drop pool.ntp.org -> Time; add maps-eu-prd)
+	//   (new) Time            pool.ntp.org + udp/123
+	//   Grok (upsert)         assistant-api.prd.{euw1,na} + udp/18113 (ships OFF)
+	//   (new) Connectivity    www.google.com + google.com (moved out of YouTube)
+	//
+	// Only the exact assistant hosts are allow-able (see protected.go); the
+	// vn.cloud.tesla.com apex still denies hermes/device/web/apf, so Grok's
+	// domains resolve but nothing else under that apex can be added.
+	`CREATE TABLE IF NOT EXISTS filter_udp_ports (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		preset_id  INTEGER NOT NULL REFERENCES filters(id) ON DELETE CASCADE,
+		port       INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),
+		UNIQUE(preset_id, port)
+	);
+	CREATE INDEX IF NOT EXISTS idx_filter_udp_ports_preset ON filter_udp_ports(preset_id);
+
+	ALTER TABLE filters ADD COLUMN grp TEXT NOT NULL DEFAULT '';
+
+	-- Nav: repurpose "Tesla AP/Nav"; keep daws + apmv3, drop the map host.
+	UPDATE filters SET name='Nav',
+		description='Tesla navigation + Autopilot map/driving data (daws, apmv3). Never Hermes.',
+		grp='System', enabled=1
+		WHERE name='Tesla AP/Nav';
+	DELETE FROM filter_domains
+		WHERE domain='maps-eu-prd.go.tesla.services'
+		  AND preset_id=(SELECT id FROM filters WHERE name='Nav');
+
+	-- Maps: repurpose "Maps & Time"; drop pool.ntp.org, add the Tesla map host.
+	UPDATE filters SET name='Maps',
+		description='Map tiles + geocoding — Tesla EU maps backend + Google maps/tiles/places.',
+		grp='System', enabled=1
+		WHERE name='Maps & Time';
+	DELETE FROM filter_domains
+		WHERE domain='pool.ntp.org'
+		  AND preset_id=(SELECT id FROM filters WHERE name='Maps');
+	INSERT OR IGNORE INTO filter_domains (preset_id, domain, description, enabled)
+		SELECT id,'maps-eu-prd.go.tesla.services','Tesla EU maps backend — mTLS, 4-SAN cert (no wildcard)',1
+		FROM filters WHERE name='Maps';
+
+	-- Time: NTP time sync over udp/123.
+	INSERT INTO filters (name, description, is_system, enabled, grp)
+		SELECT 'Time','NTP time sync — public pool.ntp.org over UDP/123 (DNS-gated, no Tesla).',1,1,'System'
+		WHERE NOT EXISTS (SELECT 1 FROM filters WHERE name='Time');
+	INSERT OR IGNORE INTO filter_domains (preset_id, domain, description, enabled)
+		SELECT id,'pool.ntp.org','Public NTP pool — DNS-gated time servers, no Tesla',1
+		FROM filters WHERE name='Time';
+	INSERT OR IGNORE INTO filter_udp_ports (preset_id, port)
+		SELECT id,123 FROM filters WHERE name='Time';
+
+	-- Grok: upsert (a user-created row may already exist); ships DISABLED.
+	INSERT INTO filters (name, description, is_system, enabled, grp)
+		SELECT 'Grok','In-car Grok voice assistant — QUIC UDP/18113 + VIN mTLS. Assistant only, never Hermes.',1,0,'System'
+		WHERE NOT EXISTS (SELECT 1 FROM filters WHERE name='Grok');
+	UPDATE filters SET is_system=1, grp='System',
+		description='In-car Grok voice assistant — QUIC UDP/18113 + VIN mTLS. Assistant only, never Hermes.'
+		WHERE name='Grok';
+	INSERT OR IGNORE INTO filter_domains (preset_id, domain, description, enabled)
+		SELECT id,'assistant-api.prd.euw1.vn.cloud.tesla.com','Grok / voice assistant endpoint — EU (euw1)',1 FROM filters WHERE name='Grok'
+		UNION ALL SELECT id,'assistant-api.prd.na.vn.cloud.tesla.com','Grok / voice assistant endpoint — NA',1 FROM filters WHERE name='Grok';
+	INSERT OR IGNORE INTO filter_udp_ports (preset_id, port)
+		SELECT id,18113 FROM filters WHERE name='Grok';
+
+	-- Connectivity: the car's online/reachability check. Move www.google.com
+	-- out of YouTube (stays allow-listed here) and add google.com.
+	INSERT INTO filters (name, description, is_system, enabled, grp)
+		SELECT 'Connectivity','Reachability/online check the car needs to consider itself connected (google.com).',1,1,'System'
+		WHERE NOT EXISTS (SELECT 1 FROM filters WHERE name='Connectivity');
+	INSERT OR IGNORE INTO filter_domains (preset_id, domain, description, enabled)
+		SELECT id,'www.google.com','Car online/reachability check',1 FROM filters WHERE name='Connectivity'
+		UNION ALL SELECT id,'google.com','Car online/reachability check',1 FROM filters WHERE name='Connectivity';
+	DELETE FROM filter_domains
+		WHERE domain='www.google.com'
+		  AND preset_id=(SELECT id FROM filters WHERE name='YouTube');`,
 }
 
 func Migrate(db *sql.DB) error {
