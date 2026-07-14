@@ -1,6 +1,9 @@
 package services
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestAssistantCarveOut is the safety guard for the Grok feature: the
 // narrow assistant exemption must NOT open any of the ban/telemetry
@@ -20,6 +23,10 @@ func TestAssistantCarveOut(t *testing.T) {
 		"mothership.vn.teslamotors.com",
 		"telemetry-prd.ap.tesla.services",
 		"hermes-prd.ap.tesla.services",
+		// China apex (.cn) — must be denied by the vn.cloud.tesla.cn floor.
+		"hermes-api.prd.cnn1.vn.cloud.tesla.cn",
+		"device-api.prd.cnn1.vn.cloud.tesla.cn",
+		"vn.cloud.tesla.cn",
 		// suffix-trick: a hermes host that merely contains the assistant
 		// label must still be denied (the exempt map is exact-match only).
 		"hermes-api.assistant-api.prd.euw1.vn.cloud.tesla.com",
@@ -42,11 +49,17 @@ func TestAssistantCarveOut(t *testing.T) {
 		}
 	}
 
-	// The exempt set must be exactly the assistant hosts — nothing that
-	// smells like hermes/device/etc.
+	// The exempt set must be exactly the three prod assistant hosts — no
+	// engineering endpoints, nothing that smells like hermes/device/etc.
+	if len(assistantExempt) != 3 {
+		t.Errorf("assistantExempt has %d entries, want exactly 3 (prd euw1/na/cnn1)", len(assistantExempt))
+	}
 	for d := range assistantExempt {
-		if len(d) < len("assistant-api.") || d[:len("assistant-api.")] != "assistant-api." {
-			t.Errorf("SAFETY: exempt host %q is not an assistant-api host", d)
+		if !strings.HasPrefix(d, "assistant-api.prd.") {
+			t.Errorf("SAFETY: exempt host %q is not an assistant-api.prd. host", d)
+		}
+		if strings.Contains(d, ".eng.") {
+			t.Errorf("SAFETY: exempt host %q is an engineering endpoint — must not be carved out", d)
 		}
 	}
 }

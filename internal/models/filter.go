@@ -13,11 +13,11 @@ import "time"
 // Netflix, Disney+. They can still be edited or extended by the operator.
 // User filters (IsSystem=false) are created in the UI.
 type Filter struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	IsSystem    bool      `json:"is_system"`
-	Enabled     bool      `json:"enabled"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	IsSystem    bool   `json:"is_system"`
+	Enabled     bool   `json:"enabled"`
 	// Group is an optional UI heading a filter is nested under (e.g.
 	// "System" for Nav/Maps/Time/Grok/Connectivity). Empty = ungrouped.
 	// Stored in the filters.grp column ("group" is a SQL reserved word).

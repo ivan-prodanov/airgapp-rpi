@@ -162,6 +162,10 @@ func (s *FirewallService) filterUDPPorts() []int {
 			ports = append(ports, p)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[FIREWALL] filter udp ports rows: %v", err)
+		return nil
+	}
 	return ports
 }
 

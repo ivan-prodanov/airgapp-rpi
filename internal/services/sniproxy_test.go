@@ -193,9 +193,9 @@ func driveHandle(t *testing.T, s *SNIProxyService, hello []byte) {
 func TestSNIProxy_BlockedNeverDials(t *testing.T) {
 	db := memDB(t)
 	cases := []struct {
-		name      string
-		hello     []byte
-		wantDial  string // "" = dialer must NOT be called
+		name     string
+		hello    []byte
+		wantDial string // "" = dialer must NOT be called
 	}{
 		{"allowed", clientHello(t, "auth.tesla.com"), "auth.tesla.com:443"},
 		{"blocked-protected", clientHello(t, "hermes-prd.ap.tesla.services"), ""},

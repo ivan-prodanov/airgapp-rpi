@@ -567,7 +567,7 @@ var migrations = []string{
 	UPDATE devices SET status='blocked' WHERE status='unknown';
 	UPDATE devices SET status='open'    WHERE status='trusted';
 
-	-- Add the new `+"`enabled`"+` toggle to presets. A preset that was
+	-- Add the new ` + "`enabled`" + ` toggle to presets. A preset that was
 	-- attached to at least one device (under v15's per-device model) is
 	-- assumed live and gets enabled=1; anything else stays off so the
 	-- operator can opt it in explicitly. Default 0 keeps fresh installs
@@ -585,7 +585,7 @@ var migrations = []string{
 	-- updates them) — verified by the v16 migration test.
 	ALTER TABLE presets RENAME TO filters;
 	ALTER TABLE preset_domains RENAME TO filter_domains;
-	-- The internal FK column keeps the legacy name `+"`preset_id`"+`. Renaming
+	-- The internal FK column keeps the legacy name ` + "`preset_id`" + `. Renaming
 	-- it would force a full table rebuild for a cosmetic gain; the service
 	-- layer reads it through a constant. The index name is also legacy.
 
@@ -818,9 +818,10 @@ var migrations = []string{
 	ALTER TABLE filters ADD COLUMN grp TEXT NOT NULL DEFAULT '';
 
 	-- Nav: repurpose "Tesla AP/Nav"; keep daws + apmv3, drop the map host.
+	-- enabled is left untouched (preserve operator state).
 	UPDATE filters SET name='Nav',
 		description='Tesla navigation + Autopilot map/driving data (daws, apmv3). Never Hermes.',
-		grp='System', enabled=1
+		grp='System'
 		WHERE name='Tesla AP/Nav';
 	DELETE FROM filter_domains
 		WHERE domain='maps-eu-prd.go.tesla.services'
@@ -829,7 +830,7 @@ var migrations = []string{
 	-- Maps: repurpose "Maps & Time"; drop pool.ntp.org, add the Tesla map host.
 	UPDATE filters SET name='Maps',
 		description='Map tiles + geocoding — Tesla EU maps backend + Google maps/tiles/places.',
-		grp='System', enabled=1
+		grp='System'
 		WHERE name='Maps & Time';
 	DELETE FROM filter_domains
 		WHERE domain='pool.ntp.org'
@@ -852,7 +853,10 @@ var migrations = []string{
 	INSERT INTO filters (name, description, is_system, enabled, grp)
 		SELECT 'Grok','In-car Grok voice assistant — QUIC UDP/18113 + VIN mTLS. Assistant only, never Hermes.',1,0,'System'
 		WHERE NOT EXISTS (SELECT 1 FROM filters WHERE name='Grok');
-	UPDATE filters SET is_system=1, grp='System',
+	-- enabled=0: Grok always ships OFF (opt-in); guards the upgrade path
+	-- where a pre-existing user 'Grok' filter might have been left enabled,
+	-- which would otherwise auto-open udp/18113 on the next apply.
+	UPDATE filters SET is_system=1, grp='System', enabled=0,
 		description='In-car Grok voice assistant — QUIC UDP/18113 + VIN mTLS. Assistant only, never Hermes.'
 		WHERE name='Grok';
 	INSERT OR IGNORE INTO filter_domains (preset_id, domain, description, enabled)

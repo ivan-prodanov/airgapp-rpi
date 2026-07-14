@@ -26,6 +26,7 @@ var protectedDeny = []string{
 	"mo.tesla.services",     // manufacturing
 	"eng.go.tesla.services", // engineering nav (navsrv.eng.go.tesla.services)
 	"vn.cloud.tesla.com",    // vehicle-network cloud — hermes/device/apf/assistant, every region
+	"vn.cloud.tesla.cn",     // vehicle-network cloud, China region (.cn TLD — hermes/device/telemetry)
 	"obs.tesla.com",         // Sentry / dashcam upload
 	"teslamotors.com",       // mothership, firmware, toolbox, corp, remote-access-registry
 	"tslans.net",            // hermes cellular fallback, factory provisioning
@@ -57,8 +58,6 @@ var assistantExempt = map[string]bool{
 	"assistant-api.prd.euw1.vn.cloud.tesla.com": true, // EU
 	"assistant-api.prd.na.vn.cloud.tesla.com":   true, // NA
 	"assistant-api.prd.cnn1.vn.cloud.tesla.cn":  true, // CN
-	"assistant-api.eng.euw1.vn.cloud.tesla.com": true, // eng (unused on prod cars)
-	"assistant-api.eng.na.vn.cloud.tesla.com":   true,
 }
 
 // isProtectedDenied reports whether domain is — or is a sub-domain of — a

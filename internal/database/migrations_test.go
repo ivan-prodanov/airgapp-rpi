@@ -227,20 +227,20 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 	// lh3.googleusercontent.com + oauth2.googleapis.com — the latter
 	// seeded DISABLED as a deliberate toggle for YT Music sign-in).
 	wantYT := map[string]bool{
-		"accounts.google.bg":         true,
-		"accounts.google.com":        true,
-		"fonts.googleapis.com":       true,
-		"fonts.gstatic.com":          true,
-		"gds.google.com":             true,
-		"ggpht.com":                  true,
-		"googlevideo.com":            true,
-		"lh3.googleusercontent.com":  true, // v19
-		"oauth2.googleapis.com":      true, // v19, seeded disabled
-		"www.gstatic.com":            true, // www.google.com moved to Connectivity in v22
-		"youtu.be":                   true,
-		"youtube-ui.l.google.com":    true,
-		"youtube.com":                true,
-		"ytimg.com":                  true,
+		"accounts.google.bg":        true,
+		"accounts.google.com":       true,
+		"fonts.googleapis.com":      true,
+		"fonts.gstatic.com":         true,
+		"gds.google.com":            true,
+		"ggpht.com":                 true,
+		"googlevideo.com":           true,
+		"lh3.googleusercontent.com": true, // v19
+		"oauth2.googleapis.com":     true, // v19, seeded disabled
+		"www.gstatic.com":           true, // www.google.com moved to Connectivity in v22
+		"youtu.be":                  true,
+		"youtube-ui.l.google.com":   true,
+		"youtube.com":               true,
+		"ytimg.com":                 true,
 	}
 	gotYT := filterDomainSet(t, db, "YouTube")
 	if len(gotYT) != len(wantYT) {
