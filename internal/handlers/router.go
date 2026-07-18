@@ -25,7 +25,12 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 	r := chi.NewRouter()
 
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
+	// RequestLogger + RedactingLogFormatter instead of middleware.Logger:
+	// the BLE events WebSocket carries its bearer as a ?token= query param
+	// (see the route comment below), and the stock logger would print it
+	// verbatim to stdout/journal on every connection. Root-level so every
+	// route is covered.
+	r.Use(middleware.RequestLogger(NewRedactingLogFormatter()))
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
 
