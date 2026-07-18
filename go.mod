@@ -3,6 +3,7 @@ module github.com/iulianfsdro/rpi-network-filter
 go 1.23
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/go-ble/ble v0.0.0-20240122180141-8c5522f54333
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/teslamotors/vehicle-command v0.4.1

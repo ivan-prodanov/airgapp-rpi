@@ -616,6 +616,37 @@ func (s *BLESessionService) Close(id string) error {
 	return nil
 }
 
+// Subscribe registers an unsolicited-frame fan-out subscription on the
+// named session — the WebSocket /events handler (Phase 1) calls this
+// once per connection. Returns ErrBLESessionNotFound if the session
+// doesn't exist (the handler maps that to 404 before upgrading).
+//
+// The returned channel is closed when the session's pump shuts down
+// (Close/reaper/connection loss) — callers should treat a closed
+// channel as "the session is gone, stop and clean up." Callers MUST
+// eventually call Unsubscribe with the returned id to release the
+// subscriber slot, even after the channel closes on its own.
+func (s *BLESessionService) Subscribe(id string) (int, <-chan []byte, error) {
+	sess, err := s.get(id)
+	if err != nil {
+		return 0, nil, err
+	}
+	subID, ch := sess.subscribe()
+	return subID, ch, nil
+}
+
+// Unsubscribe removes the named subscription from the named session.
+// A no-op if the session is already gone (its pump's shutdown already
+// closed and dropped every subscriber) or the subID was never
+// registered — safe to call unconditionally from a deferred cleanup.
+func (s *BLESessionService) Unsubscribe(id string, subID int) {
+	sess, err := s.get(id)
+	if err != nil {
+		return
+	}
+	sess.unsubscribe(subID)
+}
+
 // get fetches a session by id with the map mutex held. Returns
 // ErrBLESessionNotFound if no such id.
 func (s *BLESessionService) get(id string) (*internalSession, error) {

@@ -58,13 +58,26 @@ func decodeJSON(r *http.Request, v any) error {
 	return dec.Decode(v)
 }
 
+// bleSessions is the surface TeslaHandler needs from
+// *services.BLESessionService. It exists so tests can substitute a
+// fake session service (Subscribe delivering frames on demand)
+// without going through a real BLE adapter — *services.BLESessionService
+// satisfies this structurally with no changes on its side.
+type bleSessions interface {
+	Open(ctx context.Context, vin string) (*services.BLESession, error)
+	Exchange(ctx context.Context, id string, payload []byte, timeout time.Duration) ([]byte, error)
+	Close(id string) error
+	Subscribe(id string) (int, <-chan []byte, error)
+	Unsubscribe(id string, subID int)
+}
+
 // TeslaHandler is the surviving Pi-side Tesla HTTP surface after the
 // rearchitecture. Thin — every method either reads/writes a config
 // value, hands off to BLESessionService, or audits a token action.
 type TeslaHandler struct {
 	tesla   *services.TeslaService
 	tokens  *services.TeslaTokenService
-	bleSess *services.BLESessionService
+	bleSess bleSessions
 	audit   *services.AuditService
 }
 

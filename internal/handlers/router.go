@@ -135,6 +135,16 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 			r.Delete("/sessions/{id}", teslaH.CloseBLESession)
 		})
 
+		// GET /api/ble/sessions/{id}/events — WebSocket upgrade,
+		// streams unsolicited BLE frames. Deliberately mounted OUTSIDE
+		// the r.Route("/ble", ...) group above (and so outside
+		// BLECORS/BLEBearerRequired): the RN WebSocket client can't
+		// attach an Authorization header to the upgrade request, so
+		// the bearer travels as a `?token=` query param instead and
+		// EventsBLE validates it itself before ever upgrading — see
+		// its doc comment in tesla_session.go.
+		r.Get("/ble/sessions/{id}/events", teslaH.EventsBLE)
+
 		r.Group(func(r chi.Router) {
 			r.Use(APIAuthRequired(svc.Auth))
 			r.Get("/me", authH.Me)
