@@ -39,4 +39,4 @@ require (
 	modernc.org/token v1.1.0 // indirect
 )
 
-replace github.com/teslamotors/vehicle-command => github.com/ivan-prodanov/vehicle-command v0.4.2-0.20260526184107-601c75adb598
+replace github.com/teslamotors/vehicle-command => github.com/ivan-prodanov/vehicle-command v0.4.2-0.20260718184419-15a0de7927d0
