@@ -8,7 +8,10 @@ package services
 
 import (
 	"bytes"
+	"context"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestExtractRoutableUUID_HappyPath(t *testing.T) {
@@ -170,6 +173,104 @@ func TestExtractRoutableToRoutingAddress_BroadcastFrame(t *testing.T) {
 	}
 	if got := extractRoutableToRoutingAddress(buf); got != nil {
 		t.Fatalf("extractRoutableToRoutingAddress on BROADCAST = %x, want nil", got)
+	}
+}
+
+// fakeBLEConn is a bleConn test double. frames is pre-seeded with
+// bytes that "arrive" before the test ever calls Exchange (simulating
+// frames already sitting in the BLE receive channel, e.g. an
+// unsolicited VCSEC broadcast). onSend, if set, is invoked
+// synchronously from Send and can push further frames onto the
+// channel (simulating the car's reply arriving strictly after we
+// transmit) — this keeps the test's causality realistic instead of
+// racing the pump against Exchange's own registration.
+type fakeBLEConn struct {
+	frames chan []byte
+	onSend func(payload []byte, push func([]byte))
+
+	mu   sync.Mutex
+	sent [][]byte
+}
+
+func newFakeBLEConn(preSeeded ...[]byte) *fakeBLEConn {
+	ch := make(chan []byte, 8)
+	for _, f := range preSeeded {
+		ch <- f
+	}
+	return &fakeBLEConn{frames: ch}
+}
+
+func (f *fakeBLEConn) Receive() <-chan []byte { return f.frames }
+
+func (f *fakeBLEConn) Send(_ context.Context, payload []byte) error {
+	f.mu.Lock()
+	f.sent = append(f.sent, payload)
+	f.mu.Unlock()
+	if f.onSend != nil {
+		f.onSend(payload, func(frame []byte) { f.frames <- frame })
+	}
+	return nil
+}
+
+// close simulates the BLE link going away. NOTE: the real
+// *ble.Connection (vehicle-command SDK) never actually closes its
+// inbox channel on Close() — production teardown relies on
+// internalSession.stopPump(), not this path. This method exists so
+// the test can also exercise runPump's "Receive() closed" branch.
+func (f *fakeBLEConn) close() { close(f.frames) }
+
+// TestBLESession_PumpRoutesRepliesAndFansOutUnsolicited is the P0.T2
+// test: drives a fake conn whose Receive() emits an unsolicited frame
+// (no matching correlator) followed by the correlated reply, and
+// asserts Exchange returns the reply while a registered subscriber
+// receives the unsolicited frame.
+func TestBLESession_PumpRoutesRepliesAndFansOutUnsolicited(t *testing.T) {
+	uuidVal := []byte{0xAA, 0xBB, 0xCC, 0xDD}
+	// Outgoing RoutableMessage: uuid field 51, LEN 4 (tag 0x9A 0x03).
+	outgoing := append([]byte{0x9A, 0x03, 0x04}, uuidVal...)
+	// Unsolicited frame: an unrelated top-level varint field (field 1
+	// = 0x08), no to_destination/request_uuid at all — guaranteed not
+	// to match the waiter's uuid correlator.
+	unsolicited := []byte{0x08, 0x01}
+	// Correlated reply: request_uuid field 50, LEN 4 (tag 0x92 0x03),
+	// matching value — this is what a real car's reply carries back.
+	reply := append([]byte{0x92, 0x03, 0x04}, uuidVal...)
+
+	conn := newFakeBLEConn(unsolicited)
+	conn.onSend = func(_ []byte, push func([]byte)) { push(reply) }
+
+	svc := NewBLESessionService(nil)
+	sess := newInternalSession("test-session", "TESTVIN", conn, func() {})
+	svc.mu.Lock()
+	svc.sessions[sess.id] = sess
+	svc.mu.Unlock()
+
+	// Subscribe before the pump starts so the pre-seeded unsolicited
+	// frame is guaranteed to find a subscriber already registered.
+	subID, subCh := sess.subscribe()
+	go sess.runPump()
+
+	defer func() {
+		sess.unsubscribe(subID)
+		conn.close()
+		<-sess.pumpDone // wait for the pump to fully exit — no leak
+	}()
+
+	got, err := svc.Exchange(context.Background(), sess.id, outgoing, time.Second)
+	if err != nil {
+		t.Fatalf("Exchange returned error: %v", err)
+	}
+	if !bytes.Equal(got, reply) {
+		t.Fatalf("Exchange reply = %x, want %x", got, reply)
+	}
+
+	select {
+	case frame := <-subCh:
+		if !bytes.Equal(frame, unsolicited) {
+			t.Fatalf("subscriber got %x, want unsolicited frame %x", frame, unsolicited)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscriber never received the unsolicited frame")
 	}
 }
 

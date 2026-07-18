@@ -40,8 +40,6 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	"github.com/teslamotors/vehicle-command/pkg/connector/ble"
 )
 
 // bleSessionTTL is how long a session can sit idle before the reaper
@@ -68,14 +66,68 @@ type BLESession struct {
 	VIN string `json:"vin"`
 }
 
-// internalSession is the live bookkeeping for one open BLE link.
+// bleConn is the minimal surface Exchange/runPump need from a BLE
+// connection. *ble.Connection (github.com/teslamotors/vehicle-command
+// /pkg/connector/ble) satisfies it structurally, so production code
+// is unaffected; tests substitute a fake so the pump/demux logic is
+// exercisable without a real BLE radio.
+type bleConn interface {
+	Receive() <-chan []byte
+	Send(ctx context.Context, payload []byte) error
+}
+
+// frameWaiter is one in-flight Exchange call's registration with the
+// session's pump: "deliver me the frame whose correlator matches
+// wantAddr/wantUUID." Both empty means "match anything" — the
+// defensive fallback preserved from the pre-pump Exchange for
+// outgoing payloads that (unusually) carry no correlator at all.
+type frameWaiter struct {
+	wantAddr []byte
+	wantUUID []byte
+	deliver  chan []byte
+}
+
+// internalSession is the live bookkeeping for one open BLE link. A
+// dedicated pump goroutine (runPump) is the SOLE reader of
+// conn.Receive() for the session's lifetime: it demuxes each incoming
+// frame to a waiting Exchange call by correlator or, failing that,
+// fans it out to unsolicited subscribers (Phase 1 consumers; none
+// exist yet in Phase 0, so an unmatched frame is simply dropped —
+// the same outcome as today's manual skip-loop).
 type internalSession struct {
 	id        string
 	vin       string
-	conn      *ble.Connection
+	conn      bleConn
 	release   func() // closes conn + releases TeslaService.bleMu
 	createdAt time.Time
 	lastUsed  time.Time
+
+	stop     chan struct{} // closed to tell runPump to stop, from Close/reaper
+	stopOnce sync.Once
+	pumpDone chan struct{} // closed when runPump has returned
+
+	mu      sync.Mutex
+	waiters []*frameWaiter
+	subs    map[int]chan []byte
+	subSeq  int
+	closed  bool
+}
+
+// newInternalSession builds a session with its pump-support fields
+// initialized. Used by Open and (with a fake conn) by tests.
+func newInternalSession(id, vin string, conn bleConn, release func()) *internalSession {
+	now := time.Now()
+	return &internalSession{
+		id:        id,
+		vin:       vin,
+		conn:      conn,
+		release:   release,
+		createdAt: now,
+		lastUsed:  now,
+		stop:      make(chan struct{}),
+		pumpDone:  make(chan struct{}),
+		subs:      make(map[int]chan []byte),
+	}
 }
 
 // BLESessionService manages the at-most-one active BLE session. Held
@@ -135,15 +187,8 @@ func (s *BLESessionService) Open(ctx context.Context, vin string) (*BLESession, 
 	}
 	id := hex.EncodeToString(idBytes)
 
-	now := time.Now()
-	sess := &internalSession{
-		id:        id,
-		vin:       vin,
-		conn:      conn,
-		release:   release,
-		createdAt: now,
-		lastUsed:  now,
-	}
+	sess := newInternalSession(id, vin, conn, release)
+	go sess.runPump()
 
 	s.mu.Lock()
 	s.sessions[id] = sess
@@ -185,6 +230,15 @@ func (s *BLESessionService) Open(ctx context.Context, vin string) (*BLESession, 
 // Matching by to_destination.routing_address works for both VCSEC
 // and Infotainment and for the SessionInfo handshake.
 //
+// The actual demux now happens in the session's pump goroutine
+// (runPump), which is the sole reader of conn.Receive(). Exchange
+// just registers a frameWaiter describing the correlator it wants,
+// sends, and waits on that waiter's private deliver channel. Frames
+// that don't match any waiter (unsolicited broadcasts, stale
+// late-arrivals) are routed to unsolicited subscribers by the pump
+// instead of being handed to us — so no drain/skip loop is needed
+// here anymore; the pump owns routing.
+//
 // Updates lastUsed so the reaper's TTL clock resets.
 func (s *BLESessionService) Exchange(ctx context.Context, id string, payload []byte, timeout time.Duration) ([]byte, error) {
 	if timeout <= 0 {
@@ -208,63 +262,199 @@ func (s *BLESessionService) Exchange(ctx context.Context, id string, payload []b
 	wantAddr := extractRoutableFromRoutingAddress(payload)
 	wantUUID := extractRoutableUUID(payload)
 
-	// Drain any stale frames sitting in the BLE receive channel
-	// before sending the next request — late responses from prior
-	// commands, VCSEC unsolicited broadcasts, fragments. Anything
-	// currently buffered cannot be a response to a request we
-	// haven't sent yet.
-	for drained := 0; ; drained++ {
-		select {
-		case stale, ok := <-sess.conn.Receive():
-			if !ok {
-				return nil, errors.New("BLE connection closed before send")
-			}
-			log.Printf("[BLE-SESSION] drained stale frame %d bytes from %s (count=%d)", len(stale), id, drained+1)
-			continue
-		default:
-		}
-		break
+	waiter, err := sess.registerWaiter(wantAddr, wantUUID)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := sess.conn.Send(ctx, payload); err != nil {
+		sess.unregisterWaiter(waiter)
 		return nil, fmt.Errorf("BLE send: %w", err)
 	}
 
 	deadline := time.After(timeout)
+	select {
+	case resp, ok := <-waiter.deliver:
+		if !ok {
+			return nil, errors.New("BLE connection closed")
+		}
+		s.touch(id)
+		return resp, nil
+	case <-deadline:
+		sess.unregisterWaiter(waiter)
+		return nil, ErrBLESessionTimeout
+	case <-ctx.Done():
+		sess.unregisterWaiter(waiter)
+		return nil, ctx.Err()
+	}
+}
+
+// runPump is the SOLE reader of s.conn.Receive() for the session's
+// lifetime, started by Open right after the session is created. Every
+// incoming frame is routed to at most one destination: a matching
+// frameWaiter (removed once delivered) or, failing that, every
+// unsolicited subscriber. Both deliveries are non-blocking sends —
+// a slow or absent consumer never blocks the pump or wedges the BLE
+// link; frames are dropped (and logged) instead.
+//
+// Two independent shutdown signals are recognized:
+//   - s.stop, closed by Close()/reaper() when the session is torn
+//     down. This is the primary path in practice: the vehicle-command
+//     SDK's *ble.Connection.Close() does not close its inbox channel,
+//     so conn.Receive() returning closed can't be relied on to ever
+//     happen for the real connector.
+//   - conn.Receive() itself closing (ok == false) — kept for fakes/
+//     future connectors that do close it, and exercised by the P0.T2
+//     test.
+//
+// Either path runs shutdownPump exactly once (closing all outstanding
+// deliver + subscriber channels so nothing blocks forever) and closes
+// pumpDone so callers can observe the pump has fully stopped.
+func (s *internalSession) runPump() {
+	defer close(s.pumpDone)
 	for {
 		select {
-		case resp, ok := <-sess.conn.Receive():
+		case frame, ok := <-s.conn.Receive():
 			if !ok {
-				return nil, errors.New("BLE connection closed")
+				s.shutdownPump()
+				return
 			}
-			// No correlators in the outgoing request → no
-			// demuxing possible. Return the first frame. This
-			// path is defensive; in normal operation an
-			// outgoing RoutableMessage always carries at
-			// least a routing_address.
-			if len(wantAddr) == 0 && len(wantUUID) == 0 {
-				s.touch(id)
-				return resp, nil
-			}
-			gotAddr := extractRoutableToRoutingAddress(resp)
-			gotUUID := extractRoutableRequestUUID(resp)
-			addrMatch := len(wantAddr) != 0 && bytesEqual(gotAddr, wantAddr)
-			uuidMatch := len(wantUUID) != 0 && bytesEqual(gotUUID, wantUUID)
-			if addrMatch || uuidMatch {
-				s.touch(id)
-				return resp, nil
-			}
-			// Frame is either an unsolicited broadcast (no
-			// matching correlator) or the response to a
-			// previous request. Skip and keep reading.
-			log.Printf("[BLE-SESSION] skipping %d-byte non-matching frame from %s (want_addr=%x want_uuid=%x got_addr=%x got_uuid=%x)",
-				len(resp), id, wantAddr, wantUUID, gotAddr, gotUUID)
-			continue
-		case <-deadline:
-			return nil, ErrBLESessionTimeout
-		case <-ctx.Done():
-			return nil, ctx.Err()
+			s.routeFrame(frame)
+		case <-s.stop:
+			s.shutdownPump()
+			return
 		}
+	}
+}
+
+// routeFrame delivers one frame read by runPump to the first matching
+// waiter, or — if none matches — fans it out to every unsolicited
+// subscriber.
+func (s *internalSession) routeFrame(frame []byte) {
+	gotAddr := extractRoutableToRoutingAddress(frame)
+	gotUUID := extractRoutableRequestUUID(frame)
+
+	s.mu.Lock()
+	matched := -1
+	for i, w := range s.waiters {
+		noCorrelator := len(w.wantAddr) == 0 && len(w.wantUUID) == 0
+		addrMatch := len(w.wantAddr) != 0 && bytesEqual(gotAddr, w.wantAddr)
+		uuidMatch := len(w.wantUUID) != 0 && bytesEqual(gotUUID, w.wantUUID)
+		if addrMatch || uuidMatch || noCorrelator {
+			matched = i
+			break
+		}
+	}
+
+	if matched < 0 {
+		// Unsolicited (or a reply nobody's waiting on anymore, e.g.
+		// after a timeout) — fan out, dropping on a full buffer.
+		for subID, ch := range s.subs {
+			select {
+			case ch <- frame:
+			default:
+				log.Printf("[BLE-SESSION] subscriber %d buffer full, dropping frame for %s", subID, s.id)
+			}
+		}
+		s.mu.Unlock()
+		return
+	}
+
+	w := s.waiters[matched]
+	s.waiters = append(s.waiters[:matched], s.waiters[matched+1:]...)
+	s.mu.Unlock()
+
+	select {
+	case w.deliver <- frame:
+	default:
+		log.Printf("[BLE-SESSION] waiter delivery channel full for %s, dropping matched frame", s.id)
+	}
+}
+
+// shutdownPump runs exactly once (called only from runPump, itself
+// single-goroutine) when the pump is stopping. It unblocks every
+// waiting Exchange call and every subscriber rather than leaving them
+// to hang until their own timeout/ctx.
+func (s *internalSession) shutdownPump() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	for _, w := range s.waiters {
+		close(w.deliver)
+	}
+	s.waiters = nil
+	for subID, ch := range s.subs {
+		close(ch)
+		delete(s.subs, subID)
+	}
+}
+
+// stopPump signals runPump to stop via s.stop. Safe to call multiple
+// times (Close + a racing reaper tick, for instance) — sync.Once
+// makes the channel close idempotent.
+func (s *internalSession) stopPump() {
+	s.stopOnce.Do(func() { close(s.stop) })
+}
+
+// registerWaiter adds a frameWaiter for the given correlator pair.
+// The deliver channel is buffered (cap 1) so runPump's send never
+// blocks even if Exchange hasn't reached its select yet.
+func (s *internalSession) registerWaiter(wantAddr, wantUUID []byte) (*frameWaiter, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errors.New("BLE connection closed before send")
+	}
+	w := &frameWaiter{wantAddr: wantAddr, wantUUID: wantUUID, deliver: make(chan []byte, 1)}
+	s.waiters = append(s.waiters, w)
+	return w, nil
+}
+
+// unregisterWaiter removes a waiter that timed out or whose caller
+// gave up (ctx.Done) before the pump matched it. A no-op if the pump
+// already matched and removed it first — whichever side gets there
+// first wins, and there's no double-delivery either way since the
+// pump only sends after removing.
+func (s *internalSession) unregisterWaiter(w *frameWaiter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, ww := range s.waiters {
+		if ww == w {
+			s.waiters = append(s.waiters[:i], s.waiters[i+1:]...)
+			break
+		}
+	}
+}
+
+// subscribe registers an unsolicited-frame fan-out channel (Phase 1:
+// the WebSocket forwarder will call this). Returns an id for
+// unsubscribe and a receive-only channel with a small buffer — a slow
+// or absent consumer never blocks the pump; frames are dropped
+// instead. If the pump has already shut down, returns an
+// already-closed channel so a caller's range/receive loop ends
+// immediately instead of hanging.
+func (s *internalSession) subscribe() (int, <-chan []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.subSeq
+	s.subSeq++
+	ch := make(chan []byte, 8)
+	if s.closed {
+		close(ch)
+		return id, ch
+	}
+	s.subs[id] = ch
+	return id, ch
+}
+
+// unsubscribe removes and closes the named subscriber channel. A
+// no-op if the pump already closed it (session torn down first).
+func (s *internalSession) unsubscribe(id int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ch, ok := s.subs[id]; ok {
+		delete(s.subs, id)
+		close(ch)
 	}
 }
 
@@ -419,6 +609,7 @@ func (s *BLESessionService) Close(id string) error {
 	delete(s.sessions, id)
 	s.mu.Unlock()
 
+	sess.stopPump()
 	sess.release()
 	log.Printf("[BLE-SESSION] closed %s (vin=%s, lifetime=%v)",
 		id, sess.vin, time.Since(sess.createdAt))
@@ -463,6 +654,7 @@ func (s *BLESessionService) reaper(id string) {
 		if idle >= bleSessionTTL {
 			delete(s.sessions, id)
 			s.mu.Unlock()
+			sess.stopPump()
 			sess.release()
 			log.Printf("[BLE-SESSION] reaped %s (idle %v)", id, idle)
 			return
