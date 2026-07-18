@@ -217,7 +217,14 @@ func (h *TeslaHandler) EventsBLE(w http.ResponseWriter, r *http.Request) {
 	// context the moment the peer closes the connection or the
 	// underlying read fails. That's our sole signal for "client
 	// disconnected" since this handler otherwise only ever writes.
-	ctx := c.CloseRead(r.Context())
+	//
+	// DETACH from r.Context() first: the root chi middleware.Timeout(30s)
+	// deadlines every request, which for a normal REST call is fine but would
+	// tear down this LONG-LIVED WebSocket every 30s (observed on-device as a
+	// steady 30s reconnect churn). WithoutCancel keeps request-scoped values
+	// but drops the deadline, so the stream lives until the peer disconnects
+	// (CloseRead cancels ctx) or the session's pump closes the subscription.
+	ctx := c.CloseRead(context.WithoutCancel(r.Context()))
 
 	ticker := time.NewTicker(eventsPingInterval)
 	defer ticker.Stop()
