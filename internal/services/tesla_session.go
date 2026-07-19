@@ -162,10 +162,21 @@ var (
 // the session metadata on success — the caller drives subsequent
 // Exchange + Close by session ID.
 //
-// Holds bleMu for the session's lifetime. If a session already exists
-// (forgotten by a previous client), Open blocks on bleMu until that
-// session is reaped — there's no "take over" semantic because we
-// don't know whether the previous client is mid-command.
+// Holds bleMu for the session's lifetime. If a session already exists it is
+// PREEMPTED — force-closed so this Open can take the adapter immediately.
+//
+// Why take-over (this reverses the earlier "no take-over" stance): the Pi
+// serves exactly one user (one phone, one car). A lingering session is
+// therefore never a competing legitimate client — it's a stale session the
+// SAME client lost track of: a force-kill, backgrounding, a dropped exchange,
+// or a mid-run reconnect whose predecessor never got Close()d. Without
+// preemption the new Open blocks on bleMu until the ~5-min idle reaper frees
+// it — and because bleMu.Lock() ignores ctx (see AcquireBLEForVIN), the
+// handler's 30s ctx can't bound it. On-car that produced 5-minute "can't
+// connect to the Pi" outages (journal: a run of POST /sessions all 502'ing
+// after 4-5 minutes the instant the reaper fired), and the timed-out opens
+// left zombie goroutines still queued on bleMu that then orphaned yet another
+// session. Newest client wins: close the stale one, connect the new one now.
 func (s *BLESessionService) Open(ctx context.Context, vin string) (*BLESession, error) {
 	if vin == "" {
 		v, err := s.tesla.RequireVIN()
@@ -174,6 +185,11 @@ func (s *BLESessionService) Open(ctx context.Context, vin string) (*BLESession, 
 		}
 		vin = v
 	}
+
+	// Preempt BEFORE AcquireBLEForVIN: Close releases bleMu, so the Lock below
+	// is uncontended and returns in the normal scan+connect time instead of
+	// blocking for the reaper TTL.
+	s.preemptExisting()
 
 	conn, release, err := s.tesla.AcquireBLEForVIN(ctx, vin)
 	if err != nil {
@@ -614,6 +630,25 @@ func (s *BLESessionService) Close(id string) error {
 	log.Printf("[BLE-SESSION] closed %s (vin=%s, lifetime=%v)",
 		id, sess.vin, time.Since(sess.createdAt))
 	return nil
+}
+
+// preemptExisting force-closes every currently-registered session so a new
+// Open can take the adapter immediately (see Open's header for why take-over
+// is correct on a single-user Pi). Snapshots the ids under the map lock, then
+// Closes each outside it — Close takes the same lock, and closing a session
+// also unblocks its WS /events subscribers (their channel closes), so the
+// client's stream reconnects onto the new session. A no-op when idle.
+func (s *BLESessionService) preemptExisting() {
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.sessions))
+	for id := range s.sessions {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	for _, id := range ids {
+		log.Printf("[BLE-SESSION] preempting stale session %s for a new Open", id)
+		_ = s.Close(id)
+	}
 }
 
 // Subscribe registers an unsolicited-frame fan-out subscription on the

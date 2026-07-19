@@ -14,6 +14,35 @@ import (
 	"time"
 )
 
+// preemptExisting must force-close every registered session (releasing bleMu
+// via each session's release closure) and empty the map, so the next Open
+// takes the adapter immediately instead of blocking on the ~5-min reaper.
+func TestPreemptExisting_ClosesAllRegisteredSessions(t *testing.T) {
+	s := &BLESessionService{sessions: map[string]*internalSession{}}
+
+	var released int
+	mk := func(id string) *internalSession {
+		sess := newInternalSession(id, "VIN", nil, func() { released++ })
+		return sess
+	}
+	s.sessions["stale-1"] = mk("stale-1")
+
+	s.preemptExisting()
+
+	if len(s.sessions) != 0 {
+		t.Fatalf("preemptExisting left %d sessions, want 0", len(s.sessions))
+	}
+	if released != 1 {
+		t.Fatalf("release called %d times, want 1 (bleMu must be freed)", released)
+	}
+
+	// Idempotent: a second call on an already-empty service is a no-op.
+	s.preemptExisting()
+	if released != 1 {
+		t.Fatalf("release called again on empty service (%d), want still 1", released)
+	}
+}
+
 func TestExtractRoutableUUID_HappyPath(t *testing.T) {
 	// Minimal valid RoutableMessage with field 51 (uuid, LEN, 16 bytes).
 	// Wire tag for field 51 LEN: (51<<3)|2 = 410 = varint 0x9A 0x03.
