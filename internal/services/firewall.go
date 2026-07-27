@@ -273,13 +273,13 @@ func (s *FirewallService) verifyOutput(nat, fwd string, filtered []string) error
 		// nft renders MACs lowercase; the DB may hold them uppercase.
 		mac = strings.ToLower(strings.TrimSpace(mac))
 		if mac == "" {
-			continue
+			return fmt.Errorf("device list contains an empty or whitespace MAC address — filtered list is malformed")
 		}
 		found := false
 		for _, line := range lines {
 			line = strings.ToLower(line)
 			if strings.Contains(line, mac) &&
-				strings.Contains(line, "443") &&
+				strings.Contains(line, "dport 443") &&
 				strings.Contains(line, redirect) {
 				found = true
 				break

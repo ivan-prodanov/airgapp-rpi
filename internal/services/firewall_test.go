@@ -222,9 +222,9 @@ func TestGeneratedConfigSatisfiesVerify(t *testing.T) {
 	conf := s.generateConfig(nil, deviceSnapshot{filtered: []string{mac}})
 
 	// Feed each half to the verifier the way `nft list chain` would.
-	natPart, fwdPart, found := strings.Cut(conf, "table inet filter")
+	natPart, fwdPart, found := strings.Cut(conf, "chain forward")
 	if !found {
-		t.Fatal("generated config has no inet filter table")
+		t.Fatal("generated config has no forward chain")
 	}
 	if err := s.verifyOutput(natPart, fwdPart, []string{mac}); err != nil {
 		t.Fatalf("the config we generate must satisfy the gate we verify with: %v", err)
@@ -246,5 +246,35 @@ func TestVerifyReadsFromNft(t *testing.T) {
 		if strings.HasPrefix(cmd, "nft ") && !strings.HasPrefix(cmd, "nft -nn ") {
 			t.Fatalf("nft listing must pass -nn, got %q", cmd)
 		}
+	}
+}
+
+// Fix 2: The substring match "443" also matches "8443" (the admin UI port),
+// which is not the SNI proxy (8444). The gate must not be fooled by that.
+func TestVerifyRejects8443AsNotThe443Redirect(t *testing.T) {
+	s := &FirewallService{cfg: config.Config{SNIProxyPort: 8444}}
+	nat := `table ip nat {
+	chain prerouting {
+		iifname "wlan0" ether saddr 0c:29:8f:93:2a:08 tcp dport 8443 redirect to :8444
+	}
+}`
+	fwd := `chain forward { type filter hook forward priority filter; policy drop; }`
+	if err := s.verifyOutput(nat, fwd, []string{"0c:29:8f:93:2a:08"}); err == nil {
+		t.Fatal("a redirect on the admin UI port (8443) must not satisfy the gate for port 443")
+	}
+}
+
+// Fix 3: An empty MAC in the filtered list should fail the gate, not skip it.
+// For a function whose job is to refuse, a malformed input must be a refusal.
+func TestVerifyRejectsEmptyMAC(t *testing.T) {
+	s := &FirewallService{cfg: config.Config{SNIProxyPort: 8444}}
+	nat := `iifname "wlan0" ether saddr 0c:29:8f:93:2a:08 tcp dport 443 redirect to :8444`
+	fwd := `chain forward { type filter hook forward priority filter; policy drop; }`
+	err := s.verifyOutput(nat, fwd, []string{"   "})
+	if err == nil {
+		t.Fatal("an empty or whitespace MAC must be rejected as malformed")
+	}
+	if !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("the error must indicate the list is malformed, got: %v", err)
 	}
 }
