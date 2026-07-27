@@ -145,6 +145,15 @@
             </div>
             <div class="stat-card-sub"><span>Compile-time</span><strong>no override</strong></div>
         </div>
+        <div class="stat-card">
+            <div class="stat-card-head">
+                <span class="stat-card-head-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3.5" y="7" width="9" height="6" rx="1"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg></span>
+                <span>Car lock (observing)</span>
+            </div>
+            <div class="stat-card-value" x-text="data.lock_state || 'Unknown'">Unknown</div>
+            <div class="stat-card-sub"><span x-text="data.lock_occupant || 'Unknown'"></span><strong x-text="data.lock_wifi_verdict || ''"></strong></div>
+            <div class="stat-card-sub"><span>Last signal</span><strong x-text="data.lock_last_signal || 'never'"></strong></div>
+        </div>
     </div>
 
     <!-- WAN probe results (the previous connectivity card, restyled) -->

@@ -47,16 +47,43 @@ func (h *DashboardHandler) API(w http.ResponseWriter, r *http.Request) {
 	blocked24h := h.svc.TrafficLog.CountByActionSince("blocked", since)
 	allowed24h := h.svc.TrafficLog.CountByActionSince("allowed", since)
 
+	// Lock-gated WiFi (observe-only in Phase 1): what the watcher believes.
+	lw := h.svc.LockWatch.Status()
+	lockText := "Unknown"
+	if lw.HaveStatus {
+		if lw.Locked {
+			lockText = "Locked"
+		} else {
+			lockText = "Unlocked"
+		}
+	}
+	occupantText := "Unknown"
+	if lw.HaveStatus {
+		if lw.Present {
+			occupantText = "Present"
+		} else {
+			occupantText = "Empty"
+		}
+	}
+	lastSignalText := "never"
+	if !lw.LastSignal.IsZero() {
+		lastSignalText = time.Since(lw.LastSignal).Truncate(time.Second).String() + " ago"
+	}
+
 	JSON(w, http.StatusOK, map[string]any{
-		"devices_online":  online,
-		"devices_total":   total,
-		"firewall_rules":  activeRules,
-		"filters_total":   len(filters),
-		"filters_enabled": enabledFilters,
-		"protected_deny":  services.ProtectedDenyCount(),
-		"blocked_24h":     blocked24h,
-		"allowed_24h":     allowed24h,
-		"wan_reachable":   true, // placeholder until a WAN probe lives in SystemService
-		"system":          sysInfo,
+		"devices_online":    online,
+		"devices_total":     total,
+		"firewall_rules":    activeRules,
+		"filters_total":     len(filters),
+		"filters_enabled":   enabledFilters,
+		"protected_deny":    services.ProtectedDenyCount(),
+		"blocked_24h":       blocked24h,
+		"allowed_24h":       allowed24h,
+		"wan_reachable":     true, // placeholder until a WAN probe lives in SystemService
+		"system":            sysInfo,
+		"lock_state":        lockText,
+		"lock_occupant":     occupantText,
+		"lock_wifi_verdict": map[bool]string{true: "Should be UP", false: "Should be DOWN"}[lw.APShouldBeUp],
+		"lock_last_signal":  lastSignalText,
 	})
 }
