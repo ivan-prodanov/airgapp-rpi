@@ -39,21 +39,43 @@ type LockWatchStatus struct {
 	SessionID    string    `json:"session_id"`
 }
 
+// defaultSettleTick is how often the verdict is recomputed with no new signal.
+// APShouldBeUp is time-dependent (ActivityLease), so a lease that expires while
+// the car is silent has to be noticed by a clock, not by a frame — otherwise a
+// passer-by leaves the AP up forever. Well under the 3-minute lease.
+const defaultSettleTick = 30 * time.Second
+
 type LockWatchService struct {
 	src sessionSource
 	vin string
+
+	// LOCK ORDERING: applyMu THEN mu, never the reverse. applyMu serialises
+	// decide-and-apply (see settle) and is the only lock held across the
+	// enforcer call; mu guards the state below and is always taken inside
+	// applyMu and released before the actuator runs. Inverting this deadlocks.
+	applyMu sync.Mutex
+	// lastWanted is guarded by applyMu ONLY — it lives entirely inside the
+	// apply path so it can never disagree with the last call the actuator got.
+	// nil until the first verdict, so the first one always fires.
+	lastWanted *bool
 
 	mu         sync.Mutex
 	gate       GateState
 	lastSignal time.Time
 	sessionID  string
 	enforcer   func(up bool)
-	lastWanted *bool // nil until the first verdict, so the first one always fires
 
+	// retryDelay and settleTick are read by the goroutines Start launches
+	// WITHOUT holding a lock. That is safe only because they are written once,
+	// at construction, and (in tests) before Start — never after.
 	retryDelay time.Duration
-	stop       chan struct{}
-	stopOnce   sync.Once
-	done       chan struct{}
+	settleTick time.Duration
+
+	stop      chan struct{}
+	stopOnce  sync.Once
+	startOnce sync.Once
+	done      chan struct{}
+	wg        sync.WaitGroup
 }
 
 func NewLockWatchService(src sessionSource, vin string) *LockWatchService {
@@ -61,6 +83,7 @@ func NewLockWatchService(src sessionSource, vin string) *LockWatchService {
 		src:        src,
 		vin:        vin,
 		retryDelay: 10 * time.Second,
+		settleTick: defaultSettleTick,
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 	}
@@ -68,10 +91,22 @@ func NewLockWatchService(src sessionSource, vin string) *LockWatchService {
 
 // SetEnforcer installs the AP actuator. Phase 1 never calls this, which is what
 // makes Phase 1 structurally incapable of taking the radio down.
+//
+// Installing an actuator immediately asserts the CURRENT verdict rather than
+// waiting for an unrelated event: after a restart that previously left the
+// radio down, nothing else would ever raise it — the gate starts empty, so its
+// verdict is "up", and without this settle no flip would occur to say so.
+//
+// The enforcer runs on whichever goroutine settled — the supervisor, the
+// re-settle ticker, or an API caller's Ingest/ReportExternal — with applyMu
+// held. So an enforcer that calls Stop() self-deadlocks (Stop waits for those
+// goroutines), and one that calls SetEnforcer or Ingest re-enters applyMu.
+// Keep it to shelling out at the radio.
 func (s *LockWatchService) SetEnforcer(fn func(up bool)) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.enforcer = fn
+	s.mu.Unlock()
+	s.settle(time.Now())
 }
 
 func (s *LockWatchService) Status() LockWatchStatus {
@@ -96,11 +131,8 @@ func (s *LockWatchService) Ingest(frame []byte, now time.Time) {
 	s.mu.Lock()
 	s.gate = s.gate.Apply(sig, now)
 	s.lastSignal = now
-	fn, want := s.settleLocked(now)
 	s.mu.Unlock()
-	if fn != nil {
-		fn(want)
-	}
+	s.settle(now)
 }
 
 // ReportExternal is the phone's re-sync path: the app holds the keys, so it can
@@ -110,11 +142,8 @@ func (s *LockWatchService) ReportExternal(locked, present bool, now time.Time) {
 	s.mu.Lock()
 	s.gate = s.gate.Apply(LockSignal{Kind: SignalStatus, Locked: locked, Present: present}, now)
 	s.lastSignal = now
-	fn, want := s.settleLocked(now)
 	s.mu.Unlock()
-	if fn != nil {
-		fn(want)
-	}
+	s.settle(now)
 }
 
 // noteSessionLost throws away the accumulated verdict. A stale lock state is
@@ -124,37 +153,86 @@ func (s *LockWatchService) noteSessionLost() {
 	s.mu.Lock()
 	s.gate = GateState{}
 	s.sessionID = ""
-	fn, want := s.settleLocked(time.Now())
 	s.mu.Unlock()
+	s.settle(time.Now())
+}
+
+// settle resolves the current verdict and applies it if it changed.
+//
+// applyMu serialises DECISION AND APPLICATION together. Computing the verdict
+// under mu and then calling the enforcer after unlocking is not enough: two
+// goroutines can each compute a verdict, both unlock, and then invoke the
+// actuator in the opposite order, leaving the radio in a state that contradicts
+// the gate — and since lastWanted then matches that stale call, nothing ever
+// corrects it. Holding applyMu across the whole read-decide-apply sequence
+// makes the last call always the one derived from the latest state.
+//
+// mu is taken INSIDE applyMu and released before the enforcer runs, so the
+// actuator (which shells out to systemctl) never blocks Status() or Ingest().
+func (s *LockWatchService) settle(now time.Time) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	s.mu.Lock()
+	want := s.gate.APShouldBeUp(now)
+	fn := s.enforcer
+	haveStatus, locked, present := s.gate.HaveStatus, s.gate.Locked, s.gate.Present
+	s.mu.Unlock()
+
+	if s.lastWanted != nil && *s.lastWanted == want {
+		return
+	}
+	s.lastWanted = &want
+	log.Printf("[LOCKWATCH] verdict: ap_up=%v (have_status=%v locked=%v present=%v)",
+		want, haveStatus, locked, present)
 	if fn != nil {
 		fn(want)
 	}
 }
 
-// settleLocked computes the verdict and reports whether it changed. Caller must
-// hold s.mu; it returns the enforcer rather than calling it so the actuator
-// never runs under the lock.
-func (s *LockWatchService) settleLocked(now time.Time) (func(bool), bool) {
-	want := s.gate.APShouldBeUp(now)
-	if s.lastWanted != nil && *s.lastWanted == want {
-		return nil, want
-	}
-	s.lastWanted = &want
-	log.Printf("[LOCKWATCH] verdict: ap_up=%v (have_status=%v locked=%v present=%v)",
-		want, s.gate.HaveStatus, s.gate.Locked, s.gate.Present)
-	return s.enforcer, want
+// Start launches the supervisor and the re-settle ticker. Idempotent: a second
+// Start (or a Start after Stop) is a no-op rather than a second pair of
+// goroutines racing to close done.
+func (s *LockWatchService) Start() {
+	s.startOnce.Do(func() {
+		s.wg.Add(2)
+		go func() { defer s.wg.Done(); s.supervise() }()
+		go func() { defer s.wg.Done(); s.resettleLoop() }()
+		// done closes once BOTH goroutines are gone, so Stop returning means
+		// no further enforcer call can be in flight.
+		go func() { s.wg.Wait(); close(s.done) }()
+	})
 }
-
-func (s *LockWatchService) Start() { go s.supervise() }
 
 func (s *LockWatchService) Stop() {
 	s.stopOnce.Do(func() { close(s.stop) })
+	// If Start never ran, nothing will ever close done — claim startOnce so
+	// supervise can no longer be launched, and close done ourselves.
+	s.startOnce.Do(func() { close(s.done) })
 	<-s.done
+}
+
+// resettleLoop re-evaluates the verdict on a timer. The predicate is
+// time-dependent (ActivityLease expiry), so without this the verdict only ever
+// moves when a frame arrives — a car that goes silent after an approach keeps
+// the AP up forever, and Status() reports a verdict the actuator was never
+// told. Deliberately its own goroutine: supervise spends most of its life
+// blocked in attachAndPump's frame loop and could not tick from there.
+func (s *LockWatchService) resettleLoop() {
+	t := time.NewTicker(s.settleTick)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case now := <-t.C:
+			s.settle(now)
+		}
+	}
 }
 
 // supervise keeps exactly one subscription alive for the process lifetime.
 func (s *LockWatchService) supervise() {
-	defer close(s.done)
 	for {
 		select {
 		case <-s.stop:
@@ -174,10 +252,34 @@ func (s *LockWatchService) supervise() {
 // consumes frames until the channel closes. Returns on any failure; the caller
 // retries after retryDelay.
 func (s *LockWatchService) attachAndPump() {
+	// FIRST STATEMENT, deliberately: every exit from this function — Open
+	// failing, Subscribe failing, the channel closing, Stop — must leave the
+	// gate empty and therefore the AP up. Registering it only after a
+	// successful Subscribe would make fail-open depend on an argument about
+	// which paths can have set a down verdict, and that argument is false:
+	// ReportExternal is exported and drives the gate down from another
+	// goroutine entirely. A car asleep enough to fail Open is exactly when a
+	// stale "down" would strand it with no link.
+	defer s.noteSessionLost()
+
 	id, ok := s.src.CurrentSession()
 	if !ok {
+		// Bound the open on Stop as well as the timeout, so shutdown is not
+		// hostage to a 30s dial. This bounds only the ctx-AWARE part of the
+		// path: Open → AcquireBLEForVIN takes bleMu with a plain Lock() that
+		// ignores ctx (internal/services/tesla.go), so Stop can still be
+		// delayed by that mutex. Cancelling here is the best a caller can do.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		stopped := make(chan struct{})
+		go func() {
+			select {
+			case <-s.stop:
+				cancel()
+			case <-stopped:
+			}
+		}()
 		sess, err := s.src.Open(ctx, s.vin)
+		close(stopped)
 		cancel()
 		if err != nil {
 			log.Printf("[LOCKWATCH] open session: %v", err)
@@ -192,7 +294,6 @@ func (s *LockWatchService) attachAndPump() {
 		return
 	}
 	defer s.src.Unsubscribe(id, subID)
-	defer s.noteSessionLost()
 
 	s.mu.Lock()
 	s.sessionID = id
