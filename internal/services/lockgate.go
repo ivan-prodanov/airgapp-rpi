@@ -61,8 +61,15 @@ func DecodeLockSignal(frame []byte) LockSignal {
 	if rm.GetFromDestination().GetDomain() != universal.Domain_DOMAIN_VEHICLE_SECURITY {
 		return LockSignal{Kind: SignalNone}
 	}
-	// A requestUuid means this is a reply to somebody's request, not a push —
-	// and that somebody is an Exchange caller whose bytes are not ours to read.
+	// Best-effort filter, not a guarantee: a non-empty requestUuid means this
+	// is a reply to somebody's request (an Exchange caller's bytes, not ours
+	// to read), so we drop it. But the vendored library's own docs note VCSEC
+	// typically leaves request_uuid EMPTY in its replies (memory constraints),
+	// so a solicited-but-unencrypted VCSEC reply can slip past this check.
+	// That is harmless here: the car's own lock/presence values in a
+	// VehicleStatus are accurate regardless of who asked for them, so reading
+	// one that arrived as someone else's plaintext reply does not corrupt the
+	// verdict — this filter just catches what it can.
 	if len(rm.GetRequestUuid()) > 0 {
 		return LockSignal{Kind: SignalNone}
 	}
@@ -86,9 +93,15 @@ func DecodeLockSignal(frame []byte) LockSignal {
 		return LockSignal{Kind: SignalActivity}
 	}
 	return LockSignal{
-		Kind:    SignalStatus,
-		Locked:  vs.GetVehicleLockState() == vcsec.VehicleLockState_E_VEHICLELOCKSTATE_LOCKED,
-		Present: vs.GetUserPresence() == vcsec.UserPresence_E_VEHICLE_USER_PRESENCE_PRESENT,
+		Kind:   SignalStatus,
+		Locked: vs.GetVehicleLockState() == vcsec.VehicleLockState_E_VEHICLELOCKSTATE_LOCKED,
+		// UserPresence_E is THREE-valued: UNKNOWN, NOT_PRESENT, PRESENT. Test
+		// against NOT_PRESENT, not PRESENT — `Present` means "not confirmed
+		// absent", so UNKNOWN counts as present and fails open. Testing
+		// `== PRESENT` would collapse UNKNOWN into "nobody there" and take the
+		// AP down on a locked car whose presence sensor said nothing, which is
+		// the exact case the fail-open constraint names.
+		Present: vs.GetUserPresence() != vcsec.UserPresence_E_VEHICLE_USER_PRESENCE_NOT_PRESENT,
 	}
 }
 

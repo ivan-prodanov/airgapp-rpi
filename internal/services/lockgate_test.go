@@ -4,9 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/protobuf/proto"
+	"github.com/teslamotors/vehicle-command/pkg/protocol/protobuf/signatures"
 	universal "github.com/teslamotors/vehicle-command/pkg/protocol/protobuf/universalmessage"
 	"github.com/teslamotors/vehicle-command/pkg/protocol/protobuf/vcsec"
+	"google.golang.org/protobuf/proto"
 )
 
 // statusFrame builds the exact wire shape of an unsolicited VCSEC status
@@ -87,14 +88,100 @@ func TestDecodeLockSignalNonStatusVcsecIsActivity(t *testing.T) {
 	}
 }
 
+// Fail-open: a LOCKED car whose presence sensor says UNKNOWN (not a
+// confirmed NOT_PRESENT) must not read as "nobody there" — `Present` means
+// "not confirmed absent", so UNKNOWN counts as present.
+func TestDecodeLockSignalUnknownPresenceFailsOpen(t *testing.T) {
+	f := statusFrame(t, vcsec.VehicleLockState_E_VEHICLELOCKSTATE_LOCKED,
+		vcsec.UserPresence_E_VEHICLE_USER_PRESENCE_UNKNOWN)
+	got := DecodeLockSignal(f)
+	if got.Kind != SignalStatus {
+		t.Fatalf("Kind = %v, want SignalStatus", got.Kind)
+	}
+	if !got.Present {
+		t.Fatalf("got %+v, want Present=true (UNKNOWN must fail open)", got)
+	}
+	g := GateState{}.Apply(got, time.Unix(1700000000, 0))
+	if !g.APShouldBeUp(time.Unix(1700000000, 0)) {
+		t.Fatal("LOCKED + UNKNOWN presence must leave the AP up (fail open)")
+	}
+}
+
+// A non-empty RequestUuid marks the frame as a reply bound to somebody
+// else's request (an Exchange caller's bytes, not ours to read) — must be
+// SignalNone even though it otherwise has the exact shape of a valid status
+// push.
+func TestDecodeLockSignalRequestUuidIsNone(t *testing.T) {
+	inner, err := proto.Marshal(&vcsec.FromVCSECMessage{
+		SubMessage: &vcsec.FromVCSECMessage_VehicleStatus{
+			VehicleStatus: &vcsec.VehicleStatus{
+				VehicleLockState: vcsec.VehicleLockState_E_VEHICLELOCKSTATE_LOCKED,
+				UserPresence:     vcsec.UserPresence_E_VEHICLE_USER_PRESENCE_NOT_PRESENT,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal inner: %v", err)
+	}
+	outer, err := proto.Marshal(&universal.RoutableMessage{
+		FromDestination: &universal.Destination{
+			SubDestination: &universal.Destination_Domain{Domain: universal.Domain_DOMAIN_VEHICLE_SECURITY},
+		},
+		Payload:     &universal.RoutableMessage_ProtobufMessageAsBytes{ProtobufMessageAsBytes: inner},
+		RequestUuid: []byte{0x01, 0x02, 0x03, 0x04},
+	})
+	if err != nil {
+		t.Fatalf("marshal outer: %v", err)
+	}
+	if got := DecodeLockSignal(outer); got.Kind != SignalNone {
+		t.Fatalf("Kind = %v, want SignalNone (non-empty RequestUuid)", got.Kind)
+	}
+}
+
+// Signed/sealed response data means the payload is encrypted and we hold no
+// keys — must be SignalNone even though it otherwise has the exact shape of
+// a valid status push.
+func TestDecodeLockSignalSignedResponseIsNone(t *testing.T) {
+	inner, err := proto.Marshal(&vcsec.FromVCSECMessage{
+		SubMessage: &vcsec.FromVCSECMessage_VehicleStatus{
+			VehicleStatus: &vcsec.VehicleStatus{
+				VehicleLockState: vcsec.VehicleLockState_E_VEHICLELOCKSTATE_LOCKED,
+				UserPresence:     vcsec.UserPresence_E_VEHICLE_USER_PRESENCE_NOT_PRESENT,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal inner: %v", err)
+	}
+	outer, err := proto.Marshal(&universal.RoutableMessage{
+		FromDestination: &universal.Destination{
+			SubDestination: &universal.Destination_Domain{Domain: universal.Domain_DOMAIN_VEHICLE_SECURITY},
+		},
+		Payload: &universal.RoutableMessage_ProtobufMessageAsBytes{ProtobufMessageAsBytes: inner},
+		SubSigData: &universal.RoutableMessage_SignatureData{
+			SignatureData: &signatures.SignatureData{
+				SigType: &signatures.SignatureData_AES_GCM_ResponseData{
+					AES_GCM_ResponseData: &signatures.AES_GCM_Response_Signature_Data{},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal outer: %v", err)
+	}
+	if got := DecodeLockSignal(outer); got.Kind != SignalNone {
+		t.Fatalf("Kind = %v, want SignalNone (signed/sealed AES_GCM_ResponseData)", got.Kind)
+	}
+}
+
 // THE predicate. Exhaustive over lock × presence. Only ONE cell is "down".
 func TestAPShouldBeUp(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	cases := []struct {
-		name   string
-		locked bool
-		presnt bool
-		wantUp bool
+		name    string
+		locked  bool
+		present bool
+		wantUp  bool
 	}{
 		{"locked and empty — the only down case", true, false, false},
 		{"locked but someone inside (driving)", true, true, true},
@@ -102,7 +189,7 @@ func TestAPShouldBeUp(t *testing.T) {
 		{"unlocked and occupied", false, true, true},
 	}
 	for _, c := range cases {
-		g := GateState{HaveStatus: true, Locked: c.locked, Present: c.presnt}
+		g := GateState{HaveStatus: true, Locked: c.locked, Present: c.present}
 		if got := g.APShouldBeUp(now); got != c.wantUp {
 			t.Errorf("%s: APShouldBeUp = %v, want %v", c.name, got, c.wantUp)
 		}
