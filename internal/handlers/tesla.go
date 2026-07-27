@@ -71,14 +71,22 @@ type bleSessions interface {
 	Unsubscribe(id string, subID int)
 }
 
+// lockWatcher is the slice of *services.LockWatchService these handlers need.
+// Narrow, like bleSessions above, so handler tests substitute a fake instead
+// of standing up a whole Services graph.
+type lockWatcher interface {
+	Status() services.LockWatchStatus
+}
+
 // TeslaHandler is the surviving Pi-side Tesla HTTP surface after the
 // rearchitecture. Thin — every method either reads/writes a config
 // value, hands off to BLESessionService, or audits a token action.
 type TeslaHandler struct {
-	tesla   *services.TeslaService
-	tokens  *services.TeslaTokenService
-	bleSess bleSessions
-	audit   *services.AuditService
+	tesla     *services.TeslaService
+	tokens    *services.TeslaTokenService
+	bleSess   bleSessions
+	audit     *services.AuditService
+	lockWatch lockWatcher
 }
 
 // NewTeslaHandler wires the dependencies. renderer is no longer
@@ -86,10 +94,11 @@ type TeslaHandler struct {
 // entirely so callers can't accidentally try.
 func NewTeslaHandler(svc *services.Services) *TeslaHandler {
 	return &TeslaHandler{
-		tesla:   svc.Tesla,
-		tokens:  svc.TeslaToken,
-		bleSess: svc.BLESession,
-		audit:   svc.Audit,
+		tesla:     svc.Tesla,
+		tokens:    svc.TeslaToken,
+		bleSess:   svc.BLESession,
+		audit:     svc.Audit,
+		lockWatch: svc.LockWatch,
 	}
 }
 
@@ -220,6 +229,12 @@ func (h *TeslaHandler) CommandLog(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	JSON(w, http.StatusOK, out)
+}
+
+// LockWatchStatus — GET /api/ble/lock-watch. Read-only view of what the lock
+// watcher currently believes. Phase 1's entire user interface.
+func (h *TeslaHandler) LockWatchStatus(w http.ResponseWriter, r *http.Request) {
+	JSON(w, http.StatusOK, h.lockWatch.Status())
 }
 
 // ── helpers ──────────────────────────────────────────────────────

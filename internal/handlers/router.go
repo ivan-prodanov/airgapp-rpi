@@ -125,6 +125,13 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 			// mostly empty).
 			r.Get("/log", teslaH.CommandLog)
 
+			// Lock watcher status — read-only view of what the
+			// Phase 1 observe-only supervisor currently believes
+			// about lock/presence and whether the AP should be up.
+			// No enforcer is installed anywhere, so this endpoint
+			// cannot move the radio; it can only report a verdict.
+			r.Get("/lock-watch", teslaH.LockWatchStatus)
+
 			// Bearer self-management. NOT an admin path — you can
 			// only see / revoke YOUR OWN token. Issuance stays on
 			// the cookie-authed /api/tesla/tokens path so a leaked
