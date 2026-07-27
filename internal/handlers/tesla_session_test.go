@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -32,8 +34,14 @@ type fakeBLESessions struct {
 	subChans map[string]chan []byte
 	subErrs  map[string]error
 
+	// currentID/currentLive back CurrentSession — set them to model a live
+	// watcher-held session for the PairExternalPubkey preemption tests.
+	currentID   string
+	currentLive bool
+
 	mu          sync.Mutex
 	unsubCalled []string
+	closeCalled []string
 }
 
 func (f *fakeBLESessions) Open(ctx context.Context, vin string) (*services.BLESession, error) {
@@ -44,7 +52,18 @@ func (f *fakeBLESessions) Exchange(ctx context.Context, id string, payload []byt
 	return nil, errNotImplemented
 }
 
-func (f *fakeBLESessions) Close(id string) error { return errNotImplemented }
+func (f *fakeBLESessions) Close(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closeCalled = append(f.closeCalled, id)
+	return nil
+}
+
+// CurrentSession reports the fake's configured live-session id, if any —
+// set currentID/currentLive to model a watcher-held session.
+func (f *fakeBLESessions) CurrentSession() (string, bool) {
+	return f.currentID, f.currentLive
+}
 
 func (f *fakeBLESessions) Subscribe(id string) (int, <-chan []byte, error) {
 	if err, ok := f.subErrs[id]; ok {
@@ -184,4 +203,93 @@ func TestEventsBLE_GoodTokenAndSession_StreamsFrame(t *testing.T) {
 	}
 
 	conn.Close(websocket.StatusNormalClosure, "")
+}
+
+// newTestTeslaService builds a real *services.TeslaService against a
+// throwaway sqlite file (mirrors newTestTokenService above). No VIN is
+// configured, so RequestPairingExternal fails fast on requireVIN — well
+// before it would touch a real BLE adapter — which is exactly what lets
+// TestPairExternalPubkey_PreemptsLiveSession exercise the handler's
+// preemption step without any BLE fake.
+func newTestTeslaService(t *testing.T) *services.TeslaService {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "test-tesla.db")
+	db, err := database.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	audit := services.NewAuditService(db)
+	return services.NewTeslaService(db, audit)
+}
+
+// validPubkeyB64 is a syntactically valid (but not car-registered) 65-byte
+// SEC1-uncompressed P-256 point, base64-encoded, so it passes
+// PairExternalPubkey's format check and reaches RequestPairingExternal.
+func validPubkeyB64() string {
+	pub := make([]byte, 65)
+	pub[0] = 0x04
+	return base64.StdEncoding.EncodeToString(pub)
+}
+
+// TestPairExternalPubkey_PreemptsLiveSession proves the fix for the
+// key-enrollment starvation regression: TeslaService.sendUnauthenticated
+// (which RequestPairingExternal uses) takes bleMu with no preemption of its
+// own, and the lockwatch watcher now holds a BLE session open indefinitely
+// by design — so without an explicit preempt here, enrollment would block
+// on bleMu forever behind a session nothing ever closes.
+//
+// RequestPairingExternal itself is NOT faked — it's a concrete
+// *services.TeslaService method, and with no VIN configured it fails fast on
+// requireVIN (no real BLE touched), so this test can run the real handler
+// path end-to-end and still assert deterministically and quickly. Per the
+// task's guidance, this only asserts the preemption step (Close called with
+// the live session id) rather than faking the whole BLE SDK to observe
+// enrollment's outcome.
+func TestPairExternalPubkey_PreemptsLiveSession(t *testing.T) {
+	fake := &fakeBLESessions{currentID: "sess-live", currentLive: true}
+	h := &TeslaHandler{tesla: newTestTeslaService(t), bleSess: fake}
+
+	body, _ := json.Marshal(map[string]string{"public_key_b64": validPubkeyB64()})
+	req := httptest.NewRequest(http.MethodPost, "/api/ble/pair/external-pubkey", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.PairExternalPubkey(w, req)
+
+	fake.mu.Lock()
+	closed := append([]string(nil), fake.closeCalled...)
+	fake.mu.Unlock()
+
+	if len(closed) != 1 || closed[0] != "sess-live" {
+		t.Fatalf("Close calls = %v, want exactly [\"sess-live\"] (enrollment must preempt the live session before proceeding)", closed)
+	}
+
+	// Not the point of this test, but confirm we actually reached
+	// RequestPairingExternal (no VIN configured → 502) rather than bailing
+	// out earlier for an unrelated reason.
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d (expected a requireVIN failure past the preemption step)", w.Code, http.StatusBadGateway)
+	}
+}
+
+// TestPairExternalPubkey_NoLiveSession_DoesNotCloseAnything guards against
+// over-eager preemption: when CurrentSession reports nothing live, the
+// handler must not call Close at all.
+func TestPairExternalPubkey_NoLiveSession_DoesNotCloseAnything(t *testing.T) {
+	fake := &fakeBLESessions{}
+	h := &TeslaHandler{tesla: newTestTeslaService(t), bleSess: fake}
+
+	body, _ := json.Marshal(map[string]string{"public_key_b64": validPubkeyB64()})
+	req := httptest.NewRequest(http.MethodPost, "/api/ble/pair/external-pubkey", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.PairExternalPubkey(w, req)
+
+	fake.mu.Lock()
+	closed := append([]string(nil), fake.closeCalled...)
+	fake.mu.Unlock()
+
+	if len(closed) != 0 {
+		t.Fatalf("Close calls = %v, want none (no live session to preempt)", closed)
+	}
 }

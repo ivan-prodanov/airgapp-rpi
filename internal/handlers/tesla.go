@@ -2,30 +2,30 @@
 //
 // What's left here after the Phase 4 / Thread A purge:
 //
-//   • PairingInfo  — GET  /api/ble/pair                — returns VIN +
-//                                                       paired flag +
-//                                                       (legacy) Pi
-//                                                       pubkey if it
-//                                                       happens to be
-//                                                       on disk.
-//   • SetVIN       — PUT  /api/ble/vin                — operator sets
-//                                                       the 17-char VIN
-//                                                       so the BLE
-//                                                       scanner knows
-//                                                       what to look
-//                                                       for.
-//   • PairExternalPubkey — POST /api/ble/pair/external-pubkey —
-//                          ships a client's public key over BLE so the
-//                          car's keychain learns about it. The
-//                          operator finishes by tapping the NFC card.
-//   • CommandLog   — GET  /api/ble/log                — audit trail
-//                                                       (mostly idle
-//                                                       until Thread C
-//                                                       wires names).
-//   • State        — STUB. Client uses /pair for connectivity check;
-//                          Thread C will replace this with proper
-//                          client-side state reads through the byte
-//                          forwarder.
+//   - PairingInfo  — GET  /api/ble/pair                — returns VIN +
+//     paired flag +
+//     (legacy) Pi
+//     pubkey if it
+//     happens to be
+//     on disk.
+//   - SetVIN       — PUT  /api/ble/vin                — operator sets
+//     the 17-char VIN
+//     so the BLE
+//     scanner knows
+//     what to look
+//     for.
+//   - PairExternalPubkey — POST /api/ble/pair/external-pubkey —
+//     ships a client's public key over BLE so the
+//     car's keychain learns about it. The
+//     operator finishes by tapping the NFC card.
+//   - CommandLog   — GET  /api/ble/log                — audit trail
+//     (mostly idle
+//     until Thread C
+//     wires names).
+//   - State        — STUB. Client uses /pair for connectivity check;
+//     Thread C will replace this with proper
+//     client-side state reads through the byte
+//     forwarder.
 //
 // The token-management endpoints (ListTokens / IssueToken / RevokeToken)
 // live in tesla_tokens.go; the byte-forwarder session endpoints live
@@ -69,6 +69,11 @@ type bleSessions interface {
 	Close(id string) error
 	Subscribe(id string) (int, <-chan []byte, error)
 	Unsubscribe(id string, subID int)
+	// CurrentSession reports the id of the single live session, if any.
+	// *services.BLESessionService already implements exactly this method
+	// (added for lockwatch) — needed here too so PairExternalPubkey can
+	// preempt a watcher-held session before enrollment. See its call site.
+	CurrentSession() (string, bool)
 }
 
 // lockWatcher is the slice of *services.LockWatchService these handlers need.
@@ -174,6 +179,33 @@ func (h *TeslaHandler) PairExternalPubkey(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := teslaCtx(r, 45*time.Second)
 	defer cancel()
+
+	// Preempt a live session BEFORE enrollment, here rather than inside
+	// TeslaService. The lockwatch background watcher now holds a BLE session
+	// open indefinitely by design (its keepalive Touch defeats the idle
+	// reaper — see BLESessionService/LockWatchService), and
+	// TeslaService.sendUnauthenticated (the transport RequestPairingExternal
+	// uses) takes bleMu with a plain Lock() and no preemption of its own —
+	// unlike BLESessionService.Open, which calls preemptExisting first. Left
+	// alone, that combination means sendUnauthenticated blocks on bleMu
+	// FOREVER: nothing ever closes the watcher's session, so the mutex never
+	// frees. TeslaService deliberately doesn't know about BLESessionService
+	// (composition is one-directional — BLESessionService holds a
+	// *TeslaService, never the reverse), so it can't preempt itself; this
+	// handler is the one place that holds both a bleSessions handle and the
+	// knowledge that enrollment is about to contend for the adapter. Closing
+	// here mirrors what Open already does via preemptExisting: an explicit,
+	// deliberate hand-off, not a new mechanism. The watcher's own supervisor
+	// loop reattaches on its own afterwards (attachAndPump re-opens/
+	// re-subscribes on failure), so nothing here needs to restore it.
+	//
+	// Enrolling a new key is a rare, deliberate, owner-initiated action and
+	// should win over a background observer — the alternative is an HTTP
+	// worker (and the owner's UI) wedged forever with no explanation.
+	if id, live := h.bleSess.CurrentSession(); live {
+		_ = h.bleSess.Close(id)
+	}
+
 	if err := h.tesla.RequestPairingExternal(ctx, pubBytes); err != nil {
 		JSONError(w, http.StatusBadGateway, err.Error())
 		return
