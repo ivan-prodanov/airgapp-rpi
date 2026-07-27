@@ -10,18 +10,18 @@
 //
 // Concurrency model:
 //
-//   * Linux can host only one BLE adapter client at a time, and the
+//   - Linux can host only one BLE adapter client at a time, and the
 //     SDK's session state isn't thread-safe under interleaving. So
 //     exactly ONE BLE session is alive at any moment, enforced by
 //     TeslaService.bleMu (acquired in AcquireBLEForVIN, released in
 //     the session's close callback).
 //
-//   * While a session is open, the existing /api/ble/cmd/* path
+//   - While a session is open, the existing /api/ble/cmd/* path
 //     blocks on bleMu — first one wins, second waits until the first
 //     calls Close (or the idle reaper does it). The "either / or"
 //     property survives because both paths route through bleMu.
 //
-//   * Idle TTL: 5 min from last Exchange. After that the reaper
+//   - Idle TTL: 5 min from last Exchange. After that the reaper
 //     force-closes and releases bleMu so a stuck client never
 //     livelocks the BLE adapter.
 //
@@ -692,6 +692,22 @@ func (s *BLESessionService) get(id string) (*internalSession, error) {
 		return nil, ErrBLESessionNotFound
 	}
 	return sess, nil
+}
+
+// CurrentSession returns the id of the single live session, if there is one.
+//
+// Exists for lockwatch, which must SUBSCRIBE to whatever session happens to be
+// live rather than owning one of its own: Open calls preemptExisting, so a
+// watcher-owned session would be force-closed by every phone Open and spend its
+// life reconnecting. The map holds 0 or 1 entries (bleMu serialises Open), so
+// "the first one" is unambiguous.
+func (s *BLESessionService) CurrentSession() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range s.sessions {
+		return id, true
+	}
+	return "", false
 }
 
 // touch updates lastUsed on the named session. Used by Exchange to

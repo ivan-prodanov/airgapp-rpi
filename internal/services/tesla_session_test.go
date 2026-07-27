@@ -313,8 +313,8 @@ func TestReadVarint(t *testing.T) {
 		{[]byte{0x01}, 1, 1},
 		{[]byte{0x7F}, 127, 1},
 		{[]byte{0x80, 0x01}, 128, 2},
-		{[]byte{0x9A, 0x03}, 410, 2},   // field 51 LEN tag
-		{[]byte{0x92, 0x03}, 402, 2},   // field 50 LEN tag
+		{[]byte{0x9A, 0x03}, 410, 2}, // field 51 LEN tag
+		{[]byte{0x92, 0x03}, 402, 2}, // field 50 LEN tag
 		{[]byte{0xFF, 0xFF, 0x03}, 65535, 3},
 		{[]byte{0x80}, 0, 0}, // truncated continuation
 		{[]byte{}, 0, 0},
@@ -324,5 +324,21 @@ func TestReadVarint(t *testing.T) {
 		if v != c.val || n != c.consum {
 			t.Errorf("readVarint(%x) = (%d, %d), want (%d, %d)", c.in, v, n, c.val, c.consum)
 		}
+	}
+}
+
+func TestCurrentSessionEmpty(t *testing.T) {
+	s := &BLESessionService{sessions: map[string]*internalSession{}}
+	if _, ok := s.CurrentSession(); ok {
+		t.Fatal("CurrentSession on an empty service must report false")
+	}
+}
+
+func TestCurrentSessionReturnsLiveID(t *testing.T) {
+	sess := newInternalSession("abc123", "VIN0", nil, func() {})
+	s := &BLESessionService{sessions: map[string]*internalSession{"abc123": sess}}
+	id, ok := s.CurrentSession()
+	if !ok || id != "abc123" {
+		t.Fatalf("CurrentSession = (%q, %v), want (\"abc123\", true)", id, ok)
 	}
 }
