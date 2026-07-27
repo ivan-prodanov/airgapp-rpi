@@ -2,6 +2,7 @@ package services
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -144,26 +145,38 @@ func (s *HotspotService) Apply() error {
 // many times a day, and an automatic path that can rewrite the AP's config is a
 // way to lose the AP permanently. This one can only change run state.
 //
-// Raising the AP is gated on the firewall being verifiably default-deny;
-// LOWERING it never is. That asymmetry is the whole point — a firewall fault
-// must not be able to leave the car online.
+// Raising the AP is gated on the firewall being verifiably default-deny — and
+// on a gate existing at all; LOWERING it never is, on any path. That asymmetry
+// is the whole point — a firewall fault must not be able to leave the car
+// online.
 func (s *HotspotService) SetEnabled(up bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if up && s.verifyFirewall != nil {
+	if up {
+		// No gate installed is not "no checks needed" — it is a construction
+		// site that forgot to wire one. Fail closed rather than raise an
+		// ungated AP, which is the one thing this component exists to prevent.
+		if s.verifyFirewall == nil {
+			log.Printf("[HOTSPOT] REFUSING to raise the AP — no firewall gate installed")
+			return fmt.Errorf("refusing to start hostapd: no firewall verify gate installed (SetFirewallGate was never called)")
+		}
 		if err := s.verifyFirewall(); err != nil {
 			log.Printf("[HOTSPOT] firewall gate FAILED (%v) — reapplying before considering the AP", err)
-			if s.applyFirewall != nil {
-				if aerr := s.applyFirewall(); aerr != nil {
-					log.Printf("[HOTSPOT] firewall reapply failed: %v", aerr)
-				}
+			var applyErr error
+			if s.applyFirewall == nil {
+				applyErr = fmt.Errorf("no firewall apply hook installed, so the ruleset could not be repaired")
+				log.Printf("[HOTSPOT] %v", applyErr)
+			} else if aerr := s.applyFirewall(); aerr != nil {
+				applyErr = fmt.Errorf("firewall reapply failed: %w", aerr)
+				log.Printf("[HOTSPOT] %v", applyErr)
 			}
-			if err := s.verifyFirewall(); err != nil {
+			if verr := s.verifyFirewall(); verr != nil {
 				// REFUSE. An offline car is recoverable; a car that reached
-				// Tesla is not.
-				log.Printf("[HOTSPOT] REFUSING to raise the AP — firewall still unverified: %v", err)
-				return fmt.Errorf("refusing to start hostapd over an unverified firewall: %w", err)
+				// Tesla is not. Report the reapply failure alongside the
+				// verify failure — the reapply is usually the real cause.
+				log.Printf("[HOTSPOT] REFUSING to raise the AP — firewall still unverified: %v", verr)
+				return fmt.Errorf("refusing to start hostapd over an unverified firewall: %w", errors.Join(verr, applyErr))
 			}
 			log.Printf("[HOTSPOT] firewall gate satisfied after reapply")
 		}

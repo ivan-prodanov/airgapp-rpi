@@ -216,31 +216,78 @@ func (s *FirewallService) Apply() error {
 // table with `policy drop` is loaded. A failed nft -f, a manual
 // `nft flush ruleset`, or a missing /etc/nftables.conf on a cold boot all leave
 // the car forwarding freely, and nothing else in this daemon would notice.
+//
+// Deliberately takes no lock even though Apply holds s.mu: `nft -f` applies its
+// whole file as a single atomic transaction, so a concurrent reload is never
+// observed half-applied — this read sees either the entire old ruleset or the
+// entire new one.
 func (s *FirewallService) Verify() error {
-	nat, err := s.exec.Run("nft", "list", "chain", "ip", "nat", "prerouting")
+	// Verify against the devices we actually intend to intercept, not against
+	// "somebody, somewhere is redirected". If the car's row were flipped
+	// filtered→open it would get a blanket forward accept plus a DNS DNAT
+	// around the SNI proxy, while another device's leftover redirect kept a
+	// chain-wide check green.
+	snap, err := s.loadDeviceSnapshot()
+	if err != nil {
+		return fmt.Errorf("load device snapshot for verify: %w", err)
+	}
+	// -nn keeps ports and addresses numeric, so the strings we match on never
+	// turn into service names (`https`) or reverse-resolved hostnames.
+	nat, err := s.exec.Run("nft", "-nn", "list", "chain", "ip", "nat", "prerouting")
 	if err != nil {
 		return fmt.Errorf("read nat prerouting: %w", err)
 	}
-	fwd, err := s.exec.Run("nft", "list", "chain", "inet", "filter", "forward")
+	fwd, err := s.exec.Run("nft", "-nn", "list", "chain", "inet", "filter", "forward")
 	if err != nil {
 		return fmt.Errorf("read forward chain: %w", err)
 	}
-	return s.verifyOutput(nat.Stdout, fwd.Stdout)
+	return s.verifyOutput(nat.Stdout, fwd.Stdout, snap.filtered)
 }
 
 // verifyOutput is the pure half, so the parsing is testable without nft.
-func (s *FirewallService) verifyOutput(nat, fwd string) error {
+//
+// filtered is the MAC list from the device snapshot: every one of them must
+// have its own :443 interception. The matching is deliberately loose per line
+// and strict per device — this parses nft's own re-render of the ruleset, not
+// the bytes generateConfig wrote, so field order and spacing are nft's to
+// choose; what must not be loose is *which device* the redirect binds to.
+func (s *FirewallService) verifyOutput(nat, fwd string, filtered []string) error {
 	if strings.TrimSpace(fwd) == "" {
 		return fmt.Errorf("nftables forward chain is absent — with ip_forward=1 nothing is stopping the car")
 	}
 	if !strings.Contains(fwd, "policy drop") {
 		return fmt.Errorf("nftables forward chain is not default-deny")
 	}
+	// No filtered device means nothing is being intercepted at all. On this
+	// single-car Pi that is not a benign "no devices yet" — it is the exact
+	// shape of the car having been moved out of 'filtered', which hands it a
+	// forward accept and an unproxied DNS path. Refuse to vouch for it.
+	if len(filtered) == 0 {
+		return fmt.Errorf("no device has status 'filtered' — nothing is being intercepted, so there is nothing to verify (was the car's row flipped to 'open'?)")
+	}
 	// The SNI interception: without this, :443 never reaches the proxy that
 	// makes the actual allow/deny decision.
 	redirect := fmt.Sprintf("redirect to :%d", s.cfg.SNIProxyPort)
-	if !strings.Contains(nat, redirect) {
-		return fmt.Errorf("nftables prerouting has no %q — the car's :443 would bypass the SNI proxy", redirect)
+	lines := strings.Split(nat, "\n")
+	for _, mac := range filtered {
+		// nft renders MACs lowercase; the DB may hold them uppercase.
+		mac = strings.ToLower(strings.TrimSpace(mac))
+		if mac == "" {
+			continue
+		}
+		found := false
+		for _, line := range lines {
+			line = strings.ToLower(line)
+			if strings.Contains(line, mac) &&
+				strings.Contains(line, "443") &&
+				strings.Contains(line, redirect) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("nftables prerouting has no tcp/443 %q for filtered device %s — that device's :443 would bypass the SNI proxy", redirect, mac)
+		}
 	}
 	return nil
 }
