@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"strconv"
 	"testing"
 )
 
@@ -22,6 +23,34 @@ func TestRecordedReturnsDefensiveCopy(t *testing.T) {
 	recorded2 := exec.Recorded()
 	if recorded2[0] != "echo hello" {
 		t.Fatalf("second Recorded() returned %q, want 'echo hello' (internal state was mutated)", recorded2[0])
+	}
+}
+
+// The finding this pins: recording was gated to DryRun to stop unbounded
+// growth in production — but dry_run is a persistent key in config.yaml, not a
+// test-only flag, so a daemon left in dry-run (exactly what someone debugging
+// would set) grew the slice forever. The bound has to be a real bound.
+//
+// It also asserts the ORDER that survives: oldest-to-newest within the kept
+// window, because service tests index into Recorded() positionally.
+func TestRecordedIsBoundedAndKeepsTheMostRecent(t *testing.T) {
+	exec := New(true)
+
+	const over = maxRecorded + 50
+	for i := 0; i < over; i++ {
+		exec.Run("echo", strconv.Itoa(i))
+	}
+
+	got := exec.Recorded()
+	if len(got) != maxRecorded {
+		t.Fatalf("Recorded() returned %d commands after %d runs, want the ring bound %d", len(got), over, maxRecorded)
+	}
+	// The window kept must be the LAST maxRecorded, still oldest-to-newest.
+	for i, cmd := range got {
+		want := "echo " + strconv.Itoa(over-maxRecorded+i)
+		if cmd != want {
+			t.Fatalf("Recorded()[%d] = %q, want %q — the ring must keep the most recent entries in call order", i, cmd, want)
+		}
 	}
 }
 

@@ -21,9 +21,11 @@
 //     calls Close (or the idle reaper does it). The "either / or"
 //     property survives because both paths route through bleMu.
 //
-//   - Idle TTL: 5 min from last Exchange. After that the reaper
-//     force-closes and releases bleMu so a stuck client never
-//     livelocks the BLE adapter.
+//   - Idle TTL: 5 min from the last Exchange OR Touch. After that the
+//     reaper force-closes and releases bleMu so a stuck client never
+//     livelocks the BLE adapter. Touch exists because lockwatch holds a
+//     long-lived subscription and never Exchanges, so "idle" for it means
+//     "the pump is gone", not "no command was sent" — see Touch.
 //
 // Phase 3c will port the Tesla session crypto (P-256 ECDH against the
 // car's ephemeral pubkey from SessionInfo, AES-GCM under the derived
@@ -710,8 +712,25 @@ func (s *BLESessionService) CurrentSession() (string, bool) {
 	return "", false
 }
 
+// Touch is the exported keepalive: it refreshes the named session's idle
+// clock without exchanging anything.
+//
+// Exists for lockwatch. lastUsed used to be refreshed ONLY by Exchange, and
+// the watcher never calls Exchange — so the reaper destroyed the watcher's
+// session exactly bleSessionTTL after it opened, every time, on a perfectly
+// healthy car. That churn is not merely wasteful: it re-enters Open →
+// AcquireBLEForVIN (ctx-blind bleMu held across a scan) every five minutes
+// forever, it wipes the accumulated verdict on every reap, and — for the
+// observe-only phase this was built for — it makes "the car pushes status on
+// an idle link" indistinguishable from "the car answers a fresh GATT
+// connect", because a reconnect happens on exactly the cadence being measured.
+//
+// A no-op when the session is gone, like Unsubscribe, so a caller racing a
+// teardown does not need to check first.
+func (s *BLESessionService) Touch(id string) { s.touch(id) }
+
 // touch updates lastUsed on the named session. Used by Exchange to
-// keep the reaper from killing an actively-used session.
+// keep the reaper from killing an actively-used session, and by Touch.
 func (s *BLESessionService) touch(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

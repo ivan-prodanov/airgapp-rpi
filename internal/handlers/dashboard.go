@@ -69,6 +69,16 @@ func (h *DashboardHandler) API(w http.ResponseWriter, r *http.Request) {
 	if !lw.LastSignal.IsZero() {
 		lastSignalText = time.Since(lw.LastSignal).Truncate(time.Second).String() + " ago"
 	}
+	// Link state is the ONLY field that separates "subscribed to a live session
+	// and the car has said nothing" from "no VIN / dead adapter / out of range /
+	// never subscribed at all" — every one of those renders identically in the
+	// four rows above (Unknown / Unknown / Should be UP / never). The watcher
+	// sets SessionID only after Subscribe succeeds and clears it on every exit
+	// path, so it is exactly "are we attached right now".
+	linkText := "Not attached"
+	if lw.SessionID != "" {
+		linkText = "Attached"
+	}
 
 	JSON(w, http.StatusOK, map[string]any{
 		"devices_online":    online,
@@ -85,5 +95,6 @@ func (h *DashboardHandler) API(w http.ResponseWriter, r *http.Request) {
 		"lock_occupant":     occupantText,
 		"lock_wifi_verdict": map[bool]string{true: "Should be UP", false: "Should be DOWN"}[lw.APShouldBeUp],
 		"lock_last_signal":  lastSignalText,
+		"lock_link":         linkText,
 	})
 }

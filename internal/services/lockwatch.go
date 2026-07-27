@@ -27,6 +27,7 @@ type sessionSource interface {
 	Open(ctx context.Context, vin string) (*BLESession, error)
 	Subscribe(id string) (int, <-chan []byte, error)
 	Unsubscribe(id string, subID int)
+	Touch(id string)
 }
 
 // LockWatchStatus is the read-only snapshot the UI and API render.
@@ -54,6 +55,27 @@ const defaultSettleTick = 30 * time.Second
 // forever.
 const maxRetryBackoff = 5 * time.Minute
 
+// defaultKeepaliveTick is how often attachAndPump refreshes the session's idle
+// clock when no frames are arriving.
+//
+// BLESessionService's reaper closes a session bleSessionTTL (5 min) after its
+// last touch, and until this existed the ONLY thing that touched was Exchange —
+// which the watcher never calls. So a healthy, silent car got its watcher
+// session reaped every five minutes forever: ~278 open/reap cycles a day, a
+// verdict that could never be older than the TTL, and a fresh
+// Open → AcquireBLEForVIN (ctx-blind bleMu, held across a BLE scan, before the
+// session is registered where preemptExisting could reach it) blocking the
+// phone's command path on that same cadence. Worse for the observe-only phase
+// this watcher exists to serve: VCSEC commonly pushes a status right after a
+// connect, so a push arriving every ~5 min would look identical whether the
+// car pushes on an idle link or only ever answers a fresh GATT connect — the
+// exact question being measured.
+//
+// 60s is comfortably under bleSessionTTL: several ticks are missed before the
+// reaper could fire, so one descheduled tick is not a lost session, while the
+// touch itself is a mutex and a clock read.
+const defaultKeepaliveTick = 60 * time.Second
+
 type LockWatchService struct {
 	src sessionSource
 	vin string
@@ -74,11 +96,12 @@ type LockWatchService struct {
 	sessionID  string
 	enforcer   func(up bool)
 
-	// retryDelay and settleTick are read by the goroutines Start launches
-	// WITHOUT holding a lock. That is safe only because they are written once,
-	// at construction, and (in tests) before Start — never after.
-	retryDelay time.Duration
-	settleTick time.Duration
+	// retryDelay, settleTick and keepaliveTick are read by the goroutines Start
+	// launches WITHOUT holding a lock. That is safe only because they are
+	// written once, at construction, and (in tests) before Start — never after.
+	retryDelay    time.Duration
+	settleTick    time.Duration
+	keepaliveTick time.Duration
 
 	stop      chan struct{}
 	stopOnce  sync.Once
@@ -89,12 +112,13 @@ type LockWatchService struct {
 
 func NewLockWatchService(src sessionSource, vin string) *LockWatchService {
 	return &LockWatchService{
-		src:        src,
-		vin:        vin,
-		retryDelay: 10 * time.Second,
-		settleTick: defaultSettleTick,
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
+		src:           src,
+		vin:           vin,
+		retryDelay:    10 * time.Second,
+		settleTick:    defaultSettleTick,
+		keepaliveTick: defaultKeepaliveTick,
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
 	}
 }
 
@@ -177,10 +201,17 @@ func (s *LockWatchService) ReportExternal(locked, present bool, now time.Time) {
 // noteSessionLost throws away the accumulated verdict. A stale lock state is
 // exactly the thing that could hold the AP down while someone drives off, so
 // losing the link resets to "we know nothing", which fails open.
+//
+// lastSignal goes with it. It is the timestamp OF the state being discarded,
+// so keeping it made the dashboard self-contradictory: "Unknown / Unknown /
+// Should be UP / 4s ago" reads as a car that just told us something we somehow
+// know nothing about. Zeroing it renders "never", which is the truth — we have
+// heard nothing since we still had a link.
 func (s *LockWatchService) noteSessionLost() {
 	s.mu.Lock()
 	s.gate = GateState{}
 	s.sessionID = ""
+	s.lastSignal = time.Time{}
 	s.mu.Unlock()
 	s.settle(time.Now())
 }
@@ -404,15 +435,37 @@ func (s *LockWatchService) attachAndPump() (subscribed bool) {
 	s.mu.Unlock()
 	log.Printf("[LOCKWATCH] attached to session %s", id)
 
+	// Keepalive. The session's idle clock is otherwise only refreshed by
+	// Exchange, which is the phone's path, not ours — see defaultKeepaliveTick
+	// for why an un-touched watcher session is reaped every bleSessionTTL and
+	// why that ruins both the link and the measurement. Touching on each frame
+	// covers a talkative car; the ticker covers a silent one.
+	//
+	// Holding the session indefinitely is the intent, not a leak: a phone Open
+	// preempts us (newest wins), whereupon this pump's channel closes and
+	// supervise re-attaches to the PHONE's session rather than opening a
+	// competing one. There is deliberately no "polite release" — preemption
+	// already is one.
+	//
+	// The ticker shares this select with the frame receive and s.stop, so a
+	// keepalive can never delay shutdown by more than the touch itself.
+	ka := time.NewTicker(s.keepaliveTick)
+	defer ka.Stop()
+
 	for {
 		select {
 		case <-s.stop:
 			return
+		case <-ka.C:
+			s.src.Touch(id)
 		case frame, open := <-ch:
 			if !open {
 				log.Printf("[LOCKWATCH] session %s closed", id)
 				return
 			}
+			// Before Ingest, not after: Ingest blocks for the whole enforcer
+			// call when it settles, and the point of touching is the clock.
+			s.src.Touch(id)
 			s.Ingest(frame, time.Now())
 		}
 	}

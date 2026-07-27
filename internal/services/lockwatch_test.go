@@ -26,6 +26,10 @@ type fakeSessionSource struct {
 	// between consecutive attach attempts, rather than reaching into any
 	// LockWatchService internals — this is purely a test fixture.
 	openTimes []time.Time
+	// touches records the session id passed to each Touch call, in call order.
+	// The real BLESessionService.Touch resets a session's idle clock; the
+	// keepalive test asserts on these rather than on the reaper's behaviour.
+	touches []string
 }
 
 func (f *fakeSessionSource) CurrentSession() (string, bool) {
@@ -67,6 +71,19 @@ func (f *fakeSessionSource) Unsubscribe(id string, subID int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unsubbd++
+}
+
+func (f *fakeSessionSource) Touch(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.touches = append(f.touches, id)
+}
+
+// touchedIDs snapshots every Touch call's session id so far, in call order.
+func (f *fakeSessionSource) touchedIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.touches...)
 }
 
 func (f *fakeSessionSource) counts() (opens, subbed, unsubbd int) {
@@ -593,6 +610,45 @@ func TestSuperviseBacksOffOnConsecutiveFailures(t *testing.T) {
 		min := gaps[i-1] * 3 / 2
 		if gaps[i] <= min {
 			t.Fatalf("gaps = %v — gap[%d]=%v is not clearly larger than gap[%d]=%v; backoff does not appear to be growing", gaps, i, gaps[i], i-1, gaps[i-1])
+		}
+	}
+}
+
+// The finding this pins: lastUsed was refreshed ONLY by Exchange, which is the
+// phone's path — the watcher never calls it. So the reaper destroyed the
+// watcher's session exactly bleSessionTTL after it opened, every time, on a
+// perfectly healthy car: ~278 open/reap cycles a day, a verdict that could
+// never be older than five minutes, and — fatally for the observe-only phase —
+// a reconnect on the very cadence the phase exists to measure, which would
+// make "the car pushes on an idle link" indistinguishable from "the car only
+// answers a fresh connect".
+//
+// The car being SILENT is the whole point: no frames are fed here, so nothing
+// but the keepalive ticker can produce a touch. The ids are asserted too, so a
+// regression that touches some other (or an empty) id fails rather than
+// passing on a bare count.
+func TestWatcherKeepsAQuietSessionAlive(t *testing.T) {
+	f := &fakeSessionSource{id: "phone-session"}
+	s := NewLockWatchService(f, "VIN0")
+	s.retryDelay = time.Hour // the attach succeeds; keep the retry loop out of it
+	s.keepaliveTick = 5 * time.Millisecond
+	s.Start()
+	defer s.Stop()
+
+	waitFor(t, 2*time.Second, "the watcher to attach", func() bool {
+		_, subbed, _ := f.counts()
+		return subbed >= 1
+	})
+
+	// Several ticks, so this cannot pass on a single touch that some other
+	// code path happened to make.
+	waitFor(t, 2*time.Second, "repeated keepalive touches with no frames arriving", func() bool {
+		return len(f.touchedIDs()) >= 3
+	})
+
+	for i, id := range f.touchedIDs() {
+		if id != "phone-session" {
+			t.Fatalf("touch[%d] = %q, want %q — the keepalive must refresh the session we are attached to", i, id, "phone-session")
 		}
 	}
 }
