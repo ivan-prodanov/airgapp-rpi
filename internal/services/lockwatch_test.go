@@ -413,3 +413,123 @@ func TestStartStopLifecycleIsRobust(t *testing.T) {
 		})
 	})
 }
+
+// Round 2 Finding A: settle writes lastWanted whether or not an enforcer is
+// installed — it has no idea fn was nil, it just records what it decided. So
+// a settle that ran with a nil enforcer still "spends" lastWanted, and a
+// later SetEnforcer that just compares against it can find the verdict
+// unchanged and skip the call — installing an actuator that is told nothing.
+// This is the reviewer's probe, made permanent: assert on the recorded calls,
+// not merely on the absence of a panic.
+func TestSetEnforcerAfterAPriorSettleStillAsserts(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+
+	// This settle runs against a nil enforcer (Phase 1) and burns lastWanted.
+	s.Ingest(lockedEmptyFrame(t), now) // locked + empty -> down
+	if s.Status().APShouldBeUp {
+		t.Fatal("precondition: locked + empty should want the AP down")
+	}
+
+	var rec recorder
+	s.SetEnforcer(rec.fn)
+
+	calls := rec.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("enforcer calls after SetEnforcer = %v, want exactly one call", calls)
+	}
+	if calls[0] != false {
+		t.Fatalf("enforcer called with %v, want false — it must be told the CURRENT verdict (down), not skipped because a nil-enforcer settle already recorded it", calls[0])
+	}
+}
+
+// Companion case: SetEnforcer before any settle has ever run (lastWanted is
+// still its construction-time nil) must also assert the current verdict —
+// this was never broken, but belongs alongside the prior-settle case so the
+// two together pin SetEnforcer's contract regardless of history.
+func TestSetEnforcerBeforeAnySettleAsserts(t *testing.T) {
+	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	var rec recorder
+	s.SetEnforcer(rec.fn)
+
+	calls := rec.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("enforcer calls after SetEnforcer = %v, want exactly one call", calls)
+	}
+	if calls[0] != true {
+		t.Fatalf("enforcer called with %v, want true — the gate is empty, so the current verdict is up", calls[0])
+	}
+}
+
+// Round 2 Finding A, minor: replacing an already-installed enforcer must tell
+// the NEW one the current verdict too, not silently inherit the fact that its
+// predecessor was already told.
+func TestSetEnforcerReplacingAnInstalledEnforcerAssertsToTheNewOne(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+
+	var first recorder
+	s.SetEnforcer(first.fn) // gate empty -> up; first gets called with true
+
+	s.Ingest(lockedEmptyFrame(t), now) // flips to down; first gets called with false
+
+	var second recorder
+	s.SetEnforcer(second.fn)
+
+	calls := second.snapshot()
+	if len(calls) != 1 || calls[0] != false {
+		t.Fatalf("second enforcer calls = %v, want exactly one call with false (current verdict)", calls)
+	}
+}
+
+// Round 2 Finding B: round 1's headline fix was serialising decide-and-apply
+// under applyMu so the LAST enforcer call always matches the final state,
+// regardless of goroutine interleaving. This is a property test, not an
+// attempt to reproduce one exact interleaving — it hammers the mutators
+// concurrently, quiesces for real (WaitGroup, not a sleep), and checks the
+// invariant. Post-fix this is deterministic: every mutator routes through
+// settle, and applyMu totally orders decide-and-apply, so the temporally-last
+// settle call necessarily reads the gate as it stands after every goroutine
+// has finished (each goroutine's own mutation always precedes its own settle
+// call, synchronously, so no mutation can occur after the last settle without
+// that same goroutine's settle then being the new last one — a contradiction).
+// Pre-fix (decide under mu, release mu, THEN call fn) two settles can compute
+// their verdicts and then invoke the actuator in the opposite order, so this
+// fails probabilistically — the correct behaviour for a negative control.
+//
+// Status frames / ReportExternal only — no activity signals — so
+// APShouldBeUp never depends on ActivityLease here and the assertion cannot
+// be perturbed by a lease expiring mid-test.
+func TestConcurrentMutatorsLastEnforcerCallMatchesFinalState(t *testing.T) {
+	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	var rec recorder
+	s.SetEnforcer(rec.fn)
+
+	const n = 200
+	var wg sync.WaitGroup
+	wg.Add(3 * n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			s.ReportExternal(true, false, time.Now()) // locked + empty -> down
+		}()
+		go func() {
+			defer wg.Done()
+			s.ReportExternal(false, false, time.Now()) // unlocked -> up
+		}()
+		go func() {
+			defer wg.Done()
+			s.noteSessionLost() // gate reset -> up (fail open)
+		}()
+	}
+	wg.Wait() // real quiescence: every mutator has returned, not a sleep
+
+	want := s.Status().APShouldBeUp
+	got, ok := rec.last()
+	if !ok {
+		t.Fatal("enforcer was never called")
+	}
+	if got != want {
+		t.Fatalf("last enforcer call = %v, want %v (Status().APShouldBeUp) — the last actuator call must always match the final state", got, want)
+	}
+}

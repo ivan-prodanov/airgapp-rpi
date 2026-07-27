@@ -97,6 +97,20 @@ func NewLockWatchService(src sessionSource, vin string) *LockWatchService {
 // radio down, nothing else would ever raise it — the gate starts empty, so its
 // verdict is "up", and without this settle no flip would occur to say so.
 //
+// That assertion must not be short-circuited by settle's own dedup. A settle
+// that ran earlier with NO enforcer installed (Phase 1, or the gap before this
+// call) still writes lastWanted — settle has no idea whether fn was nil, it
+// just records what it decided. If we called settle here without first
+// clearing lastWanted, and the verdict happens to match what that nil-enforcer
+// settle already recorded, settle finds "nothing changed" and returns without
+// ever calling the actuator we just installed — exactly the case this
+// paragraph promises to prevent. So: clear lastWanted to nil (in its own
+// applyMu section — settle takes applyMu itself, so we cannot hold it across
+// the call) before settling, which forces the assertion regardless of what any
+// earlier, enforcer-less settle believed. This also covers replacing an
+// already-installed enforcer: the new one gets told the current verdict too,
+// rather than inheriting a call made to its predecessor.
+//
 // The enforcer runs on whichever goroutine settled — the supervisor, the
 // re-settle ticker, or an API caller's Ingest/ReportExternal — with applyMu
 // held. So an enforcer that calls Stop() self-deadlocks (Stop waits for those
@@ -106,6 +120,11 @@ func (s *LockWatchService) SetEnforcer(fn func(up bool)) {
 	s.mu.Lock()
 	s.enforcer = fn
 	s.mu.Unlock()
+
+	s.applyMu.Lock()
+	s.lastWanted = nil
+	s.applyMu.Unlock()
+
 	s.settle(time.Now())
 }
 
@@ -167,8 +186,27 @@ func (s *LockWatchService) noteSessionLost() {
 // corrects it. Holding applyMu across the whole read-decide-apply sequence
 // makes the last call always the one derived from the latest state.
 //
-// mu is taken INSIDE applyMu and released before the enforcer runs, so the
-// actuator (which shells out to systemctl) never blocks Status() or Ingest().
+// mu is taken INSIDE applyMu and released before the enforcer runs, so
+// Status() stays responsive even while the actuator is running — it only ever
+// waits on mu, never on applyMu.
+//
+// Ingest and ReportExternal are NOT so lucky: they call settle synchronously,
+// so they block for the full duration of the actuator call whenever they are
+// the ones who settle. That is deliberate, not an oversight — it is the exact
+// mechanism that makes "the last call always matches the latest state" true.
+// Releasing applyMu before calling fn (so a caller could return early) would
+// reopen the round-1 hole: two settles could then invoke the actuator in the
+// opposite order of their decisions. Do not read this as a note to fix later.
+//
+// Operational consequence: while the actuator runs, whichever goroutine is
+// blocked in settle cannot do anything else — including, concretely, the
+// frame-pump goroutine in attachAndPump, which cannot drain the session's
+// unsolicited fan-out channel until its Ingest call returns. That channel is
+// bounded (internal/services/tesla_session.go, subscribe's buffer cap 8) and
+// drops frames once full rather than blocking the pump upstream. So the
+// actuator's running time is not free: it must stay well inside that 8-frame
+// headroom, or a slow systemctl call starts costing lock/presence pushes, not
+// just latency.
 func (s *LockWatchService) settle(now time.Time) {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
@@ -199,11 +237,27 @@ func (s *LockWatchService) Start() {
 		go func() { defer s.wg.Done(); s.supervise() }()
 		go func() { defer s.wg.Done(); s.resettleLoop() }()
 		// done closes once BOTH goroutines are gone, so Stop returning means
-		// no further enforcer call can be in flight.
+		// neither supervise's frame pump nor resettleLoop's ticker can still be
+		// mid-enforcer-call. That is ALL it means: an external caller of
+		// Ingest, ReportExternal, or SetEnforcer runs on its own goroutine,
+		// outside this WaitGroup, and can still be inside the actuator when
+		// Stop returns.
 		go func() { s.wg.Wait(); close(s.done) }()
 	})
 }
 
+// Stop halts the supervisor and the re-settle ticker and waits for both to
+// exit.
+//
+// It can itself actuate the radio. attachAndPump's deferred noteSessionLost
+// runs as supervise unwinds, which settles with the gate reset to empty; if
+// the verdict just before shutdown was "down", that is a flip, and the
+// enforcer fires with true before Stop returns — the WaitGroup Start built
+// guarantees supervise does not exit until its deferred settle has completed.
+// This is intentional: a stopping process must not leave the radio down with
+// no one left to raise it. But it means Stop can shell out to the actuator,
+// not just close channels, so callers should not assume Stop is cheap or
+// that it never blocks on external I/O.
 func (s *LockWatchService) Stop() {
 	s.stopOnce.Do(func() { close(s.stop) })
 	// If Start never ran, nothing will ever close done — claim startOnce so
