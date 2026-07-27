@@ -149,6 +149,21 @@ type LockWatchService struct {
 	// "Attached" can be told apart from "attached ages ago and probably dead".
 	attachedSince time.Time
 	framesSeen    int
+	// framesStatus / framesActivity break framesSeen down by what
+	// DecodeLockSignal made of each frame. Without this split, "15 frames
+	// seen, have_status=false" is ambiguous between "the car spoke and none
+	// of it was a VehicleStatus" and "the car spoke and we could not parse
+	// it" — and those point opposite ways: the first says the design's
+	// premise is wrong, the second says our decoder is. Undecodable is
+	// framesSeen - framesStatus - framesActivity.
+	framesStatus   int
+	framesActivity int
+	// sawStatus latches the first VehicleStatus of the process. That
+	// transition is the single most important event of the observation run
+	// and is otherwise invisible: settle only logs when the AP VERDICT
+	// changes, so an unlock (verdict stays up) or a lock while presence
+	// reads UNKNOWN (also stays up) would flip have_status silently.
+	sawStatus bool
 
 	// retryDelay, settleTick, keepaliveTick and maxSilence are read by the
 	// goroutines Start launches WITHOUT holding a lock. That is safe only
@@ -236,6 +251,37 @@ func (s *LockWatchService) Status() LockWatchStatus {
 // Ingest folds one frame into the verdict and fires the enforcer on a flip.
 func (s *LockWatchService) Ingest(frame []byte, now time.Time) {
 	sig := DecodeLockSignal(frame)
+
+	// Classify BEFORE the SignalNone early return — an undecodable frame is
+	// evidence too, and counting only the ones we understood is what made the
+	// first run's "15 frames seen" unreadable.
+	s.mu.Lock()
+	firstStatus := false
+	switch sig.Kind {
+	case SignalStatus:
+		s.framesStatus++
+		if !s.sawStatus {
+			s.sawStatus = true
+			firstStatus = true
+		}
+	case SignalActivity:
+		s.framesActivity++
+	}
+	s.mu.Unlock()
+
+	if firstStatus {
+		// Deliberately loud and unconditional: this is the answer to "does the
+		// car push state to us at all", and nothing else in the log reports it.
+		log.Printf("[LOCKWATCH] *** FIRST VehicleStatus decoded *** locked=%v present=%v",
+			sig.Locked, sig.Present)
+	}
+	if sig.Kind == SignalStatus {
+		// Status pushes are rare (zero in the first 95 minutes on-car), so
+		// logging each one costs nothing and shows whether they arrive on an
+		// idle link or only in the seconds after a fresh attach.
+		log.Printf("[LOCKWATCH] status push: locked=%v present=%v", sig.Locked, sig.Present)
+	}
+
 	if sig.Kind == SignalNone {
 		return
 	}
@@ -277,6 +323,8 @@ func (s *LockWatchService) noteSessionLost() {
 	s.lastSignal = time.Time{}
 	s.attachedSince = time.Time{}
 	s.framesSeen = 0
+	s.framesStatus = 0
+	s.framesActivity = 0
 	s.mu.Unlock()
 	s.settle(time.Now())
 }
@@ -500,6 +548,8 @@ func (s *LockWatchService) attachAndPump() (subscribed bool) {
 	s.sessionID = id
 	s.attachedSince = attachedAt
 	s.framesSeen = 0
+	s.framesStatus = 0
+	s.framesActivity = 0
 	s.mu.Unlock()
 	log.Printf("[LOCKWATCH] attached to session %s", id)
 
@@ -512,10 +562,10 @@ func (s *LockWatchService) attachAndPump() (subscribed bool) {
 	// the counters being reported.
 	defer func() {
 		s.mu.Lock()
-		n := s.framesSeen
+		n, st, act := s.framesSeen, s.framesStatus, s.framesActivity
 		s.mu.Unlock()
-		log.Printf("[LOCKWATCH] detached from session %s after %v, %d frames seen",
-			id, time.Since(attachedAt).Truncate(time.Second), n)
+		log.Printf("[LOCKWATCH] detached from session %s after %v — %d frames: %d status, %d activity, %d undecodable",
+			id, time.Since(attachedAt).Truncate(time.Second), n, st, act, n-st-act)
 	}()
 
 	// Keepalive. The session's idle clock is otherwise only refreshed by
