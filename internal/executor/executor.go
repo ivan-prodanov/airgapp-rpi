@@ -7,12 +7,16 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Executor struct {
 	DryRun  bool
 	Timeout time.Duration
+
+	mu       sync.Mutex
+	recorded []string
 }
 
 func New(dryRun bool) *Executor {
@@ -28,8 +32,25 @@ type Result struct {
 	ExitCode int
 }
 
+// record keeps every invocation so service tests can assert on what was run
+// rather than on a bare nil error. Always on — the slice is tiny and only ever
+// grows within a single test or a single ApplyAll.
+func (e *Executor) record(cmdStr string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.recorded = append(e.recorded, cmdStr)
+}
+
+// Recorded returns a copy of every command this Executor has been asked to run.
+func (e *Executor) Recorded() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.recorded...)
+}
+
 func (e *Executor) Run(name string, args ...string) (Result, error) {
 	cmdStr := name + " " + strings.Join(args, " ")
+	e.record(cmdStr)
 
 	if e.DryRun {
 		log.Printf("[DRY-RUN] %s", cmdStr)

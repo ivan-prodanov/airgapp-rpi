@@ -124,6 +124,27 @@ func (s *HotspotService) Apply() error {
 	return nil
 }
 
+// SetEnabled starts or stops hostapd without touching its config.
+//
+// Deliberately NOT part of Apply(): Apply rewrites /etc/hostapd/hostapd.conf
+// and restarts. This is called automatically by the lock watcher, potentially
+// many times a day, and an automatic path that can rewrite the AP's config is a
+// way to lose the AP permanently. This one can only change run state.
+func (s *HotspotService) SetEnabled(up bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	action := "stop"
+	if up {
+		action = "start"
+	}
+	if _, err := s.exec.Run("systemctl", action, "hostapd"); err != nil {
+		return fmt.Errorf("%s hostapd: %w", action, err)
+	}
+	log.Printf("[HOTSPOT] %s hostapd", action)
+	return nil
+}
+
 func (s *HotspotService) getSettings() map[string]string {
 	// Defaults bake V4's choice: 5 GHz channel 36 + worldwide regdomain.
 	// This frees the 2.4 GHz radio for BLE on the Pi 4 (where WiFi and
