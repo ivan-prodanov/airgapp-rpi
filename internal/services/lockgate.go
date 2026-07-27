@@ -205,7 +205,18 @@ func DescribeFrame(frame []byte) string {
 	case rm.GetSignedMessageStatus() != nil:
 		parts = append(parts, fmt.Sprintf("signed_message_status=%v", rm.GetSignedMessageStatus().GetOperationStatus()))
 	default:
-		parts = append(parts, "no payload of any known kind")
+		// Parses as a RoutableMessage but carries nothing in any field our
+		// vendored protos model — so whatever it is lives in field numbers
+		// they do not describe. proto.Unmarshal preserves exactly those, and
+		// they are the only way to identify the frame. Without this the
+		// diagnostic dead-ends at "no payload of any known kind", which is
+		// where the first on-car run stopped.
+		parts = append(parts, "no modelled payload")
+		if unk := rm.ProtoReflect().GetUnknown(); len(unk) > 0 {
+			parts = append(parts, fmt.Sprintf("UNKNOWN_FIELDS(%dB)=%s", len(unk), hex.EncodeToString(unk)))
+		} else {
+			parts = append(parts, fmt.Sprintf("no unknown fields either; raw=%s", hex.EncodeToString(frame)))
+		}
 	}
 	return strings.Join(parts, " ")
 }
