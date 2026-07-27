@@ -14,6 +14,9 @@ package services
 // mobile's src/ble/vcsecPush.ts, which does exactly this in TypeScript.
 
 import (
+	"encoding/hex"
+	"fmt"
+	"strings"
 	"time"
 
 	universal "github.com/teslamotors/vehicle-command/pkg/protocol/protobuf/universalmessage"
@@ -143,4 +146,66 @@ func (g GateState) APShouldBeUp(now time.Time) bool {
 		return true
 	}
 	return !(g.Locked && !g.Present)
+}
+
+// DescribeFrame explains WHY DecodeLockSignal produced SignalNone for a frame.
+// Diagnostic only — nothing in the predicate consults it.
+//
+// It exists because "38 frames: 0 status, 0 activity, 38 undecodable" (the
+// first on-car run) is a dead end: it cannot distinguish "the car does not send
+// state to a keyless listener, so the design's premise is wrong" from "the car
+// does and this decoder is fumbling it". Those lead opposite ways. This walks
+// the SAME gates DecodeLockSignal does, in the same order, and names the one
+// that fired — using the protobuf types already vendored for the command path,
+// not a hand-rolled parse.
+func DescribeFrame(frame []byte) string {
+	if len(frame) == 0 {
+		return "empty frame"
+	}
+	head := frame
+	if len(head) > 16 {
+		head = head[:16]
+	}
+	var rm universal.RoutableMessage
+	if err := proto.Unmarshal(frame, &rm); err != nil {
+		return fmt.Sprintf("NOT a RoutableMessage: %v (len=%d head=%s)", err, len(frame), hex.EncodeToString(head))
+	}
+
+	parts := []string{fmt.Sprintf("len=%d", len(frame))}
+	parts = append(parts, fmt.Sprintf("from_domain=%v", rm.GetFromDestination().GetDomain()))
+	if ra := rm.GetFromDestination().GetRoutingAddress(); len(ra) > 0 {
+		parts = append(parts, "from=routing_address(not a domain)")
+	}
+	parts = append(parts, fmt.Sprintf("to_domain=%v", rm.GetToDestination().GetDomain()))
+	if len(rm.GetRequestUuid()) > 0 {
+		parts = append(parts, "request_uuid=SET(solicited)")
+	}
+	if sd := rm.GetSignatureData(); sd != nil {
+		if sd.GetAES_GCM_ResponseData() != nil {
+			parts = append(parts, "SEALED(AES_GCM_Response)")
+		} else {
+			parts = append(parts, "signature_data=present")
+		}
+	}
+
+	switch {
+	case len(rm.GetProtobufMessageAsBytes()) > 0:
+		payload := rm.GetProtobufMessageAsBytes()
+		parts = append(parts, fmt.Sprintf("payload=%dB", len(payload)))
+		var fv vcsec.FromVCSECMessage
+		if err := proto.Unmarshal(payload, &fv); err != nil {
+			parts = append(parts, "payload NOT a FromVCSECMessage")
+		} else if sub := fv.GetSubMessage(); sub != nil {
+			parts = append(parts, fmt.Sprintf("vcsec_submsg=%T", sub))
+		} else {
+			parts = append(parts, "FromVCSECMessage with NO sub_message")
+		}
+	case len(rm.GetSessionInfo()) > 0:
+		parts = append(parts, fmt.Sprintf("session_info=%dB (handshake, not state)", len(rm.GetSessionInfo())))
+	case rm.GetSignedMessageStatus() != nil:
+		parts = append(parts, fmt.Sprintf("signed_message_status=%v", rm.GetSignedMessageStatus().GetOperationStatus()))
+	default:
+		parts = append(parts, "no payload of any known kind")
+	}
+	return strings.Join(parts, " ")
 }

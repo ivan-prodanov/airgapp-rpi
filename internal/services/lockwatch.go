@@ -125,6 +125,11 @@ const defaultKeepaliveTick = 60 * time.Second
 // says how chatty an idle car really is, this can come down.
 const defaultMaxSilence = 30 * time.Minute
 
+// maxFramesDescribed caps the per-frame diagnostic per attachment. Enough for a
+// representative sample of what the car actually sends a keyless listener,
+// without turning journalctl into a packet log.
+const maxFramesDescribed = 8
+
 type LockWatchService struct {
 	src sessionSource
 	vin string
@@ -158,6 +163,10 @@ type LockWatchService struct {
 	// framesSeen - framesStatus - framesActivity.
 	framesStatus   int
 	framesActivity int
+	// framesDescribed rate-limits the per-frame diagnostic below to the first
+	// few of each attachment. The car sent 38 undecodable frames in 43
+	// minutes, so a handful is a representative sample, not a sacrifice.
+	framesDescribed int
 	// sawStatus latches the first VehicleStatus of the process. That
 	// transition is the single most important event of the observation run
 	// and is otherwise invisible: settle only logs when the AP VERDICT
@@ -267,7 +276,16 @@ func (s *LockWatchService) Ingest(frame []byte, now time.Time) {
 	case SignalActivity:
 		s.framesActivity++
 	}
+	describe := ""
+	if sig.Kind == SignalNone && s.framesDescribed < maxFramesDescribed {
+		s.framesDescribed++
+		describe = DescribeFrame(frame)
+	}
 	s.mu.Unlock()
+
+	if describe != "" {
+		log.Printf("[LOCKWATCH] undecodable frame: %s", describe)
+	}
 
 	if firstStatus {
 		// Deliberately loud and unconditional: this is the answer to "does the
@@ -325,6 +343,7 @@ func (s *LockWatchService) noteSessionLost() {
 	s.framesSeen = 0
 	s.framesStatus = 0
 	s.framesActivity = 0
+	s.framesDescribed = 0
 	s.mu.Unlock()
 	s.settle(time.Now())
 }
@@ -550,6 +569,7 @@ func (s *LockWatchService) attachAndPump() (subscribed bool) {
 	s.framesSeen = 0
 	s.framesStatus = 0
 	s.framesActivity = 0
+	s.framesDescribed = 0
 	s.mu.Unlock()
 	log.Printf("[LOCKWATCH] attached to session %s", id)
 
