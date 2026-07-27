@@ -88,3 +88,37 @@ func TestMergeARP_InsertsNewMAC(t *testing.T) {
 		t.Errorf("ARP-only insert IP = %q, want 192.168.4.50", d.IPAddress)
 	}
 }
+
+// TestMergeLeases_PicksTheNewestLeaseForAMAC — a device that takes a NEW IP on
+// every reassociation (the car does) accumulates several simultaneously-valid
+// leases under one MAC. The loop assigns devices[mac] once per line, so it
+// keeps whichever line comes LAST — which is not the newest, and is not stable:
+// dnsmasq rewrites the file and the order changes underneath us.
+//
+// The IP it picks becomes devices.ip_address, which SNIProxyService.RefreshCache
+// keys its allow map on. Pick the wrong one and every request from the car's
+// real IP misses the map, so `known` is false and sniAllowed never even runs —
+// the car's own allow-listed traffic is dropped until the next scan+refresh.
+// Measured on-car: 341 drops vs 412 allows in 24h, 53 drops in 3s after a wake.
+//
+// The leases below are a verbatim capture from the Pi on 2026-07-27. Field 0 is
+// the expiry: .238 is the newest AND the one the car is actually using, but it
+// is not the last line.
+func TestMergeLeases_PicksTheNewestLeaseForAMAC(t *testing.T) {
+	const tesla = "0C:29:8F:93:2A:08"
+	leases := `1785233949 0c:29:8f:93:2a:08 192.168.4.238 tesla ff:8f:93:2a:08:00:01:00:01:31:f8:f6:b6:0c:29:8f:93:2a:08
+1785154494 0c:29:8f:93:2a:08 192.168.4.236 * ff:8f:93:2a:08:00:01:00:01:31:f8:74:76:0c:29:8f:93:2a:08
+1785170499 0c:29:8f:93:2a:08 192.168.4.237 * ff:8f:93:2a:08:00:01:00:01:31:f8:b7:b3:0c:29:8f:93:2a:08
+`
+	devices := map[string]*models.Device{}
+	mergeLeases(devices, strings.NewReader(leases))
+
+	if got := devices[tesla].IPAddress; got != "192.168.4.238" {
+		t.Errorf("newest lease not chosen: got %q, want 192.168.4.238 (expiry 1785233949)", got)
+	}
+	// Only the newest lease carries the hostname; the older ones have "*".
+	// Choosing by recency must therefore also preserve it.
+	if got := devices[tesla].Hostname; got != "tesla" {
+		t.Errorf("hostname from the newest lease lost: got %q, want %q", got, "tesla")
+	}
+}

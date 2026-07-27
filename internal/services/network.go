@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,18 +54,57 @@ func (s *NetworkService) scan() {
 }
 
 func (s *NetworkService) parseDHCPLeases(devices map[string]*models.Device) {
-	f, err := os.Open("/var/lib/misc/dnsmasq.leases")
+	f, err := os.Open(dnsmasqLeasesPath)
 	if err != nil {
 		return
 	}
 	defer f.Close()
+	mergeLeases(devices, f)
+}
 
-	scanner := bufio.NewScanner(f)
+// dnsmasqLeasesPath is where dnsmasq writes its lease table.
+const dnsmasqLeasesPath = "/var/lib/misc/dnsmasq.leases"
+
+// currentLeasedIPsByMAC reads the live lease table. Returns nil if it cannot
+// be read — callers must treat that as "no extra IPs known", never as an error
+// worth failing on, since the recorded ip_address still covers the common case.
+func currentLeasedIPsByMAC() map[string][]string {
+	f, err := os.Open(dnsmasqLeasesPath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	return leasedIPsByMAC(f)
+}
+
+// mergeLeases reads dnsmasq leases-file content from r and merges it into
+// devices. Split from parseDHCPLeases so the merge rules are unit-testable
+// without faking the filesystem — the same reason mergeARP is split out.
+//
+// A device that takes a new IP on each reassociation (the car does) holds
+// several simultaneously-valid leases under one MAC. This keeps the NEWEST by
+// expiry, not whichever line happens to come last: dnsmasq rewrites the file
+// and the order changes underneath us, so last-line-wins silently hands the
+// device a stale IP. That IP becomes devices.ip_address, which
+// SNIProxyService.RefreshCache keys its allow map on — so getting it wrong
+// blackholes the device's own allow-listed traffic until the next scan and
+// cache refresh (measured on-car: 341 drops vs 412 allows over 24h).
+func mergeLeases(devices map[string]*models.Device, r io.Reader) {
+	// Highest expiry seen per MAC, so a later line only wins if it is newer.
+	newest := make(map[string]int64)
+
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		// Format: expiry MAC IP hostname *
+		// Format: expiry MAC IP hostname clientid
 		fields := strings.Fields(scanner.Text())
 		if len(fields) < 4 {
 			continue
+		}
+		// A malformed expiry sorts oldest rather than dropping the lease —
+		// a device with only unparseable leases still gets an entry.
+		expiry, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil {
+			expiry = 0
 		}
 		mac := strings.ToUpper(fields[1])
 		ip := fields[2]
@@ -73,12 +113,44 @@ func (s *NetworkService) parseDHCPLeases(devices map[string]*models.Device) {
 			hostname = ""
 		}
 
+		if prev, seen := newest[mac]; seen && expiry <= prev {
+			continue
+		}
+		newest[mac] = expiry
 		devices[mac] = &models.Device{
 			MACAddress: mac,
 			IPAddress:  ip,
 			Hostname:   hostname,
 		}
 	}
+}
+
+// leasedIPsByMAC returns every currently-listed lease IP per MAC. RefreshCache
+// uses it so a filtered device is recognised on ANY address dnsmasq has leased
+// it, not just the one that won mergeLeases.
+//
+// This is what actually closes the drop window. dnsmasq writes the lease at
+// DHCP-ACK — before the client can route a packet — so by the time the car
+// sends anything, its new IP is already here. Waiting for the 30s device scan
+// and then the 30s cache refresh is what produced the burst of drops on wake.
+//
+// It grants nothing extra: every entry maps to the same global suffix list that
+// every filtered device already shares, and dnsmasq will not lease an unexpired
+// address to a second device. Should one expire and be reassigned, the new
+// holder's traffic only reaches the SNI proxy if its OWN MAC has a redirect
+// rule — i.e. it is filtered — in which case it already gets that same list.
+func leasedIPsByMAC(r io.Reader) map[string][]string {
+	out := make(map[string][]string)
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 4 {
+			continue
+		}
+		mac := strings.ToUpper(fields[1])
+		out[mac] = append(out[mac], fields[2])
+	}
+	return out
 }
 
 func (s *NetworkService) parseARP(devices map[string]*models.Device) {

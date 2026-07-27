@@ -35,6 +35,11 @@ type SNIProxyService struct {
 	// a protected-denied or non-allow-listed SNI.
 	dial func(network, addr string) (net.Conn, error)
 
+	// leases returns every IP dnsmasq currently has leased, keyed by
+	// upper-case MAC. A field for the same reason dial is: tests inject a
+	// fixture instead of writing to /var/lib.
+	leases func() map[string][]string
+
 	mu    sync.RWMutex
 	allow map[string][]string // client IP -> allowed domain suffixes
 }
@@ -48,6 +53,7 @@ func NewSNIProxyService(cfg config.Config, db *sql.DB, trafficLog *TrafficLogSer
 		dial: func(network, addr string) (net.Conn, error) {
 			return net.DialTimeout(network, addr, 10*time.Second)
 		},
+		leases: currentLeasedIPsByMAC,
 	}
 }
 
@@ -84,10 +90,21 @@ func (s *SNIProxyService) RefreshCache() {
 		}
 	}
 
-	// Apply the global list to every filtered device's IP.
+	// Apply the global list to every address a filtered device might use:
+	// its recorded ip_address AND every IP dnsmasq currently has leased to
+	// its MAC.
+	//
+	// The lease IPs are what make this correct rather than merely current.
+	// devices.ip_address is refreshed by a 30s scan and consumed here on a
+	// separate 30s timer, so after a device reassociates onto a new address
+	// there is a window of up to a minute where its traffic misses this map
+	// entirely — and a miss is a hard deny, so the device's own allow-listed
+	// requests are dropped. dnsmasq writes the lease at DHCP-ACK, before the
+	// client can route anything, so consulting the lease table closes that
+	// window. Measured on-car before this: 341 drops vs 412 allows in 24h.
 	ipRows, err := s.db.Query(`
-		SELECT ip_address FROM devices
-		WHERE status = 'filtered' AND ip_address != ''
+		SELECT mac_address, ip_address FROM devices
+		WHERE status = 'filtered'
 	`)
 	if err != nil {
 		log.Printf("[SNI] refresh: list filtered devices: %v", err)
@@ -95,14 +112,26 @@ func (s *SNIProxyService) RefreshCache() {
 	}
 	defer ipRows.Close()
 
+	var leased map[string][]string
+	if s.leases != nil {
+		leased = s.leases()
+	}
+
 	next := make(map[string][]string)
 	for ipRows.Next() {
-		var ip string
-		if err := ipRows.Scan(&ip); err != nil {
-			log.Printf("[SNI] refresh scan ip: %v", err)
+		var mac, ip string
+		if err := ipRows.Scan(&mac, &ip); err != nil {
+			log.Printf("[SNI] refresh scan device: %v", err)
 			continue
 		}
-		next[ip] = suffixes
+		if ip != "" {
+			next[ip] = suffixes
+		}
+		for _, leasedIP := range leased[strings.ToUpper(strings.TrimSpace(mac))] {
+			if leasedIP != "" {
+				next[leasedIP] = suffixes
+			}
+		}
 	}
 
 	s.mu.Lock()

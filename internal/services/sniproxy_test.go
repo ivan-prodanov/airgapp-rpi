@@ -2,8 +2,10 @@ package services
 
 import (
 	"crypto/tls"
+	"database/sql"
 	"errors"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
@@ -259,5 +261,102 @@ func TestSNIProxy_CacheClassification(t *testing.T) {
 	}
 	if _, ok := s.allow["10.0.0.20"]; ok {
 		t.Errorf("open device must be absent from the SNI allow-list cache")
+	}
+}
+
+// leaseFixture returns a lease table in the shape captured from the Pi:
+// one MAC holding several simultaneously-valid leases.
+func leaseFixture() map[string][]string {
+	return map[string][]string{
+		"0C:29:8F:93:2A:08": {"192.168.4.238", "192.168.4.236", "192.168.4.237"},
+	}
+}
+
+// seedFilteredCar registers the car as a filtered device whose RECORDED ip is
+// stale — the exact state a wake-up produces, and the state that dropped 341
+// of the car's own allow-listed requests in 24h on-car.
+func seedFilteredCar(t *testing.T, db *sql.DB, recordedIP string) {
+	t.Helper()
+	mustExec(t, db, `INSERT INTO devices (mac_address, ip_address, hostname, status)
+		VALUES ('0C:29:8F:93:2A:08', ?, 'tesla', 'filtered')`, recordedIP)
+	id := freshFilter(t, db, "TestLeaseAllowList")
+	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain, enabled)
+		VALUES (?, 'tile.googleapis.com', 1)`, id)
+}
+
+// THE REPRO, end to end: the car is really on .238, the devices row still says
+// .236, and tile.googleapis.com is explicitly allow-listed. Before the lease
+// lookup this dropped, because a map miss makes `known` false and sniAllowed
+// never runs.
+func TestRefreshCache_RecognisesADeviceOnAnyLeasedIP(t *testing.T) {
+	db := memDB(t)
+	seedFilteredCar(t, db, "192.168.4.236") // stale on purpose
+
+	s := NewSNIProxyService(config.Config{}, db, nil)
+	s.leases = leaseFixture
+	s.RefreshCache()
+
+	suffixes, known := s.allowedSuffixes("192.168.4.238")
+	if !known {
+		t.Fatal("car on its real leased IP was not recognised — its own allow-listed traffic would be dropped")
+	}
+	if !sniAllowed("tile.googleapis.com", suffixes) {
+		t.Error("allow-listed SNI rejected for the car")
+	}
+}
+
+// An address the car does NOT hold must stay unknown. Pins that the fix widens
+// recognition to the device's own leases and nothing further.
+func TestRefreshCache_DoesNotRecogniseAnUnleasedIP(t *testing.T) {
+	db := memDB(t)
+	seedFilteredCar(t, db, "192.168.4.236")
+
+	s := NewSNIProxyService(config.Config{}, db, nil)
+	s.leases = leaseFixture
+	s.RefreshCache()
+
+	if _, known := s.allowedSuffixes("192.168.4.99"); known {
+		t.Error("an IP the car never held was recognised")
+	}
+}
+
+// THE INVARIANT that makes keying this map by IP safe at all.
+//
+// Every entry must resolve to the SAME suffix list. That is why an IP mix-up
+// can only ever cause a wrongful DENY and never a wrongful ALLOW: there is no
+// per-device privilege for a mismatched IP to escalate into.
+//
+// The schema already contains the design that would break this —
+// policies / policy_allowed_domains / device_policies exist but no service
+// reads them today. If per-device allow lists are ever switched on, this test
+// fails, and whoever does it has to confront the fact that they have just
+// turned this lookup into a privilege boundary.
+func TestRefreshCache_AllFilteredDevicesShareOneList(t *testing.T) {
+	db := memDB(t)
+	seedFilteredCar(t, db, "192.168.4.236")
+	mustExec(t, db, `INSERT INTO devices (mac_address, ip_address, hostname, status)
+		VALUES ('AA:BB:CC:DD:EE:FF', '192.168.4.150', 'other', 'filtered')`)
+
+	s := NewSNIProxyService(config.Config{}, db, nil)
+	s.leases = leaseFixture
+	s.RefreshCache()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.allow) < 2 {
+		t.Fatalf("expected entries for both filtered devices, got %d", len(s.allow))
+	}
+	var first []string
+	for ip, got := range s.allow {
+		if first == nil {
+			first = got
+			continue
+		}
+		if !reflect.DeepEqual(first, got) {
+			t.Fatalf("PER-DEVICE ALLOW LISTS DETECTED at %s: %v vs %v.\n"+
+				"Keying this map by IP is only safe while every filtered device shares one list. "+
+				"If lists are now per-device, an IP mismatch can grant the WRONG list — "+
+				"re-key the map by MAC before shipping this.", ip, got, first)
+		}
 	}
 }
