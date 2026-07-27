@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/iulianfsdro/rpi-network-filter/internal/config"
+	"github.com/iulianfsdro/rpi-network-filter/internal/executor"
 )
 
 // TestGenerateConfig_V3Shape verifies the generated nftables ruleset has
@@ -57,5 +58,68 @@ func TestGenerateConfig_V3Shape(t *testing.T) {
 	// traffic is intercepted in prerouting, everything else is dropped.
 	if strings.Contains(out, "ether saddr 0c:29:8f:93:2a:08 accept") {
 		t.Errorf("filtered device must not have a forward-chain accept rule")
+	}
+}
+
+// The gate's job is to prove the car's :443 still lands in the SNI proxy.
+// A ruleset that kept `inet filter` but lost `ip nat` is a BYPASS, so the
+// forward policy alone is not sufficient evidence.
+func TestVerifyAcceptsInterceptedRuleset(t *testing.T) {
+	s := &FirewallService{cfg: config.Config{SNIProxyPort: 8444}}
+	nat := `table ip nat {
+	chain prerouting {
+		iifname "wlan0" ether saddr aa:bb:cc:dd:ee:ff tcp dport 443 redirect to :8444
+	}
+}`
+	fwd := `table inet filter {
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+}`
+	if err := s.verifyOutput(nat, fwd); err != nil {
+		t.Fatalf("a ruleset with the SNI redirect and a drop policy must verify: %v", err)
+	}
+}
+
+func TestVerifyRejectsMissingSNIRedirect(t *testing.T) {
+	s := &FirewallService{cfg: config.Config{SNIProxyPort: 8444}}
+	nat := `table ip nat {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+	}
+}`
+	fwd := `table inet filter {
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+}`
+	if err := s.verifyOutput(nat, fwd); err == nil {
+		t.Fatal("no SNI redirect means :443 never reaches the decision — must be rejected")
+	}
+}
+
+func TestVerifyRejectsAcceptPolicy(t *testing.T) {
+	s := &FirewallService{cfg: config.Config{SNIProxyPort: 8444}}
+	nat := `iifname "wlan0" ether saddr aa:bb:cc:dd:ee:ff tcp dport 443 redirect to :8444`
+	fwd := `chain forward { type filter hook forward priority filter; policy accept; }`
+	if err := s.verifyOutput(nat, fwd); err == nil {
+		t.Fatal("an accept-policy forward chain must be rejected")
+	}
+}
+
+func TestVerifyRejectsEmptyRuleset(t *testing.T) {
+	s := &FirewallService{cfg: config.Config{SNIProxyPort: 8444}}
+	if err := s.verifyOutput("", ""); err == nil {
+		t.Fatal("an empty ruleset must be rejected — no redirect, no forward chain, ip_forward=1")
+	}
+}
+
+func TestVerifyReadsFromNft(t *testing.T) {
+	// DryRun Run() returns an empty Result, i.e. no listing at all — exactly
+	// the "ruleset is not loaded" case.
+	exec := executor.New(true)
+	s := NewFirewallService(nil, exec, config.Config{SNIProxyPort: 8444})
+	if err := s.Verify(); err == nil {
+		t.Fatal("Verify must fail when nft returns nothing")
 	}
 }

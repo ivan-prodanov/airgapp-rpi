@@ -201,6 +201,50 @@ func (s *FirewallService) Apply() error {
 	return nil
 }
 
+// Verify asserts the kernel's CURRENT ruleset still routes the car's HTTPS into
+// the SNI proxy, and still default-denies everything else.
+//
+// The security decision lives in SNIProxyService, not here — but it only ever
+// gets to make that decision because prerouting REDIRECTs :443 into it. Lose
+// that one rule and :443 bypasses the proxy entirely, which is why this checks
+// the redirect and not merely the forward policy: a ruleset that kept
+// `inet filter` but lost `ip nat` would pass a forward-only check while being
+// a total bypass.
+//
+// And the forward policy matters because sysctl sets net.ipv4.ip_forward=1
+// unconditionally. The deny is not a kernel property; it exists only while a
+// table with `policy drop` is loaded. A failed nft -f, a manual
+// `nft flush ruleset`, or a missing /etc/nftables.conf on a cold boot all leave
+// the car forwarding freely, and nothing else in this daemon would notice.
+func (s *FirewallService) Verify() error {
+	nat, err := s.exec.Run("nft", "list", "chain", "ip", "nat", "prerouting")
+	if err != nil {
+		return fmt.Errorf("read nat prerouting: %w", err)
+	}
+	fwd, err := s.exec.Run("nft", "list", "chain", "inet", "filter", "forward")
+	if err != nil {
+		return fmt.Errorf("read forward chain: %w", err)
+	}
+	return s.verifyOutput(nat.Stdout, fwd.Stdout)
+}
+
+// verifyOutput is the pure half, so the parsing is testable without nft.
+func (s *FirewallService) verifyOutput(nat, fwd string) error {
+	if strings.TrimSpace(fwd) == "" {
+		return fmt.Errorf("nftables forward chain is absent — with ip_forward=1 nothing is stopping the car")
+	}
+	if !strings.Contains(fwd, "policy drop") {
+		return fmt.Errorf("nftables forward chain is not default-deny")
+	}
+	// The SNI interception: without this, :443 never reaches the proxy that
+	// makes the actual allow/deny decision.
+	redirect := fmt.Sprintf("redirect to :%d", s.cfg.SNIProxyPort)
+	if !strings.Contains(nat, redirect) {
+		return fmt.Errorf("nftables prerouting has no %q — the car's :443 would bypass the SNI proxy", redirect)
+	}
+	return nil
+}
+
 func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap deviceSnapshot) string {
 	var b strings.Builder
 

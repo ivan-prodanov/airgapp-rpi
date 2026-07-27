@@ -39,10 +39,23 @@ type HotspotService struct {
 	db   *sql.DB
 	exec *executor.Executor
 	mu   sync.Mutex
+
+	verifyFirewall func() error
+	applyFirewall  func() error
 }
 
 func NewHotspotService(db *sql.DB, exec *executor.Executor) *HotspotService {
 	return &HotspotService{db: db, exec: exec}
+}
+
+// SetFirewallGate installs the airgap gate. Wired in services.New from
+// FirewallService.Verify / .Apply. Kept as funcs rather than a service
+// reference so hotspot_test can prove the refusal path without a database.
+func (s *HotspotService) SetFirewallGate(verify func() error, apply func() error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.verifyFirewall = verify
+	s.applyFirewall = apply
 }
 
 func (s *HotspotService) Apply() error {
@@ -130,9 +143,31 @@ func (s *HotspotService) Apply() error {
 // and restarts. This is called automatically by the lock watcher, potentially
 // many times a day, and an automatic path that can rewrite the AP's config is a
 // way to lose the AP permanently. This one can only change run state.
+//
+// Raising the AP is gated on the firewall being verifiably default-deny;
+// LOWERING it never is. That asymmetry is the whole point — a firewall fault
+// must not be able to leave the car online.
 func (s *HotspotService) SetEnabled(up bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if up && s.verifyFirewall != nil {
+		if err := s.verifyFirewall(); err != nil {
+			log.Printf("[HOTSPOT] firewall gate FAILED (%v) — reapplying before considering the AP", err)
+			if s.applyFirewall != nil {
+				if aerr := s.applyFirewall(); aerr != nil {
+					log.Printf("[HOTSPOT] firewall reapply failed: %v", aerr)
+				}
+			}
+			if err := s.verifyFirewall(); err != nil {
+				// REFUSE. An offline car is recoverable; a car that reached
+				// Tesla is not.
+				log.Printf("[HOTSPOT] REFUSING to raise the AP — firewall still unverified: %v", err)
+				return fmt.Errorf("refusing to start hostapd over an unverified firewall: %w", err)
+			}
+			log.Printf("[HOTSPOT] firewall gate satisfied after reapply")
+		}
+	}
 
 	action := "stop"
 	if up {

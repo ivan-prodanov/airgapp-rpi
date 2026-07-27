@@ -38,13 +38,18 @@ func New(db *sql.DB, exec *executor.Executor, cfg config.Config) *Services {
 	// VIN resolves lazily inside Open when empty, so an unconfigured Pi
 	// still constructs cleanly and simply never attaches.
 	lockWatch := NewLockWatchService(bleSession, "")
+
+	firewall := NewFirewallService(db, exec, cfg)
+	hotspot := NewHotspotService(db, exec)
+	hotspot.SetFirewallGate(firewall.Verify, firewall.Apply)
+
 	return &Services{
 		Auth:       NewAuthService(db),
 		Network:    network,
-		Firewall:   NewFirewallService(db, exec, cfg),
+		Firewall:   firewall,
 		DNS:        NewDNSService(db, exec, cfg),
 		Bandwidth:  NewBandwidthService(db, exec, cfg),
-		Hotspot:    NewHotspotService(db, exec),
+		Hotspot:    hotspot,
 		System:     NewSystemService(exec, cfg),
 		Audit:      audit,
 		TrafficLog: trafficLog,
