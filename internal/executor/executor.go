@@ -32,10 +32,19 @@ type Result struct {
 	ExitCode int
 }
 
-// record keeps every invocation so service tests can assert on what was run
-// rather than on a bare nil error. Always on — the slice is tiny and only ever
-// grows within a single test or a single ApplyAll.
+// record keeps invocations so service tests can assert on what was run rather
+// than on a bare nil error.
+//
+// DryRun ONLY. This Executor is a process-lifetime singleton shared by every
+// service (cmd/netfilterd/main.go constructs exactly one), and the dashboard
+// polls system info + connectivity every 10s — so recording in production
+// would append ~4 strings every 10s, forever, on a Raspberry Pi. The real path
+// already logs each command to journald via the [EXEC] line, so nothing is
+// lost by not recording there.
 func (e *Executor) record(cmdStr string) {
+	if !e.DryRun {
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.recorded = append(e.recorded, cmdStr)
