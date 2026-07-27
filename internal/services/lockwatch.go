@@ -45,6 +45,15 @@ type LockWatchStatus struct {
 // passer-by leaves the AP up forever. Well under the 3-minute lease.
 const defaultSettleTick = 30 * time.Second
 
+// maxRetryBackoff caps supervise's exponential backoff after consecutive
+// attachAndPump failures. It is a bound on how much of the BLE adapter's time
+// a background observer may consume: no matter how long the car stays
+// unreachable, the watcher's own retries settle down to at most one attempt
+// every maxRetryBackoff, rather than hammering the adapter (and blocking the
+// phone's command path behind it — see supervise) at a fixed short cadence
+// forever.
+const maxRetryBackoff = 5 * time.Minute
+
 type LockWatchService struct {
 	src sessionSource
 	vin string
@@ -286,26 +295,62 @@ func (s *LockWatchService) resettleLoop() {
 }
 
 // supervise keeps exactly one subscription alive for the process lifetime.
+//
+// The retry delay backs off exponentially on consecutive attachAndPump
+// failures (capped at maxRetryBackoff), and resets to the base s.retryDelay
+// the moment an attempt succeeds. This is mitigation for a ctx-blind lock
+// upstream, not a fix for it: attachAndPump's Open path reaches
+// TeslaService.AcquireBLEForVIN, which takes bleMu with a plain blocking
+// Lock() that ignores ctx (internal/services/tesla.go, AcquireBLEForVIN) and
+// holds it through a BLE scan bounded by teslaScanTimeout (15s). A concurrent
+// phone-driven Open cannot preempt a session still mid-scan —
+// BLESessionService.preemptExisting (internal/services/tesla_session.go) only
+// preempts sessions already registered in its map — so it blocks behind us
+// for that whole scan instead. At a flat retry cadence, a car that stays
+// unreachable would repeat that stall roughly every retryDelay forever, on
+// top of whatever the phone is trying to do. Backing off bounds how often a
+// background observer can do that to the phone's command path; it does not
+// touch bleMu or session registration (see BLESessionService.Open's comment
+// about the same ctx-blind mutex causing 5-minute on-car outages) — actually
+// fixing the lock is out of scope here because it touches the car's command
+// path.
+//
+// delay is a plain local variable, not a struct field: it belongs entirely to
+// this goroutine, so it needs no lock and can never be read inconsistently.
 func (s *LockWatchService) supervise() {
+	delay := s.retryDelay
 	for {
 		select {
 		case <-s.stop:
 			return
 		default:
 		}
-		s.attachAndPump()
+		if s.attachAndPump() {
+			delay = s.retryDelay
+		} else {
+			delay *= 2
+			if delay > maxRetryBackoff {
+				delay = maxRetryBackoff
+			}
+		}
 		select {
 		case <-s.stop:
 			return
-		case <-time.After(s.retryDelay):
+		case <-time.After(delay):
 		}
 	}
 }
 
-// attachAndPump subscribes to the live session (opening one if none exists) and
-// consumes frames until the channel closes. Returns on any failure; the caller
-// retries after retryDelay.
-func (s *LockWatchService) attachAndPump() {
+// attachAndPump subscribes to the live session (opening one if none exists)
+// and consumes frames until the channel closes. Returns on any failure; the
+// caller (supervise) retries after a delay that grows on repeated failure.
+//
+// The bool result reports whether this attempt achieved anything: true once
+// Subscribe has succeeded, regardless of how the pump subsequently ends
+// (Stop, the channel closing) — false for both early-return failure paths
+// (Open failed, Subscribe failed). supervise uses this alone to decide
+// whether to reset or grow its retry delay.
+func (s *LockWatchService) attachAndPump() (subscribed bool) {
 	// FIRST STATEMENT, deliberately: every exit from this function — Open
 	// failing, Subscribe failing, the channel closing, Stop — must leave the
 	// gate empty and therefore the AP up. Registering it only after a
@@ -348,6 +393,11 @@ func (s *LockWatchService) attachAndPump() {
 		return
 	}
 	defer s.src.Unsubscribe(id, subID)
+
+	// Subscribe succeeded: this attempt counts as achieving something no
+	// matter how the pump below eventually exits (Stop, the channel
+	// closing) — set it now, once, rather than at every exit point below.
+	subscribed = true
 
 	s.mu.Lock()
 	s.sessionID = id

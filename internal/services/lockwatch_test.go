@@ -21,6 +21,11 @@ type fakeSessionSource struct {
 	opens   int
 	subbed  int
 	unsubbd int
+	// openTimes records the wall-clock instant of each Open call, in call
+	// order. Backoff tests read this (via openTimestamps) to observe the GAP
+	// between consecutive attach attempts, rather than reaching into any
+	// LockWatchService internals — this is purely a test fixture.
+	openTimes []time.Time
 }
 
 func (f *fakeSessionSource) CurrentSession() (string, bool) {
@@ -36,6 +41,7 @@ func (f *fakeSessionSource) Open(ctx context.Context, vin string) (*BLESession, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.opens++
+	f.openTimes = append(f.openTimes, time.Now())
 	if f.openErr != nil {
 		return nil, f.openErr
 	}
@@ -67,6 +73,14 @@ func (f *fakeSessionSource) counts() (opens, subbed, unsubbd int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.opens, f.subbed, f.unsubbd
+}
+
+// openTimestamps returns a snapshot of every Open call's timestamp so far,
+// in call order.
+func (f *fakeSessionSource) openTimestamps() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]time.Time(nil), f.openTimes...)
 }
 
 // frames hands the test the channel the service is pumping, so a test can feed
@@ -532,4 +546,79 @@ func TestConcurrentMutatorsLastEnforcerCallMatchesFinalState(t *testing.T) {
 	if got != want {
 		t.Fatalf("last enforcer call = %v, want %v (Status().APShouldBeUp) — the last actuator call must always match the final state", got, want)
 	}
+}
+
+// The finding this pins: a watcher retrying at a FIXED cadence while the car
+// is unreachable would, every retryDelay, race a phone Open against
+// attachAndPump's Open — which reaches AcquireBLEForVIN's ctx-blind bleMu.Lock()
+// (internal/services/tesla.go) and can hold it through a full teslaScanTimeout
+// scan before a still-registering session can be preempted
+// (BLESessionService.preemptExisting, internal/services/tesla_session.go).
+// The fix is exponential backoff on consecutive attachAndPump failures, so a
+// permanently-unreachable car is retried less and less often rather than
+// forever at the same short cadence. This test proves the delay GROWS across
+// consecutive failures — not merely that retries happen — by observing the
+// real gaps between Open call timestamps, without exposing any backoff state
+// on LockWatchService itself.
+func TestSuperviseBacksOffOnConsecutiveFailures(t *testing.T) {
+	f := &fakeSessionSource{openErr: errors.New("scan timeout")}
+	s := NewLockWatchService(f, "VIN0")
+	s.retryDelay = 40 * time.Millisecond
+	s.Start()
+	defer s.Stop()
+
+	const wantAttempts = 5
+	waitFor(t, 5*time.Second, "enough failed attach attempts to observe backoff", func() bool {
+		return len(f.openTimestamps()) >= wantAttempts
+	})
+
+	times := f.openTimestamps()
+	if len(times) < wantAttempts {
+		t.Fatalf("got %d attempts, want at least %d", len(times), wantAttempts)
+	}
+	times = times[:wantAttempts]
+
+	// gaps[i] is the wait that preceded attempt i+1 — i.e. the backoff delay
+	// supervise computed after attempt i failed.
+	gaps := make([]time.Duration, 0, len(times)-1)
+	for i := 1; i < len(times); i++ {
+		gaps = append(gaps, times[i].Sub(times[i-1]))
+	}
+
+	// Each gap must be clearly larger than the one before it. True doubling
+	// (the implemented behaviour) clears a 1.5x bar with room to spare; a
+	// regression back to a flat retryDelay (ratio ~1.0) fails it outright.
+	// Tolerant of scheduler jitter, not tolerant of "not growing".
+	for i := 1; i < len(gaps); i++ {
+		min := gaps[i-1] * 3 / 2
+		if gaps[i] <= min {
+			t.Fatalf("gaps = %v — gap[%d]=%v is not clearly larger than gap[%d]=%v; backoff does not appear to be growing", gaps, i, gaps[i], i-1, gaps[i-1])
+		}
+	}
+}
+
+// Companion to the backoff-growth test: a background observer's exponential
+// backoff must never make shutdown sluggish. Once several consecutive
+// failures have grown the retry delay well past retryDelay, Stop() must still
+// return promptly — the select on s.stop in supervise's retry-wait (and the
+// one at the top of its loop) must win over an in-flight multi-second
+// time.After, exactly as it already does for the un-backed-off delay.
+func TestStopReturnsPromptlyDuringABackedOffSleep(t *testing.T) {
+	f := &fakeSessionSource{openErr: errors.New("scan timeout")}
+	s := NewLockWatchService(f, "VIN0")
+	s.retryDelay = 50 * time.Millisecond
+	s.Start()
+
+	// Let enough consecutive failures accumulate that the pending backoff
+	// sleep is comfortably longer (by 2026-07-27's doubling: 50ms * 2^5 =
+	// 1.6s+ by the 6th attempt) than the prompt-return bound checked below —
+	// so this genuinely exercises interrupting a BACKED-OFF sleep, not just
+	// the base retryDelay.
+	waitFor(t, 5*time.Second, "the backoff to grow past a comfortably long bound", func() bool {
+		return len(f.openTimestamps()) >= 6
+	})
+
+	mustReturnWithin(t, 300*time.Millisecond, "Stop() during a backed-off sleep", func() {
+		s.Stop()
+	})
 }
