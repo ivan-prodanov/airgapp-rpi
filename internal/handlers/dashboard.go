@@ -2,10 +2,32 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/iulianfsdro/rpi-network-filter/internal/services"
 )
+
+// compactAge renders an age for a one-line stat row: a single unit, no
+// zero-valued tail. time.Duration's own String gives "9h0m0s" for nine hours,
+// which is three units of noise in a row that has to read at a glance. A
+// negative age (a clock step between the two reads) renders as "0s" rather
+// than as a minus sign nobody can interpret.
+func compactAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		if d < 0 {
+			d = 0
+		}
+		return strconv.Itoa(int(d.Seconds())) + "s"
+	case d < time.Hour:
+		return strconv.Itoa(int(d.Minutes())) + "m"
+	case d < 24*time.Hour:
+		return strconv.Itoa(int(d.Hours())) + "h"
+	default:
+		return strconv.Itoa(int(d.Hours()/24)) + "d"
+	}
+}
 
 type DashboardHandler struct {
 	svc      *services.Services
@@ -75,9 +97,22 @@ func (h *DashboardHandler) API(w http.ResponseWriter, r *http.Request) {
 	// four rows above (Unknown / Unknown / Should be UP / never). The watcher
 	// sets SessionID only after Subscribe succeeds and clears it on every exit
 	// path, so it is exactly "are we attached right now".
+	//
+	// "Attached" alone still under-reports, though: it reads the same after two
+	// seconds of a healthy quiet link as after nine hours of a link that has
+	// said nothing. Age + frame count separate them — "Attached 2s · 0 frames"
+	// is normal, "Attached 9h · 0 frames" is a car that has almost certainly
+	// gone. Both come from the current attachment and are cleared with it.
 	linkText := "Not attached"
 	if lw.SessionID != "" {
 		linkText = "Attached"
+		if !lw.AttachedSince.IsZero() {
+			linkText += " " + compactAge(time.Since(lw.AttachedSince))
+		}
+		linkText += " · " + strconv.Itoa(lw.FramesSeen) + " frame"
+		if lw.FramesSeen != 1 {
+			linkText += "s"
+		}
 	}
 
 	JSON(w, http.StatusOK, map[string]any{

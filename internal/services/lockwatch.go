@@ -31,13 +31,24 @@ type sessionSource interface {
 }
 
 // LockWatchStatus is the read-only snapshot the UI and API render.
+//
+// AttachedSince and FramesSeen describe the CURRENT attachment only, and exist
+// because "attached" on its own is not a diagnosis. "Attached / Last signal:
+// never" is the same string whether the link came up two seconds ago and the
+// car simply has not spoken yet, or the link came up nine hours ago and has
+// been dead for most of them. AttachedSince + FramesSeen separate those: the
+// first case reads "Attached 2s · 0 frames", the second "Attached 9h · 0
+// frames", and only the second is alarming. Both are cleared by
+// noteSessionLost along with the rest of the attachment's state.
 type LockWatchStatus struct {
-	HaveStatus   bool      `json:"have_status"`
-	Locked       bool      `json:"locked"`
-	Present      bool      `json:"present"`
-	APShouldBeUp bool      `json:"ap_should_be_up"`
-	LastSignal   time.Time `json:"last_signal"`
-	SessionID    string    `json:"session_id"`
+	HaveStatus    bool      `json:"have_status"`
+	Locked        bool      `json:"locked"`
+	Present       bool      `json:"present"`
+	APShouldBeUp  bool      `json:"ap_should_be_up"`
+	LastSignal    time.Time `json:"last_signal"`
+	SessionID     string    `json:"session_id"`
+	AttachedSince time.Time `json:"attached_since"`
+	FramesSeen    int       `json:"frames_seen"`
 }
 
 // defaultSettleTick is how often the verdict is recomputed with no new signal.
@@ -74,7 +85,45 @@ const maxRetryBackoff = 5 * time.Minute
 // 60s is comfortably under bleSessionTTL: several ticks are missed before the
 // reaper could fire, so one descheduled tick is not a lost session, while the
 // touch itself is a mutex and a clock read.
+//
+// The keepalive is BOUNDED by defaultMaxSilence — see there for why touching
+// unconditionally is worse than not touching at all.
 const defaultKeepaliveTick = 60 * time.Second
+
+// defaultMaxSilence is how long an attachment may go without receiving a
+// single frame before the keepalive gives up on it and lets the reaper collect
+// the session.
+//
+// This bound is not an optimisation, it is what keeps the watcher able to
+// notice a dead link at all. The keepalive above defeats the reaper by design:
+// with a 60s tick the session's idle time never reaches bleSessionTTL. But the
+// reaper is the ONLY thing that ends a wedged pump. attachAndPump exits on
+// s.stop or on the subscriber channel closing, and for a real BLE link that
+// channel is closed only by shutdownPump, reached only from stopPump, reached
+// only from Close() and reaper() — the vendored SDK's *ble.Connection.Close()
+// does not close its inbox, so conn.Receive() never closes on its own (see
+// runPump's header in tesla_session.go). Touch unconditionally and a link that
+// simply dies produces no exit anywhere: the session, the "Attached"
+// indicator, and bleMu persist forever; supervise never retries because
+// attachAndPump never returns; and the deferred noteSessionLost — which is the
+// entire fail-open mechanism, "BLE loss → AP up" — never runs, so a verdict of
+// locked+empty could hold the AP down indefinitely with no link left to change
+// it. That is the stranded-car outcome. Bounding the keepalive on liveness
+// restores the whole chain: stop touching → reaper collects within
+// bleSessionTTL → pump closes → attachAndPump returns → fail open + retry.
+//
+// 30 minutes is deliberately generous, not tuned. A tight bound cannot be
+// chosen yet because nobody knows how often a parked car actually pushes on an
+// idle link — that is precisely what this observe-only deployment is being run
+// to measure, and a bound shorter than the real idle-push interval would
+// manufacture the reconnect churn the keepalive was added to remove (and with
+// it the reconnect-triggered pushes that would corrupt the measurement). It
+// only has to be shorter than "forever". The price of being generous is
+// bounded and small: the dashboard can be wrong for at most maxSilence +
+// bleSessionTTL (~35 min) instead of indefinitely, and a healthy but silent car
+// reconnects at most once per ~35 min instead of every 5. Once the measurement
+// says how chatty an idle car really is, this can come down.
+const defaultMaxSilence = 30 * time.Minute
 
 type LockWatchService struct {
 	src sessionSource
@@ -95,13 +144,20 @@ type LockWatchService struct {
 	lastSignal time.Time
 	sessionID  string
 	enforcer   func(up bool)
+	// attachedSince and framesSeen describe the CURRENT attachment: set when
+	// Subscribe succeeds, cleared by noteSessionLost. Reported by Status so
+	// "Attached" can be told apart from "attached ages ago and probably dead".
+	attachedSince time.Time
+	framesSeen    int
 
-	// retryDelay, settleTick and keepaliveTick are read by the goroutines Start
-	// launches WITHOUT holding a lock. That is safe only because they are
-	// written once, at construction, and (in tests) before Start — never after.
+	// retryDelay, settleTick, keepaliveTick and maxSilence are read by the
+	// goroutines Start launches WITHOUT holding a lock. That is safe only
+	// because they are written once, at construction, and (in tests) before
+	// Start — never after.
 	retryDelay    time.Duration
 	settleTick    time.Duration
 	keepaliveTick time.Duration
+	maxSilence    time.Duration
 
 	stop      chan struct{}
 	stopOnce  sync.Once
@@ -117,6 +173,7 @@ func NewLockWatchService(src sessionSource, vin string) *LockWatchService {
 		retryDelay:    10 * time.Second,
 		settleTick:    defaultSettleTick,
 		keepaliveTick: defaultKeepaliveTick,
+		maxSilence:    defaultMaxSilence,
 		stop:          make(chan struct{}),
 		done:          make(chan struct{}),
 	}
@@ -165,12 +222,14 @@ func (s *LockWatchService) Status() LockWatchStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return LockWatchStatus{
-		HaveStatus:   s.gate.HaveStatus,
-		Locked:       s.gate.Locked,
-		Present:      s.gate.Present,
-		APShouldBeUp: s.gate.APShouldBeUp(time.Now()),
-		LastSignal:   s.lastSignal,
-		SessionID:    s.sessionID,
+		HaveStatus:    s.gate.HaveStatus,
+		Locked:        s.gate.Locked,
+		Present:       s.gate.Present,
+		APShouldBeUp:  s.gate.APShouldBeUp(time.Now()),
+		LastSignal:    s.lastSignal,
+		SessionID:     s.sessionID,
+		AttachedSince: s.attachedSince,
+		FramesSeen:    s.framesSeen,
 	}
 }
 
@@ -207,11 +266,17 @@ func (s *LockWatchService) ReportExternal(locked, present bool, now time.Time) {
 // Should be UP / 4s ago" reads as a car that just told us something we somehow
 // know nothing about. Zeroing it renders "never", which is the truth — we have
 // heard nothing since we still had a link.
+//
+// attachedSince and framesSeen go with it for the same reason: they describe
+// an attachment that no longer exists, and leaving them set would let the
+// dashboard report an age and a frame count for a link that is gone.
 func (s *LockWatchService) noteSessionLost() {
 	s.mu.Lock()
 	s.gate = GateState{}
 	s.sessionID = ""
 	s.lastSignal = time.Time{}
+	s.attachedSince = time.Time{}
+	s.framesSeen = 0
 	s.mu.Unlock()
 	s.settle(time.Now())
 }
@@ -430,16 +495,50 @@ func (s *LockWatchService) attachAndPump() (subscribed bool) {
 	// closing) — set it now, once, rather than at every exit point below.
 	subscribed = true
 
+	attachedAt := time.Now()
 	s.mu.Lock()
 	s.sessionID = id
+	s.attachedSince = attachedAt
+	s.framesSeen = 0
 	s.mu.Unlock()
 	log.Printf("[LOCKWATCH] attached to session %s", id)
+
+	// Log the attachment's frame count on the way out. This is the deployment's
+	// primary evidence, not decoration: if pushes cluster right after each
+	// attach and then stop, "the car only answers a fresh GATT connect" and
+	// "the car pushes on an idle link" are distinguishable in journalctl
+	// without instrumenting anything else. Registered AFTER the deferred
+	// noteSessionLost, so it runs BEFORE it — noteSessionLost zeroes exactly
+	// the counters being reported.
+	defer func() {
+		s.mu.Lock()
+		n := s.framesSeen
+		s.mu.Unlock()
+		log.Printf("[LOCKWATCH] detached from session %s after %v, %d frames seen",
+			id, time.Since(attachedAt).Truncate(time.Second), n)
+	}()
 
 	// Keepalive. The session's idle clock is otherwise only refreshed by
 	// Exchange, which is the phone's path, not ours — see defaultKeepaliveTick
 	// for why an un-touched watcher session is reaped every bleSessionTTL and
 	// why that ruins both the link and the measurement. Touching on each frame
 	// covers a talkative car; the ticker covers a silent one.
+	//
+	// The ticker is BOUNDED by s.maxSilence: it refreshes the idle clock only
+	// while frames are still arriving on a human-ish timescale. Touching
+	// unconditionally would defeat the reaper permanently, and the reaper is
+	// the only thing that can end this pump when the link dies — see
+	// defaultMaxSilence for the full chain, up to and including the AP staying
+	// down with no link left to raise it. Once the bound is exceeded the tick
+	// simply does nothing, lastUsed goes stale, and the reaper closes the
+	// session within bleSessionTTL — which closes ch, returns from here, and
+	// runs the deferred noteSessionLost that fails open.
+	//
+	// lastFrame is a plain local, like supervise's delay: it belongs to this
+	// goroutine alone (framesSeen is the shared copy, and it exists for the UI,
+	// not for this decision), so it needs no lock and cannot be read
+	// inconsistently. It starts at the attach instant, so a session that never
+	// says anything at all is bounded from the moment we attached.
 	//
 	// Holding the session indefinitely is the intent, not a leak: a phone Open
 	// preempts us (newest wins), whereupon this pump's channel closes and
@@ -451,22 +550,43 @@ func (s *LockWatchService) attachAndPump() (subscribed bool) {
 	// keepalive can never delay shutdown by more than the touch itself.
 	ka := time.NewTicker(s.keepaliveTick)
 	defer ka.Stop()
+	lastFrame := attachedAt
+	warnedSilent := false
 
 	for {
 		select {
 		case <-s.stop:
 			return
 		case <-ka.C:
+			if silence := time.Since(lastFrame); silence >= s.maxSilence {
+				// Log once per attachment, not once per tick: this is a
+				// deliberate hand-off to the reaper, and it should be findable
+				// in the journal without drowning it.
+				if !warnedSilent {
+					warnedSilent = true
+					log.Printf("[LOCKWATCH] session %s silent for %v (>= %v) — releasing it to the reaper",
+						id, silence.Round(time.Millisecond), s.maxSilence)
+				}
+				continue
+			}
 			s.src.Touch(id)
 		case frame, open := <-ch:
 			if !open {
 				log.Printf("[LOCKWATCH] session %s closed", id)
 				return
 			}
+			now := time.Now()
+			lastFrame = now
+			warnedSilent = false
+			s.mu.Lock()
+			s.framesSeen++
+			s.mu.Unlock()
 			// Before Ingest, not after: Ingest blocks for the whole enforcer
 			// call when it settles, and the point of touching is the clock.
+			// Also outside the mu section above — Touch takes the session
+			// service's own lock, and no lockwatch lock may be held across it.
 			s.src.Touch(id)
-			s.Ingest(frame, time.Now())
+			s.Ingest(frame, now)
 		}
 	}
 }

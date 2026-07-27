@@ -2,29 +2,17 @@
 //
 // What's left here after the Phase 4 / Thread A purge:
 //
-//   - PairingInfo  — GET  /api/ble/pair                — returns VIN +
-//     paired flag +
-//     (legacy) Pi
-//     pubkey if it
-//     happens to be
-//     on disk.
-//   - SetVIN       — PUT  /api/ble/vin                — operator sets
-//     the 17-char VIN
-//     so the BLE
-//     scanner knows
-//     what to look
-//     for.
-//   - PairExternalPubkey — POST /api/ble/pair/external-pubkey —
-//     ships a client's public key over BLE so the
-//     car's keychain learns about it. The
+//   - PairingInfo — GET /api/ble/pair — returns the VIN, the paired flag, and
+//     (legacy) the Pi pubkey if it happens to be on disk.
+//   - SetVIN — PUT /api/ble/vin — operator sets the 17-char VIN so the BLE
+//     scanner knows what to look for.
+//   - PairExternalPubkey — POST /api/ble/pair/external-pubkey — ships a
+//     client's public key over BLE so the car's keychain learns about it. The
 //     operator finishes by tapping the NFC card.
-//   - CommandLog   — GET  /api/ble/log                — audit trail
-//     (mostly idle
-//     until Thread C
+//   - CommandLog — GET /api/ble/log — audit trail (mostly idle until Thread C
 //     wires names).
-//   - State        — STUB. Client uses /pair for connectivity check;
-//     Thread C will replace this with proper
-//     client-side state reads through the byte
+//   - State — STUB. Client uses /pair for connectivity check; Thread C will
+//     replace this with proper client-side state reads through the byte
 //     forwarder.
 //
 // The token-management endpoints (ListTokens / IssueToken / RevokeToken)

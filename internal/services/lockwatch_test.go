@@ -653,6 +653,141 @@ func TestWatcherKeepsAQuietSessionAlive(t *testing.T) {
 	}
 }
 
+// The critical finding this pins, and the reason the keepalive above is
+// BOUNDED. Touching unconditionally defeats the reaper permanently (idle never
+// reaches bleSessionTTL), and the reaper is the only thing that can end
+// attachAndPump when a link dies: the vendored SDK never closes conn.Receive()
+// for BLE, so the subscriber channel closes only via stopPump, reachable only
+// from Close() and reaper(). Defeat the reaper and a dead link produces no exit
+// at all — the pump, the "Attached" indicator and bleMu persist forever,
+// supervise never retries, and the deferred noteSessionLost (the entire
+// "BLE loss → fail open → AP up" mechanism) never runs.
+//
+// So: with NOTHING arriving, the watcher must stop touching once the silence
+// passes maxSilence, and leave the session for the reaper.
+//
+// The assertion is that the touch count FREEZES — polled across many further
+// ticks — rather than that it is merely small at one instant, so a regression
+// to unconditional touching cannot pass by being briefly slow. maxSilence and
+// the tick are shortened to keep it fast; the real values are 30 min / 60 s.
+func TestKeepaliveStopsTouchingAfterMaxSilence(t *testing.T) {
+	f := &fakeSessionSource{id: "phone-session"}
+	s := NewLockWatchService(f, "VIN0")
+	s.retryDelay = time.Hour // the attach succeeds; keep the retry loop out of it
+	s.keepaliveTick = 5 * time.Millisecond
+	s.maxSilence = 150 * time.Millisecond
+	s.Start()
+	defer s.Stop()
+
+	waitFor(t, 2*time.Second, "the watcher to attach", func() bool {
+		_, subbed, _ := f.counts()
+		return subbed >= 1
+	})
+
+	// While inside the bound the keepalive must actually be running — so a
+	// "froze" verdict below cannot be satisfied by never having touched at all.
+	waitFor(t, 2*time.Second, "keepalive touches while inside the silence bound", func() bool {
+		return len(f.touchedIDs()) >= 3
+	})
+
+	// And then it must stop. Each probe waits 20 keepalive ticks and asks
+	// whether a single touch happened in that window; unconditional touching
+	// answers "yes" every time and this times out.
+	waitFor(t, 3*time.Second, "the keepalive to stop touching a permanently silent session", func() bool {
+		before := len(f.touchedIDs())
+		time.Sleep(20 * s.keepaliveTick)
+		return len(f.touchedIDs()) == before
+	})
+
+	if got := len(f.touchedIDs()); got < 3 {
+		t.Fatalf("touches = %d, want at least 3 before the bound elapsed — the count froze because the keepalive never ran, not because it stopped", got)
+	}
+}
+
+// The other half of the property: the bound is on SILENCE, not on attachment
+// age. A car that is actually pushing must keep its session alive indefinitely,
+// so every frame resets the clock. A regression that anchors the bound on the
+// attach instant instead would hand a chatty, healthy link to the reaper every
+// maxSilence.
+//
+// Frames themselves also touch, so the assertion window is deliberately placed
+// AFTER the last frame is fed: every touch counted there is a keepalive touch,
+// and it happens well past maxSilence since the attach.
+func TestFramesResetTheSilenceBound(t *testing.T) {
+	f := &fakeSessionSource{id: "phone-session"}
+	s := NewLockWatchService(f, "VIN0")
+	s.retryDelay = time.Hour
+	s.keepaliveTick = 10 * time.Millisecond
+	s.maxSilence = 200 * time.Millisecond
+	s.Start()
+	defer s.Stop()
+
+	waitFor(t, 2*time.Second, "the watcher to attach", func() bool {
+		_, subbed, _ := f.counts()
+		return subbed >= 1
+	})
+	ch := f.frames()
+
+	// Keep talking for several times maxSilence, at half the bound — a car that
+	// pushes comfortably inside the window.
+	until := time.Now().Add(4 * s.maxSilence)
+	for time.Now().Before(until) {
+		ch <- activityFrame(t)
+		time.Sleep(s.maxSilence / 2)
+	}
+
+	// The last frame landed just now, so we are inside the bound again even
+	// though the attachment is ~4x maxSilence old. Keepalive touches must
+	// therefore still be happening.
+	before := len(f.touchedIDs())
+	waitFor(t, s.maxSilence/2, "keepalive touches to continue past maxSilence on a session that has been receiving frames", func() bool {
+		return len(f.touchedIDs())-before >= 3
+	})
+}
+
+// The dashboard's honesty depends on these two: "Attached" alone reads the same
+// after two seconds of a healthy quiet link as after nine hours of a dead one.
+// They must be set for the CURRENT attachment and cleared with it — a stale age
+// or frame count outliving its link is the same class of lie.
+//
+// FramesSeen counts frames RECEIVED, not frames decoded: the deployment is
+// measuring whether the car pushes anything at all on an idle link, so an
+// undecodable frame is still evidence of a live link and is counted here on
+// purpose.
+func TestAttachedSinceAndFramesSeenTrackTheAttachment(t *testing.T) {
+	f := &fakeSessionSource{id: "phone-session"}
+	s := NewLockWatchService(f, "VIN0")
+	s.retryDelay = 5 * time.Second // long enough that a re-attach cannot race the assertions
+	s.Start()
+	defer s.Stop()
+
+	waitFor(t, 2*time.Second, "the watcher to attach", func() bool {
+		return s.Status().SessionID != ""
+	})
+	st := s.Status()
+	if st.AttachedSince.IsZero() {
+		t.Fatal("AttachedSince must be set the moment the subscription succeeds")
+	}
+	if st.FramesSeen != 0 {
+		t.Fatalf("FramesSeen = %d at attach time, want 0", st.FramesSeen)
+	}
+
+	ch := f.frames()
+	ch <- lockedEmptyFrame(t)
+	ch <- activityFrame(t)
+	ch <- []byte{0xde, 0xad, 0xbe, 0xef} // still a frame; still evidence of a link
+	waitFor(t, 2*time.Second, "every received frame to be counted", func() bool {
+		return s.Status().FramesSeen == 3
+	})
+
+	close(ch) // the link drops
+
+	waitFor(t, 2*time.Second, "the attachment counters to clear with the session", func() bool {
+		st := s.Status()
+		return st.SessionID == "" && st.FramesSeen == 0 && st.AttachedSince.IsZero()
+	})
+}
+
 // Companion to the backoff-growth test: a background observer's exponential
 // backoff must never make shutdown sluggish. Once several consecutive
 // failures have grown the retry delay well past retryDelay, Stop() must still
