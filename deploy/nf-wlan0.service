@@ -7,7 +7,13 @@ Before=hostapd.service dnsmasq.service netfilterd.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Unblock both radios before netfilterd starts. The BCM43455 hosts WiFi and BLE;
+# systemd-rfkill restores a saved soft-block on every boot, so the bluetooth
+# unblock in setup.sh (provision time) does not survive a reboot. Without this,
+# netfilterd's BLE forwarder fails every session with "operation not possible
+# due to RF-kill" (502) even though the Pi is otherwise healthy.
 ExecStartPre=-/usr/sbin/rfkill unblock wifi
+ExecStartPre=-/usr/sbin/rfkill unblock bluetooth
 ExecStartPre=-/usr/bin/nmcli device set wlan0 managed no
 ExecStart=/sbin/ip addr flush dev wlan0
 ExecStart=/sbin/ip addr add 192.168.4.1/24 dev wlan0
