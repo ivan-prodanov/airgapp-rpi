@@ -40,8 +40,14 @@ type SNIProxyService struct {
 	// fixture instead of writing to /var/lib.
 	leases func() map[string][]string
 
-	mu    sync.RWMutex
-	allow map[string][]string // client IP -> allowed domain suffixes
+	// arp returns the live IP→MAC map (upper-case MAC) from the kernel ARP
+	// table, restricted to the LAN interface — the fallback resolver for a
+	// client not yet in the lease table. Injectable for the same reason.
+	arp func() map[string]string
+
+	mu       sync.RWMutex
+	suffixes []string        // GLOBAL allow-list, shared by every filtered device
+	filtered map[string]bool // upper-case MAC -> is a status='filtered' device
 }
 
 func NewSNIProxyService(cfg config.Config, db *sql.DB, trafficLog *TrafficLogService) *SNIProxyService {
@@ -49,22 +55,29 @@ func NewSNIProxyService(cfg config.Config, db *sql.DB, trafficLog *TrafficLogSer
 		cfg:        cfg,
 		db:         db,
 		trafficLog: trafficLog,
-		allow:      map[string][]string{},
+		filtered:   map[string]bool{},
 		dial: func(network, addr string) (net.Conn, error) {
 			return net.DialTimeout(network, addr, 10*time.Second)
 		},
 		leases: currentLeasedIPsByMAC,
+		arp:    func() map[string]string { return currentARPByIP(cfg.LANInterface) },
 	}
 }
 
-// RefreshCache rebuilds the client-IP → allowed-suffixes map. The allow
-// list is GLOBAL — the union of filter_domains.enabled=1 across every
-// filter with its own enabled=1 toggle. Every device with status='filtered'
-// gets the same suffixes; open devices are absent from the map (their
-// :443 is never redirected here); blocked and unknown devices are also
-// absent (they hit the forward-chain default drop).
+// RefreshCache rebuilds the two things the connection-time allow decision
+// needs: the GLOBAL allow-list (the union of filter_domains.enabled=1 across
+// every filter with its own enabled=1 toggle) and the set of status='filtered'
+// device MACs.
+//
+// It deliberately does NOT snapshot IP→device membership. That is resolved live
+// per connection from the lease/ARP tables (see clientMAC), so a device that
+// reassociated onto a new address seconds ago is recognised immediately — the
+// IP no longer has to wait up to a minute for the 30s device-scan to land in a
+// cache before its own allow-listed traffic stops being hard-denied. (Measured
+// on-car under the old IP-snapshot model: 341 drops vs 412 allows in 24h.)
+// open / blocked / unknown devices are simply absent from the filtered set:
+// their :443 is never redirected here, or is dropped at the forward chain.
 func (s *SNIProxyService) RefreshCache() {
-	// Build the global allow list once.
 	suffRows, err := s.db.Query(`
 		SELECT DISTINCT fd.domain
 		FROM filter_domains fd
@@ -90,60 +103,66 @@ func (s *SNIProxyService) RefreshCache() {
 		}
 	}
 
-	// Apply the global list to every address a filtered device might use:
-	// its recorded ip_address AND every IP dnsmasq currently has leased to
-	// its MAC.
-	//
-	// The lease IPs are what make this correct rather than merely current.
-	// devices.ip_address is refreshed by a 30s scan and consumed here on a
-	// separate 30s timer, so after a device reassociates onto a new address
-	// there is a window of up to a minute where its traffic misses this map
-	// entirely — and a miss is a hard deny, so the device's own allow-listed
-	// requests are dropped. dnsmasq writes the lease at DHCP-ACK, before the
-	// client can route anything, so consulting the lease table closes that
-	// window. Measured on-car before this: 341 drops vs 412 allows in 24h.
-	ipRows, err := s.db.Query(`
-		SELECT mac_address, ip_address FROM devices
-		WHERE status = 'filtered'
-	`)
+	macRows, err := s.db.Query(`SELECT mac_address FROM devices WHERE status = 'filtered'`)
 	if err != nil {
 		log.Printf("[SNI] refresh: list filtered devices: %v", err)
 		return
 	}
-	defer ipRows.Close()
+	defer macRows.Close()
 
-	var leased map[string][]string
-	if s.leases != nil {
-		leased = s.leases()
-	}
-
-	next := make(map[string][]string)
-	for ipRows.Next() {
-		var mac, ip string
-		if err := ipRows.Scan(&mac, &ip); err != nil {
+	filtered := make(map[string]bool)
+	for macRows.Next() {
+		var mac string
+		if err := macRows.Scan(&mac); err != nil {
 			log.Printf("[SNI] refresh scan device: %v", err)
 			continue
 		}
-		if ip != "" {
-			next[ip] = suffixes
-		}
-		for _, leasedIP := range leased[strings.ToUpper(strings.TrimSpace(mac))] {
-			if leasedIP != "" {
-				next[leasedIP] = suffixes
-			}
+		if mac = strings.ToUpper(strings.TrimSpace(mac)); mac != "" {
+			filtered[mac] = true
 		}
 	}
 
 	s.mu.Lock()
-	s.allow = next
+	s.suffixes = suffixes
+	s.filtered = filtered
 	s.mu.Unlock()
 }
 
-func (s *SNIProxyService) allowedSuffixes(clientIP string) ([]string, bool) {
+// clientMAC resolves a client IP to its upper-case MAC at connection time,
+// reading the live lease and ARP tables rather than any periodic snapshot.
+// dnsmasq writes the lease at DHCP-ACK (before the client can route a packet),
+// and the kernel holds an ARP entry for any host that just sent us one — so a
+// freshly-reassociated client is resolvable the instant it connects. Returns ""
+// if neither source knows the IP.
+func (s *SNIProxyService) clientMAC(clientIP string) string {
+	if s.leases != nil {
+		for mac, ips := range s.leases() {
+			for _, ip := range ips {
+				if ip == clientIP {
+					return strings.ToUpper(strings.TrimSpace(mac))
+				}
+			}
+		}
+	}
+	if s.arp != nil {
+		if mac, ok := s.arp()[clientIP]; ok {
+			return strings.ToUpper(strings.TrimSpace(mac))
+		}
+	}
+	return ""
+}
+
+// policyFor returns the global allow-list and whether clientIP belongs to a
+// filtered device. A client that resolves to no filtered MAC gets (nil, false)
+// — a hard deny, fail-closed.
+func (s *SNIProxyService) policyFor(clientIP string) (suffixes []string, filtered bool) {
+	mac := s.clientMAC(clientIP)
+	if mac == "" {
+		return nil, false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	v, ok := s.allow[clientIP]
-	return v, ok
+	return s.suffixes, s.filtered[mac]
 }
 
 // matchSNI reports whether sni equals or is a subdomain of any suffix.
@@ -222,8 +241,8 @@ func (s *SNIProxyService) handle(client net.Conn) {
 	}
 	client.SetReadDeadline(time.Time{})
 
-	suffixes, known := s.allowedSuffixes(clientIP)
-	allowed := known && sniAllowed(sni, suffixes)
+	suffixes, filtered := s.policyFor(clientIP)
+	allowed := filtered && sniAllowed(sni, suffixes)
 
 	if !allowed {
 		shown := sni

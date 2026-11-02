@@ -34,10 +34,12 @@
 
             <select class="select" style="width:180px;" x-model="filter.action" @change="page=1; load()">
                 <option value="">Action · all</option>
-                <option value="query">query</option>
                 <option value="allowed">allowed</option>
-                <option value="blocked">blocked</option>
+                <option value="resolved">resolved</option>
+                <option value="blocked">blocked (+ sinkholed)</option>
+                <option value="sinkholed">sinkholed</option>
                 <option value="logged">logged</option>
+                <option value="query">query (legacy)</option>
             </select>
 
             <input class="input" style="width:280px;" placeholder="Search domain · client · IP · port" x-model="filter.q" @keydown.enter="page=1; load()" @input.debounce.300ms="page=1; load()">
@@ -387,6 +389,10 @@ function trafficApp() {
         // (caught by address=/#/0.0.0.0 default-deny). Compute it from the
         // same filter context we already have.
         actionDisplay(e) {
+            // New DNS rows carry a stored verdict — use it directly.
+            if (e.action === 'resolved' || e.action === 'sinkholed') return e.action;
+            // Legacy DNS rows were stored as action='query'; compute the
+            // verdict from the live allow-list for display.
             if (e.source === 'dns' || e.action === 'query') {
                 const dom = (e.domain || '').toLowerCase();
                 if (!dom) return 'lookup';

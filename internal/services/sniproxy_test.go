@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,8 +212,13 @@ func TestSNIProxy_BlockedNeverDials(t *testing.T) {
 			var dialedAddr string
 			s := &SNIProxyService{
 				trafficLog: NewTrafficLogService(db),
-				// 127.0.0.1 is the loopback RemoteAddr driveHandle produces.
-				allow: map[string][]string{"127.0.0.1": legitAllowed},
+				// 127.0.0.1 is the loopback RemoteAddr driveHandle produces;
+				// the live lease table resolves it to a filtered device's MAC.
+				suffixes: legitAllowed,
+				filtered: map[string]bool{"0C:29:8F:93:2A:08": true},
+				leases: func() map[string][]string {
+					return map[string][]string{"0C:29:8F:93:2A:08": {"127.0.0.1"}}
+				},
 				dial: func(network, addr string) (net.Conn, error) {
 					dialedAddr = addr
 					return nil, errStubDialer
@@ -228,13 +234,13 @@ func TestSNIProxy_BlockedNeverDials(t *testing.T) {
 
 var errStubDialer = errors.New("stub dialer: no real upstream in test")
 
-// ── RefreshCache classification ────────────────────────────────
+// ── RefreshCache: global suffixes + filtered-MAC set ───────────
 
-func TestSNIProxy_CacheClassification(t *testing.T) {
+func TestRefreshCache_FilteredSetAndSuffixes(t *testing.T) {
 	db := memDB(t)
 
-	// A filtered device gets the global allow-list; an open device must
-	// be absent from the cache entirely (its :443 is never redirected).
+	// A filtered device's MAC enters the filtered set; an open device's does
+	// not (its :443 is never redirected to the proxy).
 	mustExec(t, db, `INSERT INTO devices (mac_address, ip_address, status) VALUES ('AA:BB:CC:00:00:01','10.0.0.10','filtered')`)
 	mustExec(t, db, `INSERT INTO devices (mac_address, ip_address, status) VALUES ('AA:BB:CC:00:00:02','10.0.0.20','open')`)
 
@@ -247,28 +253,23 @@ func TestSNIProxy_CacheClassification(t *testing.T) {
 	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain, enabled) VALUES (?, 'auth.tesla.com', 1)`, fID)
 	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain, enabled) VALUES (?, 'staged.example.com', 0)`, fID)
 
-	// Seeded system filters ship enabled (Tesla AP/Nav has 3 audited
-	// domains since v18, Maps & Time has 5). For this test, disable any
-	// system filter so the cache contains only our injected domain.
+	// Seeded system filters ship enabled; disable them so the cache holds
+	// only our injected domain.
 	mustExec(t, db, `UPDATE filters SET enabled=0 WHERE is_system=1`)
 
 	s := NewSNIProxyService(config.Config{}, db, NewTrafficLogService(db))
 	s.RefreshCache()
 
-	got := s.allow["10.0.0.10"]
-	if len(got) != 1 || got[0] != "auth.tesla.com" {
-		t.Errorf("filtered device cache = %v, want [auth.tesla.com] (disabled domain must be excluded)", got)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.filtered["AA:BB:CC:00:00:01"] {
+		t.Error("filtered device MAC missing from the filtered set")
 	}
-	if _, ok := s.allow["10.0.0.20"]; ok {
-		t.Errorf("open device must be absent from the SNI allow-list cache")
+	if s.filtered["AA:BB:CC:00:00:02"] {
+		t.Error("open device MAC must not be in the filtered set")
 	}
-}
-
-// leaseFixture returns a lease table in the shape captured from the Pi:
-// one MAC holding several simultaneously-valid leases.
-func leaseFixture() map[string][]string {
-	return map[string][]string{
-		"0C:29:8F:93:2A:08": {"192.168.4.238", "192.168.4.236", "192.168.4.237"},
+	if len(s.suffixes) != 1 || s.suffixes[0] != "auth.tesla.com" {
+		t.Errorf("suffixes = %v, want [auth.tesla.com] (disabled domain excluded)", s.suffixes)
 	}
 }
 
@@ -284,20 +285,81 @@ func seedFilteredCar(t *testing.T, db *sql.DB, recordedIP string) {
 		VALUES (?, 'tile.googleapis.com', 1)`, id)
 }
 
-// THE REPRO, end to end: the car is really on .238, the devices row still says
-// .236, and tile.googleapis.com is explicitly allow-listed. Before the lease
-// lookup this dropped, because a map miss makes `known` false and sniAllowed
-// never runs.
-func TestRefreshCache_RecognisesADeviceOnAnyLeasedIP(t *testing.T) {
+// ── clientMAC: live IP→MAC resolution at connection time ───────
+
+// The lease table is written at DHCP-ACK, before the client can route a
+// packet — so it maps a freshly-reassociated IP to its MAC immediately.
+func TestClientMAC_ResolvesFromLiveLease(t *testing.T) {
+	s := &SNIProxyService{
+		leases: func() map[string][]string {
+			return map[string][]string{"0C:29:8F:93:2A:08": {"192.168.4.237"}}
+		},
+	}
+	if got := s.clientMAC("192.168.4.237"); got != "0C:29:8F:93:2A:08" {
+		t.Errorf("clientMAC = %q, want the car MAC", got)
+	}
+}
+
+// ARP is the fallback: the kernel populates an entry the instant the client
+// sends a packet, and the client just opened this very connection.
+func TestClientMAC_FallsBackToARP(t *testing.T) {
+	s := &SNIProxyService{
+		leases: func() map[string][]string { return nil },
+		arp:    func() map[string]string { return map[string]string{"192.168.4.237": "0C:29:8F:93:2A:08"} },
+	}
+	if got := s.clientMAC("192.168.4.237"); got != "0C:29:8F:93:2A:08" {
+		t.Errorf("clientMAC via ARP = %q, want the car MAC", got)
+	}
+}
+
+func TestClientMAC_UnknownIP(t *testing.T) {
+	s := &SNIProxyService{
+		leases: func() map[string][]string { return nil },
+		arp:    func() map[string]string { return nil },
+	}
+	if got := s.clientMAC("192.168.4.99"); got != "" {
+		t.Errorf("clientMAC unknown = %q, want empty", got)
+	}
+}
+
+func TestARPByIP(t *testing.T) {
+	const data = `IP address       HW type     Flags       HW address            Mask     Device
+192.168.4.237    0x1         0x2         0c:29:8f:93:2a:08     *        wlan0
+192.168.4.9      0x1         0x0         00:00:00:00:00:00     *        wlan0
+10.0.0.1         0x1         0x2         aa:bb:cc:dd:ee:ff     *        eth0
+`
+	got := arpByIP(strings.NewReader(data), "wlan0")
+	if got["192.168.4.237"] != "0C:29:8F:93:2A:08" {
+		t.Errorf("want car MAC for .237, got %q", got["192.168.4.237"])
+	}
+	if _, ok := got["192.168.4.9"]; ok {
+		t.Error("incomplete (Flags=0x0) entry must be dropped")
+	}
+	if _, ok := got["10.0.0.1"]; ok {
+		t.Error("entry on a different interface must be excluded")
+	}
+}
+
+// ── policyFor: the connection-time allow decision ──────────────
+
+// THE FIX, end to end: the car is filtered, its devices row IP is STALE, and it
+// is really on a brand-new leased IP. Keying the decision on the MAC resolved
+// live at connection time — not on the 30s-lagged devices.ip_address — means
+// its own allow-listed traffic is no longer dropped during the reassociation
+// window. Before this, a map miss made the device unknown and sniAllowed never
+// ran.
+func TestPolicyFor_RecognisesFilteredDeviceByLiveMAC(t *testing.T) {
 	db := memDB(t)
 	seedFilteredCar(t, db, "192.168.4.236") // stale on purpose
 
 	s := NewSNIProxyService(config.Config{}, db, nil)
-	s.leases = leaseFixture
+	s.leases = func() map[string][]string {
+		return map[string][]string{"0C:29:8F:93:2A:08": {"192.168.4.238"}} // real current IP
+	}
 	s.RefreshCache()
 
-	suffixes, known := s.allowedSuffixes("192.168.4.238")
-	if !known {
+	suffixes, filtered := s.policyFor("192.168.4.238")
+	if !filtered {
 		t.Fatal("car on its real leased IP was not recognised — its own allow-listed traffic would be dropped")
 	}
 	if !sniAllowed("tile.googleapis.com", suffixes) {
@@ -305,58 +367,91 @@ func TestRefreshCache_RecognisesADeviceOnAnyLeasedIP(t *testing.T) {
 	}
 }
 
-// An address the car does NOT hold must stay unknown. Pins that the fix widens
-// recognition to the device's own leases and nothing further.
-func TestRefreshCache_DoesNotRecogniseAnUnleasedIP(t *testing.T) {
+// An IP that resolves to no filtered MAC stays unrecognised — fail-closed.
+func TestPolicyFor_UnknownIPIsNotFiltered(t *testing.T) {
 	db := memDB(t)
 	seedFilteredCar(t, db, "192.168.4.236")
 
 	s := NewSNIProxyService(config.Config{}, db, nil)
-	s.leases = leaseFixture
+	s.leases = func() map[string][]string {
+		return map[string][]string{"0C:29:8F:93:2A:08": {"192.168.4.238"}}
+	}
+	s.arp = func() map[string]string { return nil }
 	s.RefreshCache()
 
-	if _, known := s.allowedSuffixes("192.168.4.99"); known {
-		t.Error("an IP the car never held was recognised")
+	if _, filtered := s.policyFor("192.168.4.99"); filtered {
+		t.Error("an IP that maps to no filtered device was treated as filtered")
 	}
 }
 
-// THE INVARIANT that makes keying this map by IP safe at all.
-//
-// Every entry must resolve to the SAME suffix list. That is why an IP mix-up
-// can only ever cause a wrongful DENY and never a wrongful ALLOW: there is no
-// per-device privilege for a mismatched IP to escalate into.
-//
-// The schema already contains the design that would break this —
-// policies / policy_allowed_domains / device_policies exist but no service
-// reads them today. If per-device allow lists are ever switched on, this test
-// fails, and whoever does it has to confront the fact that they have just
-// turned this lookup into a privilege boundary.
-func TestRefreshCache_AllFilteredDevicesShareOneList(t *testing.T) {
+// An 'open' device must never be recognised as filtered, even if its traffic
+// reaches the proxy (defense in depth; its :443 is not redirected here).
+func TestPolicyFor_NonFilteredMACDenied(t *testing.T) {
+	db := memDB(t)
+	seedFilteredCar(t, db, "192.168.4.236")
+	mustExec(t, db, `INSERT INTO devices (mac_address, ip_address, status) VALUES ('AA:BB:CC:00:00:02','10.0.0.20','open')`)
+
+	s := NewSNIProxyService(config.Config{}, db, nil)
+	s.leases = func() map[string][]string {
+		return map[string][]string{"AA:BB:CC:00:00:02": {"10.0.0.20"}}
+	}
+	s.RefreshCache()
+
+	if _, filtered := s.policyFor("10.0.0.20"); filtered {
+		t.Error("an 'open' device must not be recognised as filtered by the SNI proxy")
+	}
+}
+
+// THE INVARIANT, preserved after the MAC re-key: the allow list is GLOBAL —
+// every filtered device resolves to the very same suffix slice. There is no
+// per-device privilege a wrong MAC/IP could escalate into; a mismatch can only
+// cause a wrongful DENY, never a wrongful ALLOW. policies /
+// policy_allowed_domains / device_policies exist in the schema but no service
+// reads them; switch per-device lists on and this test must be confronted.
+func TestPolicyFor_AllFilteredDevicesShareOneList(t *testing.T) {
 	db := memDB(t)
 	seedFilteredCar(t, db, "192.168.4.236")
 	mustExec(t, db, `INSERT INTO devices (mac_address, ip_address, hostname, status)
 		VALUES ('AA:BB:CC:DD:EE:FF', '192.168.4.150', 'other', 'filtered')`)
 
 	s := NewSNIProxyService(config.Config{}, db, nil)
-	s.leases = leaseFixture
+	s.leases = func() map[string][]string {
+		return map[string][]string{
+			"0C:29:8F:93:2A:08": {"192.168.4.238"},
+			"AA:BB:CC:DD:EE:FF": {"192.168.4.150"},
+		}
+	}
 	s.RefreshCache()
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if len(s.allow) < 2 {
-		t.Fatalf("expected entries for both filtered devices, got %d", len(s.allow))
+	a, fa := s.policyFor("192.168.4.238")
+	b, fb := s.policyFor("192.168.4.150")
+	if !fa || !fb {
+		t.Fatal("both filtered devices must be recognised")
 	}
-	var first []string
-	for ip, got := range s.allow {
-		if first == nil {
-			first = got
-			continue
-		}
-		if !reflect.DeepEqual(first, got) {
-			t.Fatalf("PER-DEVICE ALLOW LISTS DETECTED at %s: %v vs %v.\n"+
-				"Keying this map by IP is only safe while every filtered device shares one list. "+
-				"If lists are now per-device, an IP mismatch can grant the WRONG list — "+
-				"re-key the map by MAC before shipping this.", ip, got, first)
-		}
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("PER-DEVICE ALLOW LISTS DETECTED: %v vs %v.\n"+
+			"Re-keying by MAC must still serve ONE global list; if lists are now "+
+			"per-device, a MAC/IP mismatch can grant the WRONG list.", a, b)
+	}
+}
+
+// ── LogSNIEvent source tag ─────────────────────────────────────
+
+// The SNI proxy stamps its own source so a TLS verdict is never confused with a
+// plain nftables forward-chain drop (both once shared source='forward').
+func TestLogSNIEvent_TagsSourceSNIProxy(t *testing.T) {
+	db := memDB(t)
+	tl := NewTrafficLogService(db)
+	tl.LogSNIEvent("192.168.4.237", "mtalk.google.com", false)
+
+	var source, protocol string
+	if err := db.QueryRow(`SELECT source, protocol FROM query_log WHERE domain='mtalk.google.com'`).Scan(&source, &protocol); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if source != "sniproxy" {
+		t.Errorf("source = %q, want sniproxy (distinct from forward-chain drops)", source)
+	}
+	if protocol != "TLS" {
+		t.Errorf("protocol = %q, want TLS", protocol)
 	}
 }

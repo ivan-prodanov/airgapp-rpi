@@ -320,6 +320,18 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 			s.cfg.LANInterface, mac, s.cfg.LANGateway)
 		fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s tcp dport 443 redirect to :%d\n",
 			s.cfg.LANInterface, mac, s.cfg.SNIProxyPort)
+		// Force the device's DNS onto the local dnsmasq even when it hardcodes
+		// a public resolver (e.g. a 3rd-party app on the car querying 8.8.8.8
+		// directly). Without this such queries hit the forward chain's
+		// default-deny and are blind-dropped — invisible to the block-list and
+		// to the traffic log. We only rewrite what is NOT already aimed at the
+		// Pi, so the native resolver path (which already uses the gateway) is
+		// untouched and we avoid a DNAT no-op/loop. IPv4 only: there is no
+		// ip6 nat table, and external v6 DNS is caught by the forward deny.
+		fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s ip daddr != %s udp dport 53 dnat to %s:53\n",
+			s.cfg.LANInterface, mac, s.cfg.LANGateway, s.cfg.LANGateway)
+		fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s ip daddr != %s tcp dport 53 dnat to %s:53\n",
+			s.cfg.LANInterface, mac, s.cfg.LANGateway, s.cfg.LANGateway)
 	}
 	for _, mac := range snap.open {
 		fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s udp dport 53 dnat to %s:53\n",
@@ -353,6 +365,9 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 	b.WriteString("        ct state established,related accept\n")
 	b.WriteString("        iif lo accept\n")
 	fmt.Fprintf(&b, "        iifname \"%s\" udp dport 53 accept\n", s.cfg.LANInterface)
+	// tcp/53 too: filtered devices' DNS is DNAT'd to the Pi in prerouting, and
+	// a large/truncated answer fails over to TCP, which must reach dnsmasq.
+	fmt.Fprintf(&b, "        iifname \"%s\" tcp dport 53 accept\n", s.cfg.LANInterface)
 	fmt.Fprintf(&b, "        iifname \"%s\" udp dport 67 accept\n", s.cfg.LANInterface)
 	fmt.Fprintf(&b, "        iifname \"%s\" tcp dport 22 accept\n", s.cfg.LANInterface)
 	fmt.Fprintf(&b, "        iifname \"%s\" tcp dport 80 accept\n", s.cfg.LANInterface)

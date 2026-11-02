@@ -27,7 +27,7 @@ type TrafficEntry struct {
 	Action    string `json:"action"`
 	SrcMAC    string `json:"src_mac"`
 	Domain    string `json:"domain"`
-	Source    string `json:"source"` // "dns" | "forward"
+	Source    string `json:"source"` // "dns" | "forward" (nftables) | "sniproxy" (TLS SNI verdict)
 	Policy    string `json:"policy"` // name of the policy that produced the verdict (forward only)
 }
 
@@ -53,6 +53,14 @@ type TrafficLogService struct {
 	mutedMu     sync.RWMutex
 	mutedExact  map[string]struct{}
 	mutedSuffix []string
+
+	// Allow-list suffix cache: the enabled filter domains (f.enabled &&
+	// d.enabled), used to classify a DNS query as "resolved" vs "sinkholed"
+	// at INSERT time so the traffic filter can select sinkholes with a plain
+	// indexed action lookup instead of a per-row suffix scan over the whole
+	// log. Refreshed by RefreshAllowCache.
+	allowMu     sync.RWMutex
+	allowSuffix []string
 }
 
 func NewTrafficLogService(db *sql.DB) *TrafficLogService {
@@ -93,6 +101,7 @@ func (s *TrafficLogService) StartTailing() {
 	// the first event from a suppressed device/domain isn't logged.
 	s.RefreshIgnoreCache()
 	s.RefreshMuteCache()
+	s.RefreshAllowCache()
 	go s.tailJournal("kernel", "kernel-cursor", []string{"-k"})
 	go s.tailDnsmasqLogFile()
 	go s.cleanOldEntries()
@@ -137,6 +146,7 @@ func (s *TrafficLogService) refreshCachesLoop() {
 	for range ticker.C {
 		s.RefreshIgnoreCache()
 		s.RefreshMuteCache()
+		s.RefreshAllowCache()
 	}
 }
 
@@ -187,6 +197,58 @@ func (s *TrafficLogService) isMuted(domain string) bool {
 		return true
 	}
 	for _, p := range s.mutedSuffix {
+		if d == p || strings.HasSuffix(d, "."+p) {
+			return true
+		}
+	}
+	return false
+}
+
+// RefreshAllowCache rebuilds the in-memory allow-list suffix set from the
+// enabled filter domains (f.enabled && d.enabled). Used by dnsResolvable to
+// classify DNS queries at INSERT time. Call after any filter change, or rely
+// on the periodic refresh.
+func (s *TrafficLogService) RefreshAllowCache() {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT fd.domain
+		FROM filter_domains fd JOIN filters fl ON fl.id = fd.preset_id
+		WHERE fd.enabled = 1 AND fl.enabled = 1`)
+	if err != nil {
+		log.Printf("[TRAFFIC] refresh allow cache: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var suffix []string
+	for rows.Next() {
+		var dom string
+		if err := rows.Scan(&dom); err != nil {
+			continue
+		}
+		dom = strings.ToLower(strings.TrimSpace(dom))
+		if dom != "" {
+			suffix = append(suffix, dom)
+		}
+	}
+
+	s.allowMu.Lock()
+	s.allowSuffix = suffix
+	s.allowMu.Unlock()
+}
+
+// dnsResolvable reports whether a DNS query for this domain would resolve
+// under the current allow-list — it matches an enabled filter suffix and is
+// not on the protected-deny floor. The negation is "sinkholed". Mirrors the
+// traffic UI's resolved/sinkholed computation so the stored verdict and the
+// rendered one agree.
+func (s *TrafficLogService) dnsResolvable(domain string) bool {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	if d == "" || isProtectedDenied(d) {
+		return false
+	}
+	s.allowMu.RLock()
+	defer s.allowMu.RUnlock()
+	for _, p := range s.allowSuffix {
 		if d == p || strings.HasSuffix(d, "."+p) {
 			return true
 		}
@@ -520,13 +582,21 @@ func (s *TrafficLogService) parseDnsLine(message, realtimeTS string) {
 			return
 		}
 
+		// Classify the DNS verdict at ingest: "resolved" (matches an enabled
+		// filter) or "sinkholed" (default-deny floor / protected). Storing it
+		// lets the traffic filter select sinkholes with an indexed action
+		// lookup instead of a per-row suffix scan over the whole log.
+		action := "sinkholed"
+		if s.dnsResolvable(domain) {
+			action = "resolved"
+		}
 		s.insertEntry(TrafficEntry{
 			Timestamp: realtimeTS,
 			Protocol:  "DNS",
 			DstPort:   "53",
 			SrcIP:     clientIP,
 			Domain:    domain,
-			Action:    "query",
+			Action:    action,
 			Source:    "dns",
 		})
 		return
@@ -558,7 +628,7 @@ func (s *TrafficLogService) LogSNIEvent(clientIP, sni string, allowed bool) {
 		DstPort:  "443",
 		Protocol: "TLS",
 		Action:   action,
-		Source:   "forward",
+		Source:   "sniproxy",
 	})
 }
 
@@ -651,7 +721,11 @@ func (s *TrafficLogService) QueryPaginated(f TrafficFilter) PagedResult {
 	var where []string
 	var args []any
 
-	if f.Action != "" && f.Action != "all" {
+	if f.Action == "blocked" {
+		// "Blocked" spans forward/SNI denials and DNS sinkholes — both are
+		// stored verdicts now, so this stays a plain indexed action scan.
+		where = append(where, "action IN ('blocked','sinkholed')")
+	} else if f.Action != "" && f.Action != "all" {
 		where = append(where, "action = ?")
 		args = append(args, f.Action)
 	}
@@ -843,7 +917,7 @@ func (s *TrafficLogService) Summary(rangeStr string) StatsSummary {
 	if err := s.db.QueryRow(`
 		SELECT
 			COUNT(*),
-			SUM(CASE WHEN action = 'query'   THEN 1 ELSE 0 END),
+			SUM(CASE WHEN COALESCE(source,'forward') = 'dns' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN action = 'allowed' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END),
 			COUNT(DISTINCT CASE WHEN domain != '' THEN domain END),
@@ -951,7 +1025,7 @@ func (s *TrafficLogService) TimeSeries(rangeStr string) []TimePoint {
 
 	query := `
 		SELECT ` + bucket + ` as bucket,
-			SUM(CASE WHEN action = 'query' THEN 1 ELSE 0 END) as queries,
+			SUM(CASE WHEN COALESCE(source,'forward') = 'dns' THEN 1 ELSE 0 END) as queries,
 			SUM(CASE WHEN action = 'allowed' THEN 1 ELSE 0 END) as allowed,
 			SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END) as blocked
 		FROM query_log WHERE ` + where + `

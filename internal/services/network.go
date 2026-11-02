@@ -153,6 +153,41 @@ func leasedIPsByMAC(r io.Reader) map[string][]string {
 	return out
 }
 
+// currentARPByIP reads the live kernel ARP table and returns IP → upper-case
+// MAC for entries on lanIface. Returns nil if it cannot be read. It is the SNI
+// proxy's fallback IP→MAC resolver for a client not yet in the lease table —
+// the kernel holds an ARP entry for any host that has just sent us a packet.
+func currentARPByIP(lanIface string) map[string]string {
+	f, err := os.Open("/proc/net/arp")
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	return arpByIP(f, lanIface)
+}
+
+// arpByIP parses /proc/net/arp content from r into IP → upper-case MAC,
+// restricted to lanIface, applying the same incomplete/null-MAC rejection as
+// mergeARP. Split out so it is unit-testable without /proc.
+func arpByIP(r io.Reader, lanIface string) map[string]string {
+	out := make(map[string]string)
+	scanner := bufio.NewScanner(r)
+	scanner.Scan() // skip header
+	for scanner.Scan() {
+		// Format: IP HWtype Flags HWaddress Mask Device
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 6 || fields[5] != lanIface || fields[2] == "0x0" {
+			continue
+		}
+		mac := strings.ToUpper(fields[3])
+		if mac == "" || mac == "00:00:00:00:00:00" || !ValidMAC(strings.ToLower(mac)) {
+			continue
+		}
+		out[fields[0]] = mac
+	}
+	return out
+}
+
 func (s *NetworkService) parseARP(devices map[string]*models.Device) {
 	f, err := os.Open("/proc/net/arp")
 	if err != nil {

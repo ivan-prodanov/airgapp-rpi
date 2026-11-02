@@ -86,3 +86,49 @@ func TestMuteDropsAtIngest(t *testing.T) {
 		t.Fatalf("after unmute the event should be logged: total=%d", r.Total)
 	}
 }
+
+func TestDNSResolvable(t *testing.T) {
+	svc := NewTrafficLogService(migratedDB(t))
+	svc.allowSuffix = []string{"youtube.com", "googleapis.com"}
+
+	cases := map[string]bool{
+		"youtube.com":             true,
+		"www.youtube.com":         true,
+		"youtubei.googleapis.com": true,
+		"notgoogle.com":           false,
+		"evilyoutube.com":         false, // not a subdomain of youtube.com
+	}
+	for d, want := range cases {
+		if got := svc.dnsResolvable(d); got != want {
+			t.Errorf("dnsResolvable(%q) = %v, want %v", d, got, want)
+		}
+	}
+
+	// Protected-deny wins even if an allow suffix would otherwise match.
+	svc.allowSuffix = []string{"tesla.services"}
+	if svc.dnsResolvable("hermes-prd.ap.tesla.services") {
+		t.Error("a protected-deny domain must never classify as resolvable")
+	}
+}
+
+func TestBlockedFilterIncludesSinkholed(t *testing.T) {
+	svc := NewTrafficLogService(migratedDB(t))
+	svc.insertEntry(TrafficEntry{Domain: "evil.example", DstPort: "443", Protocol: "TLS", Action: "blocked", Source: "forward"})
+	svc.insertEntry(TrafficEntry{Domain: "telemetry.example", Action: "sinkholed", Source: "dns"})
+	svc.insertEntry(TrafficEntry{Domain: "ok.example", Action: "resolved", Source: "dns"})
+
+	// "blocked" spans forward denials AND DNS sinkholes.
+	if r := svc.QueryPaginated(TrafficFilter{Action: "blocked"}); r.Total != 2 {
+		t.Fatalf("blocked filter should include forward-blocked + sinkholed: total=%d, want 2", r.Total)
+	}
+	// Dedicated filters stay exact.
+	if r := svc.QueryPaginated(TrafficFilter{Action: "sinkholed"}); r.Total != 1 {
+		t.Fatalf("sinkholed filter: total=%d, want 1", r.Total)
+	}
+	if r := svc.QueryPaginated(TrafficFilter{Action: "resolved"}); r.Total != 1 {
+		t.Fatalf("resolved filter: total=%d, want 1", r.Total)
+	}
+	if r := svc.QueryPaginated(TrafficFilter{Action: "all"}); r.Total != 3 {
+		t.Fatalf("all filter: total=%d, want 3", r.Total)
+	}
+}
