@@ -160,9 +160,9 @@ code, .mono, .tnum { font-family: "JetBrains Mono", ui-monospace, monospace; fon
 /* Main + headbar */
 .main { display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
 .head-bar {
-  display: flex; align-items: center; gap: 18px;
-  padding: 18px 36px; border-bottom: 1px solid var(--line);
-  background: var(--bg); min-height: 64px;
+  /* Removed on desktop — the sidebar already marks the active page. Kept only as
+     the mobile nav-toggle bar in the <=900px media query below. */
+  display: none;
 }
 .head-bar-l { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--fg-mute); font-weight: 500; }
 .head-bar-l em { font-style: normal; color: var(--fg); }
@@ -604,6 +604,7 @@ code, .mono, .tnum { font-family: "JetBrains Mono", ui-monospace, monospace; fon
   .nav-open .nav-scrim { opacity: 1; pointer-events: auto; }
 
   .head-bar {
+    display: flex; align-items: center;
     padding: 12px 16px;
     min-height: 56px;
     gap: 12px;
