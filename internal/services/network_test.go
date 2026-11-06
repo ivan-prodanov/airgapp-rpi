@@ -1,9 +1,11 @@
 package services
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 
+	"github.com/iulianfsdro/rpi-network-filter/internal/config"
 	"github.com/iulianfsdro/rpi-network-filter/internal/models"
 )
 
@@ -121,4 +123,64 @@ func TestMergeLeases_PicksTheNewestLeaseForAMAC(t *testing.T) {
 	if got := devices[tesla].Hostname; got != "tesla" {
 		t.Errorf("hostname from the newest lease lost: got %q, want %q", got, "tesla")
 	}
+}
+
+// TestMergeARPReportsPresence verifies mergeARP reports which MACs are present
+// on the LAN iface — the signal that replaced "has a DHCP lease" for online.
+func TestMergeARPReportsPresence(t *testing.T) {
+	devices := map[string]*models.Device{}
+	arp := "IP address HW type Flags HW address Mask Device\n" +
+		"192.168.4.150 0x1 0x2 D6:78:D4:26:38:2E * wlan0\n" + // present on LAN
+		"192.168.4.9   0x1 0x0 00:00:00:00:00:00 * wlan0\n" + // incomplete → not present
+		"10.0.0.1      0x1 0x2 AA:BB:CC:DD:EE:FF * eth0\n" // wrong iface → not present
+	present := mergeARP(devices, strings.NewReader(arp), "wlan0")
+	if !present["D6:78:D4:26:38:2E"] {
+		t.Error("a complete wlan0 ARP entry must be reported present")
+	}
+	if present["AA:BB:CC:DD:EE:FF"] {
+		t.Error("an entry on a different iface must not be present")
+	}
+	if len(present) != 1 {
+		t.Errorf("present = %v, want exactly the one wlan0 MAC", present)
+	}
+}
+
+// TestUpsertDeviceOnlyBumpsLastSeenWhenPresent is the regression test for the
+// stale-online bug: a device discovered only via a still-valid DHCP lease
+// (present=false) must NOT have its last_seen refreshed, so it goes offline on
+// schedule instead of being pinned online until the lease expires.
+func TestUpsertDeviceOnlyBumpsLastSeenWhenPresent(t *testing.T) {
+	db := memDB(t)
+	s := NewNetworkService(db, config.Config{})
+	const mac = "AA:BB:CC:00:00:09"
+	dev := &models.Device{MACAddress: mac, IPAddress: "10.0.0.9"}
+
+	// Seen present once → online.
+	s.upsertDevice(dev, true)
+	// Simulate time passing since it actually left.
+	mustExec(t, db, "UPDATE devices SET last_seen = datetime('now','-8 minutes') WHERE mac_address=?", mac)
+
+	// A lease-only scan (present=false) must NOT refresh last_seen.
+	s.upsertDevice(dev, false)
+	if deviceOnline(t, db, mac) {
+		t.Error("lease-only (not present) device shows online — last_seen was refreshed (the bug)")
+	}
+
+	// A present scan refreshes it → online again.
+	s.upsertDevice(dev, true)
+	if !deviceOnline(t, db, mac) {
+		t.Error("a present device should be online")
+	}
+}
+
+func deviceOnline(t *testing.T, db *sql.DB, mac string) bool {
+	t.Helper()
+	var online int
+	if err := db.QueryRow(
+		"SELECT CASE WHEN last_seen > datetime('now','-5 minutes') THEN 1 ELSE 0 END FROM devices WHERE mac_address=?",
+		mac,
+	).Scan(&online); err != nil {
+		t.Fatalf("read online for %s: %v", mac, err)
+	}
+	return online == 1
 }

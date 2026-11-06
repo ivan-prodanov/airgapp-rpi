@@ -39,18 +39,22 @@ func (s *NetworkService) StartScanner() {
 func (s *NetworkService) scan() {
 	devices := make(map[string]*models.Device)
 
-	// Parse DHCP leases
+	// DHCP leases give us the IP/hostname mapping for known MACs — but a lease
+	// survives for its full duration after a device disconnects, so a leased
+	// MAC is NOT evidence the device is here right now.
 	s.parseDHCPLeases(devices)
 
-	// Parse ARP table
-	s.parseARP(devices)
+	// The ARP table is the presence signal: an entry means the kernel has
+	// exchanged packets with that MAC recently. parseARP returns the set of
+	// MACs actually present on the LAN this scan.
+	present := s.parseARP(devices)
 
-	// Upsert to database
+	// Upsert. Only present devices refresh last_seen (= "online"); lease-only
+	// devices update their mapping but keep their old last_seen, so they fall
+	// offline on schedule instead of being pinned online by a valid lease.
 	for _, dev := range devices {
-		s.upsertDevice(dev)
+		s.upsertDevice(dev, present[dev.MACAddress])
 	}
-
-	// Mark devices not seen in 5 minutes as offline (handled at query time via last_seen)
 }
 
 func (s *NetworkService) parseDHCPLeases(devices map[string]*models.Device) {
@@ -188,13 +192,17 @@ func arpByIP(r io.Reader, lanIface string) map[string]string {
 	return out
 }
 
-func (s *NetworkService) parseARP(devices map[string]*models.Device) {
+// parseARP merges the live ARP table into devices and returns the set of MACs
+// present on the LAN interface right now (upper-case). Empty set if /proc can't
+// be read — callers then treat nobody as freshly present, which is the safe
+// direction (a device only drifts offline, never falsely online).
+func (s *NetworkService) parseARP(devices map[string]*models.Device) map[string]bool {
 	f, err := os.Open("/proc/net/arp")
 	if err != nil {
-		return
+		return map[string]bool{}
 	}
 	defer f.Close()
-	mergeARP(devices, f, s.cfg.LANInterface)
+	return mergeARP(devices, f, s.cfg.LANInterface)
 }
 
 // mergeARP reads /proc/net/arp content from r and merges live ARP entries
@@ -202,7 +210,11 @@ func (s *NetworkService) parseARP(devices map[string]*models.Device) {
 // rules (live ARP overrides stale leases-file IP; skip Flags=0x0
 // incomplete; reject null/invalid MAC) are unit-testable without faking
 // the filesystem.
-func mergeARP(devices map[string]*models.Device, r io.Reader, lanIface string) {
+// mergeARP returns the set of MACs (upper-case) present on lanIface in this
+// ARP snapshot — the authoritative "online right now" signal, since a stale
+// DHCP lease must no longer count as presence.
+func mergeARP(devices map[string]*models.Device, r io.Reader, lanIface string) map[string]bool {
+	present := map[string]bool{}
 	scanner := bufio.NewScanner(r)
 	scanner.Scan() // skip header
 
@@ -233,6 +245,9 @@ func mergeARP(devices map[string]*models.Device, r io.Reader, lanIface string) {
 			continue
 		}
 
+		// A valid, complete ARP entry on the LAN iface = this MAC is present.
+		present[mac] = true
+
 		if existing, ok := devices[mac]; ok {
 			// Live ARP wins the IP race over the dnsmasq leases file:
 			// /proc/net/arp reflects actual current packets to/from the
@@ -251,21 +266,44 @@ func mergeARP(devices map[string]*models.Device, r io.Reader, lanIface string) {
 			}
 		}
 	}
+	return present
 }
 
-func (s *NetworkService) upsertDevice(dev *models.Device) {
-	// New devices land as 'blocked' — the forward chain hard-drops their
-	// traffic until the operator explicitly classifies them as Filtered
-	// or Open in the UI. The ON CONFLICT clause leaves the status of
-	// an existing row alone, so a deliberately-classified device keeps
-	// its status across DHCP renewals or ARP refreshes.
+// upsertDevice records a discovered device. New devices land as 'blocked' —
+// the forward chain hard-drops their traffic until the operator classifies
+// them Filtered or Open; the ON CONFLICT clause leaves an existing row's
+// status alone, so a deliberately-classified device keeps its status across
+// DHCP renewals or ARP refreshes.
+//
+// present is the crux of the online fix: last_seen (the source of the "online"
+// flag) only advances when the device is actually on the LAN this scan (an ARP
+// entry). A device discovered only through a still-valid DHCP lease updates its
+// IP/hostname mapping but keeps its old last_seen, so it falls offline once it
+// really leaves instead of staying "online" for the hours a lease survives.
+func (s *NetworkService) upsertDevice(dev *models.Device, present bool) {
+	if present {
+		_, err := s.db.Exec(`
+			INSERT INTO devices (mac_address, ip_address, hostname, status, last_seen)
+			VALUES (?, ?, ?, 'blocked', CURRENT_TIMESTAMP)
+			ON CONFLICT(mac_address) DO UPDATE SET
+				ip_address = excluded.ip_address,
+				hostname = CASE WHEN excluded.hostname != '' THEN excluded.hostname ELSE devices.hostname END,
+				last_seen = CURRENT_TIMESTAMP
+		`, dev.MACAddress, dev.IPAddress, dev.Hostname)
+		if err != nil {
+			log.Printf("[WARN] Failed to upsert device %s: %v", dev.MACAddress, err)
+		}
+		return
+	}
+	// Not present: learn the mapping, never advance last_seen. A brand-new
+	// lease-only device is inserted already-stale so it shows offline, not
+	// online, from the first scan.
 	_, err := s.db.Exec(`
 		INSERT INTO devices (mac_address, ip_address, hostname, status, last_seen)
-		VALUES (?, ?, ?, 'blocked', CURRENT_TIMESTAMP)
+		VALUES (?, ?, ?, 'blocked', datetime('now', '-10 minutes'))
 		ON CONFLICT(mac_address) DO UPDATE SET
 			ip_address = excluded.ip_address,
-			hostname = CASE WHEN excluded.hostname != '' THEN excluded.hostname ELSE devices.hostname END,
-			last_seen = CURRENT_TIMESTAMP
+			hostname = CASE WHEN excluded.hostname != '' THEN excluded.hostname ELSE devices.hostname END
 	`, dev.MACAddress, dev.IPAddress, dev.Hostname)
 	if err != nil {
 		log.Printf("[WARN] Failed to upsert device %s: %v", dev.MACAddress, err)
