@@ -170,24 +170,26 @@
                 </template>
                 <template x-if="issuedPlain">
                     <div>
-                        <div class="protected-banner" style="background:var(--ok-faint); border-color:var(--ok); color:var(--ok);">
-                            <strong>Save this token now.</strong> It will not be shown again. Copy it into the client app's enrolment screen and store it in your password manager as a backup.
-                        </div>
-                        <label class="label">Token (one-time display)</label>
-                        <textarea class="textarea mono" readonly x-text="issuedPlain" style="min-height:80px; word-break:break-all;"></textarea>
-                        <button class="btn sm" style="margin-top:10px;" @click="copyToken()">Copy to clipboard</button>
-
-                        <label class="label" style="margin-top:18px;">Enrolment URL</label>
-                        <textarea class="textarea mono" readonly x-text="enrolUrl" style="min-height:60px; word-break:break-all;"></textarea>
-                        <div class="form-row" style="gap:8px; margin-top:10px;">
-                            <button class="btn sm" @click="copyEnrolUrl()">Copy URL</button>
-                            <span class="field-help" style="margin-top:0;">Fallback — copy only if you can't scan. Most people just scan the code below.</span>
+                        <!-- QR is the primary path: hero, centered, fully visible. -->
+                        <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+                            <div x-html="qrSvg" style="width:232px; height:232px; background:#fff; padding:14px; border-radius:16px; box-sizing:border-box; display:grid; place-items:center;"></div>
+                            <div style="text-align:center; max-width:330px;">
+                                <div style="font-size:14px; font-weight:600; color:var(--fg);">Scan to set up the app</div>
+                                <div class="field-help" style="margin-top:4px;">Point the phone's Camera at this code — it opens airgapp and connects the relay. No typing.</div>
+                            </div>
                         </div>
 
-                        <label class="label" style="margin-top:18px;">Scan to set up the app</label>
-                        <div style="display:flex; align-items:center; gap:14px; margin-top:6px;">
-                            <div x-html="qrSvg" style="width:188px; height:188px; flex:0 0 auto; background:#fff; padding:10px; border-radius:10px; box-sizing:border-box;"></div>
-                            <span class="field-help" style="margin-top:0;">Open the Camera app on the phone that will control the car and point it at this code. It opens airgapp and connects the relay — no typing.</span>
+                        <!-- Fallback/backup, visually quiet: token + enrolment link. -->
+                        <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--line);">
+                            <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:8px;">
+                                <label class="label" style="margin:0;">Token · save as backup</label>
+                                <span style="font-size:11px; color:var(--ok); font-weight:600;">Shown once</span>
+                            </div>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <input class="input" readonly :value="issuedPlain" style="flex:1; font-family:'JetBrains Mono', ui-monospace, monospace; font-size:12.5px;">
+                                <button class="btn sm" style="flex:0 0 auto;" @click="copyToken()">Copy</button>
+                            </div>
+                            <button class="btn sm ghost" style="margin-top:10px;" @click="copyEnrolUrl()">Copy enrolment link instead</button>
                         </div>
                     </div>
                 </template>
