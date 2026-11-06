@@ -181,7 +181,13 @@
                         <textarea class="textarea mono" readonly x-text="enrolUrl" style="min-height:60px; word-break:break-all;"></textarea>
                         <div class="form-row" style="gap:8px; margin-top:10px;">
                             <button class="btn sm" @click="copyEnrolUrl()">Copy URL</button>
-                            <span class="field-help" style="margin-top:0;">Paste this into the client app's <strong>API URL</strong> field — it auto-fills token + nickname.</span>
+                            <span class="field-help" style="margin-top:0;">Fallback — copy only if you can't scan. Most people just scan the code below.</span>
+                        </div>
+
+                        <label class="label" style="margin-top:18px;">Scan to set up the app</label>
+                        <div style="display:flex; align-items:center; gap:14px; margin-top:6px;">
+                            <div x-html="qrSvg" style="width:188px; height:188px; flex:0 0 auto; background:#fff; padding:10px; border-radius:10px; box-sizing:border-box;"></div>
+                            <span class="field-help" style="margin-top:0;">Open the Camera app on the phone that will control the car and point it at this code. It opens airgapp and connects the relay — no typing.</span>
                         </div>
                     </div>
                 </template>
@@ -237,6 +243,8 @@
 {{end}}
 
 {{define "scripts"}}
+<!-- qrcode-generator 1.4.4 (MIT), vendored locally — the Pi dashboard runs offline. -->
+<script src="/static/js/qrcode.min.js"></script>
 <script>
 function settingsApp() {
     return {
@@ -255,10 +263,25 @@ function settingsApp() {
         newTokenName: '',
         issuedPlain: '',
         // enrolUrl bundles {api, token, nickname} into a single
-        // airgap://enrol?... URL the operator can copy into the
-        // client app — one-shot enrolment instead of three pastes.
+        // airgapp://enrol?... URL — rendered as a QR to scan with the
+        // phone camera (primary), and copyable as a fallback.
         // Computed in issueToken() once the plaintext is back.
         enrolUrl: '',
+        // Inline SVG QR of enrolUrl, generated client-side (the Pi is
+        // offline) by the vendored qrcode-generator. Scanning it opens the
+        // airgapp:// deep link and provisions the app in one step.
+        qrSvg: '',
+
+        renderEnrolQr() {
+            try {
+                const qr = qrcode(0, 'M'); // 0 = auto-size, 'M' = ~15% error correction
+                qr.addData(this.enrolUrl);
+                qr.make();
+                this.qrSvg = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+            } catch (e) {
+                this.qrSvg = ''; // Copy-URL fallback still works
+            }
+        },
 
         async load() {
             this.settings  = (await api.get('/api/settings'))     || {};
@@ -288,7 +311,8 @@ function settingsApp() {
                     token: this.issuedPlain,
                     nickname: name,
                 });
-                this.enrolUrl = 'airgap://enrol?' + params.toString();
+                this.enrolUrl = 'airgapp://enrol?' + params.toString();
+                this.renderEnrolQr();
                 await this.loadTokens();
             } catch (e) { /* api wrapper toasted */ }
         },
@@ -320,6 +344,7 @@ function settingsApp() {
             // Wipe plaintext from JS memory the instant the modal closes.
             this.issuedPlain = '';
             this.enrolUrl = '';
+            this.qrSvg = '';
             this.newTokenName = '';
             this.tokenDialogOpen = false;
         },
