@@ -21,8 +21,24 @@ type Filter struct {
 	// Group is an optional UI heading a filter is nested under (e.g.
 	// "System" for Nav/Maps/Time/Grok/Connectivity). Empty = ungrouped.
 	// Stored in the filters.grp column ("group" is a SQL reserved word).
-	Group     string    `json:"group"`
-	CreatedAt time.Time `json:"created_at"`
+	Group string `json:"group"`
+	// Ports are the destination port-holes this filter opens for every
+	// filtered device while it is enabled (filter_udp_ports /
+	// filter_tcp_ports), each with its own justification. Read-only in the
+	// API — seeded by migration and surfaced so the UI can list each as its
+	// own row (a ports-only filter like "Car Apps" has no domains, so without
+	// these it renders empty). dst-agnostic: the DNS allow-list still gates
+	// which IPs the device reaches on these ports.
+	Ports     []FilterPort `json:"ports"`
+	CreatedAt time.Time    `json:"created_at"`
+}
+
+// FilterPort is one port-hole a filter opens, with its justification.
+// Read-only in the API (seeded by migration, not editable in the UI).
+type FilterPort struct {
+	Proto       string `json:"proto"` // "UDP" | "TCP"
+	Port        int    `json:"port"`
+	Description string `json:"description"`
 }
 
 // FilterDomain is one allow-list entry inside a filter. New rows are

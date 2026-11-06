@@ -131,3 +131,63 @@ func TestFilterEnabledToggleAffectsAllowedDomains(t *testing.T) {
 		t.Errorf("enabled filter's domain missing from allow-list: %v", got)
 	}
 }
+
+// TestListAndGetSurfaceFilterPorts verifies the filter service attaches each
+// port-hole (filter_udp_ports / filter_tcp_ports) as its own entry WITH the
+// v24 description, so a ports-only filter like "Car Apps" lists its ports (one
+// row each, justified) instead of rendering empty.
+func TestListAndGetSurfaceFilterPorts(t *testing.T) {
+	db := memDB(t) // migrations incl. v23 (ports) + v24 (descriptions)
+	fs := NewFilterService(db)
+
+	all, err := fs.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	car := filterByName(t, all, "Car Apps")
+
+	// UDP first then TCP, each ascending: UDP 443, UDP 19302, TCP 4070, TCP 5228.
+	want := []models.FilterPort{
+		{Proto: "UDP", Port: 443},
+		{Proto: "UDP", Port: 19302},
+		{Proto: "TCP", Port: 4070},
+		{Proto: "TCP", Port: 5228},
+	}
+	if len(car.Ports) != len(want) {
+		t.Fatalf("Car Apps has %d ports, want %d (%v)", len(car.Ports), len(want), car.Ports)
+	}
+	for i, w := range want {
+		p := car.Ports[i]
+		if p.Proto != w.Proto || p.Port != w.Port {
+			t.Errorf("port[%d] = %s %d, want %s %d", i, p.Proto, p.Port, w.Proto, w.Port)
+		}
+		if p.Description == "" {
+			t.Errorf("port %s %d has no description (v24 backfill missing)", p.Proto, p.Port)
+		}
+	}
+
+	// Get() attaches ports with descriptions too.
+	got, err := fs.Get(car.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Ports) != len(want) || got.Ports[0].Description == "" {
+		t.Errorf("Get() ports = %v, want %d described entries", got.Ports, len(want))
+	}
+
+	// A domain-only filter has no ports (nil/empty), not a crash.
+	if nav := filterByName(t, all, "Nav"); len(nav.Ports) != 0 {
+		t.Errorf("Nav should have no ports, got %v", nav.Ports)
+	}
+}
+
+func filterByName(t *testing.T, fs []models.Filter, name string) models.Filter {
+	t.Helper()
+	for _, f := range fs {
+		if f.Name == name {
+			return f
+		}
+	}
+	t.Fatalf("filter %q not found", name)
+	return models.Filter{}
+}

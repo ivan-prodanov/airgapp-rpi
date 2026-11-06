@@ -53,7 +53,43 @@ func (s *FilterService) List() ([]models.Filter, error) {
 		f.Enabled = en == 1
 		out = append(out, f)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list filters rows: %w", err)
+	}
+	// Attach the port-holes each filter opens (read-only display). One bulk
+	// map covers both tables — O(1) queries, not N+1.
+	ports := s.loadPorts()
+	for i := range out {
+		out[i].Ports = ports[out[i].ID]
+	}
 	return out, nil
+}
+
+// loadPorts returns preset_id -> the port-holes (UDP then TCP, ascending)
+// each filter opens, with their descriptions. Tolerant of a missing table or
+// query error (skips that table) so the filters list never fails just because
+// ports can't be read — mirrors the firewall service's defensive port reads.
+func (s *FilterService) loadPorts() map[int64][]models.FilterPort {
+	m := map[int64][]models.FilterPort{}
+	for _, t := range []struct{ table, proto string }{
+		{"filter_udp_ports", "UDP"},
+		{"filter_tcp_ports", "TCP"},
+	} {
+		rows, err := s.db.Query("SELECT preset_id, port, description FROM " + t.table + " ORDER BY port ASC")
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var pid int64
+			var port int
+			var desc string
+			if err := rows.Scan(&pid, &port, &desc); err == nil {
+				m[pid] = append(m[pid], models.FilterPort{Proto: t.proto, Port: port, Description: desc})
+			}
+		}
+		rows.Close()
+	}
+	return m
 }
 
 func (s *FilterService) Get(id int64) (models.Filter, error) {
@@ -71,6 +107,7 @@ func (s *FilterService) Get(id int64) (models.Filter, error) {
 	}
 	f.IsSystem = sys == 1
 	f.Enabled = en == 1
+	f.Ports = s.loadPorts()[f.ID]
 	return f, nil
 }
 

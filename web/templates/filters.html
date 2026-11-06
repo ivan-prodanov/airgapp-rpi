@@ -66,7 +66,7 @@
                         <span class="filter-name" x-text="f.name"></span>
                         <template x-if="f.is_system"><span class="badge solid">System</span></template>
                         <template x-if="f.enabled">
-                            <span class="badge success dot">Applied · <span x-text="enabledCount(f) + '/' + (f.domains || []).length"></span></span>
+                            <span class="badge success dot">Applied · <span x-text="appliedLabel(f)"></span></span>
                         </template>
                         <template x-if="!f.enabled">
                             <span class="badge muted dot">Off — not applied</span>
@@ -97,6 +97,28 @@
 
             <!-- Expanded body -->
             <div class="filter-body" x-show="expanded.has(f.id)" x-cloak>
+                <template x-if="hasPorts(f)">
+                    <div style="margin-bottom:18px;">
+                        <div class="field-help" style="margin-bottom:8px;">
+                            <strong>Opened ports</strong> — on for every Filtered device while this filter is
+                            enabled, independent of the domain list (dst-agnostic — the DNS allow-list still
+                            gates the destinations). Seeded by migration; read-only.
+                        </div>
+                        <table class="tbl">
+                            <thead>
+                                <tr><th style="width:120px;">Port</th><th>Why</th></tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="p in (f.ports || [])" :key="p.proto + p.port">
+                                    <tr>
+                                        <td class="cell-mac" style="color:var(--fg);" x-text="p.proto + ' ' + p.port"></td>
+                                        <td><span style="color:var(--fg-dim); font-size:12px;" x-text="p.description || '—'"></span></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </template>
                 <div class="field-help" style="margin-bottom:14px;">
                     Every entry needs a <strong>description</strong> — justify why the domain is on the
                     list so the audit trail tells a story. New domains land <strong>disabled</strong>.
@@ -143,8 +165,11 @@
                                 </td>
                             </tr>
                         </template>
-                        <template x-if="(f.domains || []).length === 0">
+                        <template x-if="(f.domains || []).length === 0 && !hasPorts(f)">
                             <tr><td colspan="4" style="text-align:center; color:var(--fg-mute); padding:22px;">No domains yet. Add one above.</td></tr>
+                        </template>
+                        <template x-if="(f.domains || []).length === 0 && hasPorts(f)">
+                            <tr><td colspan="4" style="text-align:center; color:var(--fg-mute); padding:22px;">Ports-only filter — opens the ports above, no domains.</td></tr>
                         </template>
                     </tbody>
                 </table>
@@ -174,6 +199,19 @@ function filtersApp() {
         },
 
         enabledCount(f) { return (f.domains || []).filter(d => d.enabled).length; },
+
+        hasPorts(f) { return (f.ports || []).length > 0; },
+
+        // Badge label for an enabled filter: "enabled/total" domains when it
+        // has domains, else "N ports" for a ports-only filter (e.g. Car Apps),
+        // so the header never reads a misleading "0/0".
+        appliedLabel(f) {
+            const dom = (f.domains || []).length;
+            if (dom > 0) return this.enabledCount(f) + '/' + dom;
+            const n = (f.ports || []).length;
+            if (n > 0) return n + (n === 1 ? ' port' : ' ports');
+            return '0';
+        },
 
         // Group filters by their `group` field for the UI. Known groups
         // (System) come first in a fixed order; ungrouped filters render

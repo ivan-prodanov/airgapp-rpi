@@ -1085,6 +1085,27 @@ var migrations = []string{
 	 WHERE direction='forward' AND action='accept'
 	   AND ((protocol='udp' AND dest_port IN ('443','19302'))
 	     OR (protocol='tcp' AND dest_port IN ('5228','4070')));`,
+
+	// v24: give filter ports a human explanation so the Filters UI can list
+	// each one as its own row (like the firewall page) with a justification,
+	// instead of cramming them onto a line. ALTER adds the column; the
+	// UPDATEs backfill the ports v22/v23 seeded (keyed on preset+port, so
+	// each is idempotent and a no-op where the port is absent).
+	`ALTER TABLE filter_udp_ports ADD COLUMN description TEXT NOT NULL DEFAULT '';
+	ALTER TABLE filter_tcp_ports ADD COLUMN description TEXT NOT NULL DEFAULT '';
+
+	UPDATE filter_udp_ports SET description='QUIC / HTTP-3 for www.gstatic.com — dst-agnostic (bypasses the SNI proxy)'
+		WHERE port=443   AND preset_id=(SELECT id FROM filters WHERE name='Car Apps');
+	UPDATE filter_udp_ports SET description='WebRTC STUN (stun.l.google.com) — dst-agnostic'
+		WHERE port=19302 AND preset_id=(SELECT id FROM filters WHERE name='Car Apps');
+	UPDATE filter_tcp_ports SET description='FCM / GCM push (mobile-gtalk.l.google.com)'
+		WHERE port=5228  AND preset_id=(SELECT id FROM filters WHERE name='Car Apps');
+	UPDATE filter_tcp_ports SET description='Spotify access point — dst-agnostic (GSLB IPs rotate)'
+		WHERE port=4070  AND preset_id=(SELECT id FROM filters WHERE name='Car Apps');
+	UPDATE filter_udp_ports SET description='Grok voice assistant — QUIC (VIN mTLS)'
+		WHERE port=18113 AND preset_id=(SELECT id FROM filters WHERE name='Grok');
+	UPDATE filter_udp_ports SET description='NTP time sync — public pool.ntp.org'
+		WHERE port=123   AND preset_id=(SELECT id FROM filters WHERE name='Time');`,
 }
 
 // localSeeds holds operator-private seed statements that must NOT be
