@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{template "title" .}} — airgap</title>
+    <title>{{template "title" .}} — airgapp</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -15,11 +15,9 @@
         <div class="nav-scrim" @click="navOpen = false"></div>
         <aside class="rail">
             <div class="rail-brand">
-                <a href="/" class="rail-brand-mark">
-                    <span class="rail-brand-glyph"></span>
-                    <span>airgap</span>
+                <a href="/" class="rail-brand-mark" aria-label="Airgapp">
+                    <span class="brand-logo" style="width:148px; height:62px;"></span>
                 </a>
-                <div class="rail-brand-sub">netfilterd</div>
             </div>
 
             <div class="rail-status">
@@ -105,20 +103,9 @@
                     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
                 </button>
                 <div class="head-bar-l">
-                    <span>airgap</span>
-                    <span style="color:var(--fg-faint);">/</span>
                     <em>{{template "title" .}}</em>
                 </div>
                 <div class="head-bar-spacer"></div>
-                <div class="head-bar-stat" :title="shell.wanReachable ? 'WAN reachable' : 'WAN unreachable'">
-                    <span class="head-bar-stat-dot" :class="shell.wanReachable ? '' : 'danger'"></span>
-                    <span x-text="shell.wanReachable ? 'WAN reachable' : 'WAN unreachable'"></span>
-                </div>
-                <div class="head-bar-divider"></div>
-                <div class="head-bar-stat" title="Compile-time protected-deny list — sealed">
-                    <span class="head-bar-stat-dot danger"></span>
-                    <span><span x-text="shell.protectedDeny">15</span> protected-deny sealed</span>
-                </div>
             </div>
 
             <div class="content">

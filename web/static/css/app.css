@@ -89,7 +89,7 @@ code, .mono, .tnum { font-family: "JetBrains Mono", ui-monospace, monospace; fon
 .rail { background: var(--bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
 .rail-brand { padding: 28px 24px 22px; }
 .rail-brand-mark {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; justify-content: center; gap: 12px;
   font-size: 22px; font-weight: 600; letter-spacing: -0.025em; color: var(--fg);
   text-decoration: none;
 }
@@ -98,6 +98,15 @@ code, .mono, .tnum { font-family: "JetBrains Mono", ui-monospace, monospace; fon
 .rail-brand-glyph::before { background: var(--fg); clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
 .rail-brand-glyph::after  { background: var(--bg); inset: 6px; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
 .rail-brand-sub { margin-top: 6px; font-size: 11.5px; color: var(--fg-mute); margin-left: 34px; }
+/* Airgapp script wordmark. The PNG is white-on-transparent; using its alpha as a
+   mask and filling with the theme foreground renders it white in dark mode and
+   near-black in light mode from a single asset. Size is set per use site. */
+.brand-logo {
+  display: inline-block;
+  background-color: var(--fg);
+  -webkit-mask: url(/static/img/airgapp-logo.png) no-repeat center / contain;
+          mask: url(/static/img/airgapp-logo.png) no-repeat center / contain;
+}
 
 .rail-status {
   margin: 0 16px 22px; padding: 14px 16px;
