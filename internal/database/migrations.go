@@ -876,7 +876,224 @@ var migrations = []string{
 	DELETE FROM filter_domains
 		WHERE domain='www.google.com'
 		  AND preset_id=(SELECT id FROM filters WHERE name='YouTube');`,
+
+	// v23: pin the appliance to its deployed state, and make the car's
+	// non-HTTPS port-holes car-agnostic.
+	//
+	// Everything the operator curated live through the dashboard was DB-only
+	// and lost on a from-scratch install: the streaming/app filters (Max,
+	// Hulu, TikTok, Spotify, Prime, F1) and their domains, the extra domains
+	// hung on the system filters, Grok flipped on, and the YT Music OAuth
+	// endpoint enabled. This seeds all of it so a fresh Pi reproduces the
+	// running appliance. (A few operator-private hostnames are seeded
+	// separately out of a gitignored local_seed.go — see localSeeds.)
+	//
+	// The four non-HTTPS port-holes the car's apps need (QUIC/UDP 443,
+	// WebRTC-STUN/UDP 19302, FCM-push/TCP 5228, Spotify-AP/TCP 4070) used to
+	// live as firewall_rules pinned to one car's MAC — inert on any other
+	// car. They move to the filter->port model Grok/Time already use
+	// (filter_udp_ports + the new filter_tcp_ports), owned by a new always-on
+	// "Car Apps" system filter, so the forward-chain generator opens them for
+	// whatever device is 'filtered'. The MAC-pinned rules are then removed.
+	//
+	// All INSERTs are OR IGNORE against UNIQUE(name) / UNIQUE(preset_id,
+	// domain|port), so this is a strict no-op on the already-deployed Pi and
+	// only fills gaps on a fresh install.
+	`-- TCP sibling of filter_udp_ports (v22). Same contract: a filter opens
+	-- these TCP dest-ports for every filtered device while the filter is on.
+	CREATE TABLE IF NOT EXISTS filter_tcp_ports (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		preset_id  INTEGER NOT NULL REFERENCES filters(id) ON DELETE CASCADE,
+		port       INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),
+		UNIQUE(preset_id, port)
+	);
+	CREATE INDEX IF NOT EXISTS idx_filter_tcp_ports_preset ON filter_tcp_ports(preset_id);
+
+	-- Grok ships ENABLED now (operator decision; supersedes v22's forced
+	-- enabled=0). Opens udp/18113 for the filtered car in lockstep.
+	UPDATE filters SET enabled=1 WHERE name='Grok';
+
+	-- Enable the YT Music OAuth token endpoint in the seed (v19 shipped it
+	-- disabled as a pairing-only toggle; the operator keeps it on).
+	UPDATE filter_domains SET enabled=1
+		WHERE domain='oauth2.googleapis.com'
+		  AND preset_id=(SELECT id FROM filters WHERE name='YouTube');
+
+	-- Extra domains the operator curated onto the system filters from live
+	-- SNI-DROP review. OR IGNORE: a no-op where the row already exists.
+	INSERT OR IGNORE INTO filter_domains (preset_id, domain, description, enabled)
+	SELECT f.id,'adtrafficquality.google','Chrome',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'api.radiotime.com','Radio',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'controlplane.tailscale.com','tailscale',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'edgedl.me.gvt1.com','chrome extensions',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'google-analytics.com','Chrome',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'google.de','Google',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'googleadservices.com','Chrome',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'googletagmanager.com','Chrome extensions',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'googleusercontent.com','Chrome extension downloads',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'gstatic.com','Chrome',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'log.tailscale.com','tailscale',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'mobile.events.data.microsoft.com','msft',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'pagead2.googlesyndication.com','Chrome',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'www.microsoft.com','microsoft',1 FROM filters f WHERE f.name='Connectivity'
+	UNION ALL SELECT f.id,'speechcontainerpipeline.blob.core.windows.net','Speech',1 FROM filters f WHERE f.name='Grok'
+	UNION ALL SELECT f.id,'ae.nflximg.net','netflix imgs',1 FROM filters f WHERE f.name='Netflix'
+	UNION ALL SELECT f.id,'onetrust.com','Netflix',1 FROM filters f WHERE f.name='Netflix'
+	UNION ALL SELECT f.id,'onetrust.io','Netflix',1 FROM filters f WHERE f.name='Netflix'
+	UNION ALL SELECT f.id,'cnrd.io','yt music',1 FROM filters f WHERE f.name='YouTube'
+	UNION ALL SELECT f.id,'content-autofill.googleapis.com','consent',1 FROM filters f WHERE f.name='YouTube'
+	UNION ALL SELECT f.id,'googleapis.com','allow all google apis',1 FROM filters f WHERE f.name='YouTube'
+	UNION ALL SELECT f.id,'t1.cnrd.io','music',1 FROM filters f WHERE f.name='YouTube';
+
+	-- Streaming/app filters built in the dashboard. is_system=0 keeps them
+	-- operator-deletable; enabled=1 matches the live appliance.
+	INSERT OR IGNORE INTO filters (name, description, is_system, enabled, grp) VALUES
+    ('F1','Formula 1',0,1,''),
+    ('Hulu','Hulu',0,1,''),
+    ('Max','Max',0,1,''),
+    ('Prime','Prime video',0,1,''),
+    ('Spotify','Spotify',0,1,''),
+    ('TikTok','Allows tiktok',0,1,'');
+
+	INSERT OR IGNORE INTO filter_domains (preset_id, domain, description, enabled)
+	SELECT f.id,'formula1.com','formula 1',1 FROM filters f WHERE f.name='F1'
+	UNION ALL SELECT f.id,'adobedtm.com','CDN',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'bamgrid.com','disney',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'browser-intake-datadoghq.com','browser',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'cdn.cookielaw.org','CDN',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'cdn.jsdelivr.net','cdn',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'clientsdk.launchdarkly.com','cdn',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'consent-api.onetrust.com','consent',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'conviva.com','hulu videos',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'demdex.net','CDN',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'disney-plus.net','disney',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'disney.com','disney',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'disneyplus.com','disney',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'dssott.com','watching videos',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'espn.com','espn',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'events.launchdarkly.com','events',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'hulu.com','hulu',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'log.go.com','login',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'prod-static.disney-plus.net','disney',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'registerdisney.go.com','disney',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'unpkg.com','unpkg',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'www.disneyplus.com','disney',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'www.hulu.com','Hulu',1 FROM filters f WHERE f.name='Hulu'
+	UNION ALL SELECT f.id,'1rx.io','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'33across.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'360yield.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'3lift.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'ad-stir.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'adingo.jp','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'admixer.net','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'adnxs.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'adsrvr.org','js',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'adtarget.com.tr','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'adtech.ink','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'amplitude.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'app.link','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'atlas.ngtv.io','max',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'bidence.net','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'bing.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'branch.io','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'braze-images.com','max images',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'braze.com','images',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'brightline.tv','hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'byspotify.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'casalemedia.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'ck-ie.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'connectad.io','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'contextweb.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'creativecdn.com','Cdn',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'discomax.com','images max',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'dmxleo.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'doubleclick.net','Ads',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'e-planning.net','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'e.hbo','hbo video',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'feroot.com','Max',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'fwmrm.net','hbo video',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'go-mpulse.net','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'google.bg','Max',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'googlesyndication.com','Max',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'gssprt.jp','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'gumgum.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'hbomax.com','hbomax',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'inmobi.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'lijit.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'loopme.me','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'max.com','max',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'media.net','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'mediamelon.com','hbo video',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'mgid.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'microad.jp','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'missena.io','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'mobon.net','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'ne.jp','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'nexx360.io','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'onetag-sys.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'openx.net','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'opera.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'outbrain.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'pinimg.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'pinterest.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'pubmatic.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'rakuten.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'reddit.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'redditstatic.com','Cdn',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'rubiconproject.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'s.go-mpulse.net','max',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'seedtag.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'sharethrough.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'smaato.net','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'smartadserver.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'socdm.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'sonobi.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'taboola.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'teads.tv','Max',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'tiktokw.us','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'tpmn.co.kr','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'udmserve.net','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'www.hbomax.com','max domain',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'www.max.com','main domain',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'yieldmo.com','Hbo',1 FROM filters f WHERE f.name='Max'
+	UNION ALL SELECT f.id,'primevideo.com','Prime',1 FROM filters f WHERE f.name='Prime'
+	UNION ALL SELECT f.id,'spotify.com','spotify',1 FROM filters f WHERE f.name='Spotify'
+	UNION ALL SELECT f.id,'tiktok.com','tiktok main',1 FROM filters f WHERE f.name='TikTok'
+	UNION ALL SELECT f.id,'tiktokcdn-eu.com','tiktok eu cdn',1 FROM filters f WHERE f.name='TikTok'
+	UNION ALL SELECT f.id,'tiktokcdn.com','tiktok cdn',1 FROM filters f WHERE f.name='TikTok'
+	UNION ALL SELECT f.id,'www.tiktok.com','tiktok main domain',1 FROM filters f WHERE f.name='TikTok';
+
+	-- Car Apps: new always-on system filter owning the car's non-HTTPS
+	-- port-holes. Filter-scoped (applied per status='filtered' device),
+	-- never a hardcoded MAC, so it works on any car and never opens for an
+	-- unknown/blocked device. dst-agnostic on purpose: the DNS default-deny
+	-- still confines which IPs the car can reach on these ports.
+	INSERT OR IGNORE INTO filters (name, description, is_system, enabled, grp) VALUES
+		('Car Apps','Non-HTTPS ports the in-car apps need: QUIC/UDP 443, WebRTC-STUN/UDP 19302, FCM push/TCP 5228, Spotify access point/TCP 4070. Opened only for the filtered car; the DNS allow-list still gates the destinations.',1,1,'System');
+	INSERT OR IGNORE INTO filter_udp_ports (preset_id, port)
+		SELECT id,443   FROM filters WHERE name='Car Apps'
+		UNION ALL SELECT id,19302 FROM filters WHERE name='Car Apps';
+	INSERT OR IGNORE INTO filter_tcp_ports (preset_id, port)
+		SELECT id,5228 FROM filters WHERE name='Car Apps'
+		UNION ALL SELECT id,4070 FROM filters WHERE name='Car Apps';
+
+	-- Drop the legacy MAC-pinned port-holes now superseded by Car Apps.
+	-- Matched by their exact (direction, action, protocol, dest_port) so
+	-- only these four forward/accept holes go; any other operator rule is
+	-- untouched. No-op on a fresh install (firewall_rules is empty there).
+	DELETE FROM firewall_rules
+	 WHERE direction='forward' AND action='accept'
+	   AND ((protocol='udp' AND dest_port IN ('443','19302'))
+	     OR (protocol='tcp' AND dest_port IN ('5228','4070')));`,
 }
+
+// localSeeds holds operator-private seed statements that must NOT be
+// committed (e.g. internal hostnames). They live in a gitignored
+// local_seed.go on the operator's machine, appended via init(); on a
+// fresh clone the slice is empty and Migrate seeds nothing extra. Each
+// statement is re-asserted idempotently (OR IGNORE) on every run, after
+// the versioned migrations, so it applies to a fresh or migrated DB.
+var localSeeds []string
 
 func Migrate(db *sql.DB) error {
 	var currentVersion int
@@ -910,6 +1127,12 @@ func Migrate(db *sql.DB) error {
 		}
 
 		log.Printf("[DB] Migration v%d applied", version)
+	}
+
+	for i, stmt := range localSeeds {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("apply local seed %d: %w", i, err)
+		}
 	}
 
 	return nil

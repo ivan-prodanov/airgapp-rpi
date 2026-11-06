@@ -24,3 +24,6 @@ probe_result.txt
 # Local tooling and agent settings
 .claude/
 everything-claude-code/
+
+# Operator-private DB seed (internal hostnames) — never commit
+internal/database/local_seed.go

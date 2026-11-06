@@ -253,9 +253,10 @@ func TestRefreshCache_FilteredSetAndSuffixes(t *testing.T) {
 	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain, enabled) VALUES (?, 'auth.tesla.com', 1)`, fID)
 	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain, enabled) VALUES (?, 'staged.example.com', 0)`, fID)
 
-	// Seeded system filters ship enabled; disable them so the cache holds
-	// only our injected domain.
-	mustExec(t, db, `UPDATE filters SET enabled=0 WHERE is_system=1`)
+	// Seeded filters (the system presets + the v23 streaming/app filters)
+	// ship enabled; disable everything except our injected FilterTest so the
+	// cache holds only its live domain.
+	mustExec(t, db, `UPDATE filters SET enabled=0 WHERE name != 'FilterTest'`)
 
 	s := NewSNIProxyService(config.Config{}, db, NewTrafficLogService(db))
 	s.RefreshCache()

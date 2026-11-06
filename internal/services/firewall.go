@@ -169,6 +169,45 @@ func (s *FirewallService) filterUDPPorts() []int {
 	return ports
 }
 
+// filterTCPPorts is the TCP sibling of filterUDPPorts: the distinct TCP
+// destination ports opened by all currently-enabled filters (e.g. Car Apps'
+// FCM/5228 and Spotify-AP/4070). Each becomes a forward-chain accept for every
+// filtered device, in lockstep with that filter's enable flag — the same
+// per-device, dst-agnostic contract as the UDP ports (the default-deny
+// resolver still confines which IPs the device can reach on that port).
+func (s *FirewallService) filterTCPPorts() []int {
+	if s.db == nil {
+		return nil
+	}
+	rows, err := s.db.Query(`
+		SELECT DISTINCT ftp.port
+		FROM filter_tcp_ports ftp
+		JOIN filters f ON f.id = ftp.preset_id
+		WHERE f.enabled = 1
+		ORDER BY ftp.port ASC`)
+	if err != nil {
+		log.Printf("[FIREWALL] filter tcp ports query: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var ports []int
+	for rows.Next() {
+		var p int
+		if err := rows.Scan(&p); err != nil {
+			log.Printf("[FIREWALL] scan tcp port: %v", err)
+			return nil
+		}
+		if p >= 1 && p <= 65535 {
+			ports = append(ports, p)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[FIREWALL] filter tcp ports rows: %v", err)
+		return nil
+	}
+	return ports
+}
+
 func (s *FirewallService) Apply() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -411,6 +450,14 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 	for _, port := range s.filterUDPPorts() {
 		for _, mac := range snap.filtered {
 			fmt.Fprintf(&b, "        ether saddr %s udp dport %d ct state new log prefix \"[NETFILTER-ACCEPT] \" accept\n", mac, port)
+		}
+	}
+	// System-preset TCP ports (Car Apps' FCM/5228, Spotify-AP/4070, …) — the
+	// TCP counterpart of the UDP block above, same per-filtered-device,
+	// dst-agnostic contract. `ct state new` is the SYN, logged once per flow.
+	for _, port := range s.filterTCPPorts() {
+		for _, mac := range snap.filtered {
+			fmt.Fprintf(&b, "        ether saddr %s tcp dport %d ct state new log prefix \"[NETFILTER-ACCEPT] \" accept\n", mac, port)
 		}
 	}
 	b.WriteString("        ct state new log prefix \"[NETFILTER-DROP] \" drop\n")

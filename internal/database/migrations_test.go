@@ -158,18 +158,21 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 		t.Errorf("Disney+ filter still present after v19 drop: count=%d", disneyCount)
 	}
 	// Its domain rows must be gone too (FK isn't ON DELETE CASCADE, the
-	// migration deletes them explicitly first).
-	var disneyDomains int
+	// migration deletes them explicitly first). Check for ORPHANS — rows
+	// whose preset_id no longer resolves to a filter — rather than by domain
+	// name: v23's Hulu filter legitimately carries Disney/BAMTech hosts
+	// (disneyplus.com, disney-plus.net, dssott.com, bamgrid.com) under the
+	// Hulu+Disney bundle, so a name-based check would false-positive on those.
+	var orphanDomains int
 	if err := db.QueryRow(`
 		SELECT COUNT(*) FROM filter_domains fd
 		LEFT JOIN filters f ON f.id = fd.preset_id
 		WHERE f.id IS NULL
-		   OR fd.domain IN ('disneyplus.com','disney-plus.net','dssott.com','bamgrid.com')
-	`).Scan(&disneyDomains); err != nil {
-		t.Fatalf("count orphan/disney domains: %v", err)
+	`).Scan(&orphanDomains); err != nil {
+		t.Fatalf("count orphan domains: %v", err)
 	}
-	if disneyDomains != 0 {
-		t.Errorf("Disney+ domain rows survived v19: %d", disneyDomains)
+	if orphanDomains != 0 {
+		t.Errorf("orphaned filter_domains rows survived the Disney+ drop: %d", orphanDomains)
 	}
 
 	// Nav (v22, was "Tesla AP/Nav"): Tesla nav/driving data only. v22 moved
@@ -223,24 +226,29 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 		t.Errorf("Maps still has pool.ntp.org — v22 moved it to Time")
 	}
 
-	// YouTube: 15 domains after v19 (v18 brought it to 13; v19 added
-	// lh3.googleusercontent.com + oauth2.googleapis.com — the latter
-	// seeded DISABLED as a deliberate toggle for YT Music sign-in).
+	// YouTube: 14 domains after v19; v23 adds 4 more (cnrd.io, t1.cnrd.io,
+	// content-autofill.googleapis.com, googleapis.com) curated live for YT
+	// Music → 18. oauth2.googleapis.com, seeded disabled in v19, is flipped
+	// on by v23 (see the enabled-state block below).
 	wantYT := map[string]bool{
-		"accounts.google.bg":        true,
-		"accounts.google.com":       true,
-		"fonts.googleapis.com":      true,
-		"fonts.gstatic.com":         true,
-		"gds.google.com":            true,
-		"ggpht.com":                 true,
-		"googlevideo.com":           true,
-		"lh3.googleusercontent.com": true, // v19
-		"oauth2.googleapis.com":     true, // v19, seeded disabled
-		"www.gstatic.com":           true, // www.google.com moved to Connectivity in v22
-		"youtu.be":                  true,
-		"youtube-ui.l.google.com":   true,
-		"youtube.com":               true,
-		"ytimg.com":                 true,
+		"accounts.google.bg":              true,
+		"accounts.google.com":             true,
+		"fonts.googleapis.com":            true,
+		"fonts.gstatic.com":               true,
+		"gds.google.com":                  true,
+		"ggpht.com":                       true,
+		"googlevideo.com":                 true,
+		"lh3.googleusercontent.com":       true, // v19
+		"oauth2.googleapis.com":           true, // v19, v23 enabled it
+		"www.gstatic.com":                 true, // www.google.com moved to Connectivity in v22
+		"youtu.be":                        true,
+		"youtube-ui.l.google.com":         true,
+		"youtube.com":                     true,
+		"ytimg.com":                       true,
+		"cnrd.io":                         true, // v23
+		"t1.cnrd.io":                      true, // v23
+		"content-autofill.googleapis.com": true, // v23
+		"googleapis.com":                  true, // v23
 	}
 	gotYT := filterDomainSet(t, db, "YouTube")
 	if len(gotYT) != len(wantYT) {
@@ -315,30 +323,31 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 			t.Errorf("%s should have exactly one udp port %d (found %d)", tc.filter, tc.port, n)
 		}
 	}
-	// Grok ships DISABLED (opt-in) and in the System group.
+	// Grok ships ENABLED as of v23 (operator default; v22 shipped it off and
+	// v23's UPDATE supersedes that) and stays in the System group.
 	var grokEnabled int
 	var grokGrp string
 	if err := db.QueryRow("SELECT enabled, grp FROM filters WHERE name='Grok'").Scan(&grokEnabled, &grokGrp); err != nil {
 		t.Fatalf("read Grok: %v", err)
 	}
-	if grokEnabled != 0 {
-		t.Errorf("Grok ships enabled=%d, want 0 (opt-in)", grokEnabled)
+	if grokEnabled != 1 {
+		t.Errorf("Grok ships enabled=%d, want 1 (v23 enabled it by default)", grokEnabled)
 	}
 	if grokGrp != "System" {
 		t.Errorf("Grok grp=%q, want System", grokGrp)
 	}
 
-	// Seed enabled-state invariants. YouTube has ONE intentionally-
-	// disabled row (oauth2.googleapis.com); everything else seeded by
-	// the system filters must be enabled.
+	// Seed enabled-state invariants. As of v23 every system-filter domain
+	// row is enabled — v23 flipped on the last disabled one
+	// (oauth2.googleapis.com in YouTube).
 	enabledFilters := map[string]int{
 		"Nav":          0, // 0 disabled rows
 		"Maps":         0,
 		"Time":         0,
-		"Grok":         0, // filter is OFF but its domain rows are enabled
+		"Grok":         0, // filter enabled (v23); its domain rows are enabled too
 		"Connectivity": 0,
 		"Twitch":       0,
-		"YouTube":      1, // exactly oauth2.googleapis.com is off
+		"YouTube":      0, // v23 enabled oauth2.googleapis.com — nothing off now
 	}
 	for fname, wantDisabled := range enabledFilters {
 		var disabled int
@@ -353,7 +362,7 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 			t.Errorf("%s has %d disabled rows; want exactly %d", fname, disabled, wantDisabled)
 		}
 	}
-	// Specifically: oauth2.googleapis.com is the ONE YouTube row off.
+	// oauth2.googleapis.com: seeded disabled in v19, enabled by v23.
 	var oauth2Enabled int
 	if err := db.QueryRow(`
 		SELECT fd.enabled FROM filter_domains fd
@@ -362,7 +371,99 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 	`).Scan(&oauth2Enabled); err != nil {
 		t.Fatalf("read oauth2 enabled: %v", err)
 	}
-	if oauth2Enabled != 0 {
-		t.Errorf("oauth2.googleapis.com seeded enabled=%d, want 0 (toggle-on-during-YT-Music-pairing)", oauth2Enabled)
+	if oauth2Enabled != 1 {
+		t.Errorf("oauth2.googleapis.com enabled=%d, want 1 (v23 enabled it)", oauth2Enabled)
+	}
+}
+
+// TestMigrateV23SeedsLiveState verifies v23 reproduces the operator's
+// deployed appliance: the dashboard-built streaming/app filters and their
+// domains, the new filter_tcp_ports table, and the always-on "Car Apps"
+// filter that owns the car's non-HTTPS port-holes via the (car-agnostic)
+// filter->port model.
+func TestMigrateV23SeedsLiveState(t *testing.T) {
+	db := openMemory(t)
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// filter_tcp_ports table exists (TCP sibling of filter_udp_ports).
+	var tbl string
+	if err := db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='table' AND name='filter_tcp_ports'",
+	).Scan(&tbl); err != nil {
+		t.Fatalf("filter_tcp_ports table missing: %v", err)
+	}
+
+	// The 6 dashboard-built filters: present, user-owned, enabled.
+	for _, name := range []string{"Max", "Hulu", "TikTok", "Spotify", "Prime", "F1"} {
+		var isSys, enabled int
+		if err := db.QueryRow("SELECT is_system, enabled FROM filters WHERE name=?", name).Scan(&isSys, &enabled); err != nil {
+			t.Errorf("user filter %q missing: %v", name, err)
+			continue
+		}
+		if isSys != 0 {
+			t.Errorf("%s is_system=%d, want 0 (operator-deletable)", name, isSys)
+		}
+		if enabled != 1 {
+			t.Errorf("%s enabled=%d, want 1", name, enabled)
+		}
+	}
+
+	// Spot-check representative seeded domains under the right filter.
+	for _, tc := range []struct{ filter, domain string }{
+		{"Max", "max.com"}, {"Max", "hbomax.com"},
+		{"Hulu", "hulu.com"}, {"Hulu", "disneyplus.com"},
+		{"TikTok", "tiktok.com"}, {"Spotify", "spotify.com"},
+		{"Prime", "primevideo.com"}, {"F1", "formula1.com"},
+		{"Netflix", "onetrust.com"}, {"YouTube", "googleapis.com"},
+		{"Grok", "speechcontainerpipeline.blob.core.windows.net"},
+	} {
+		var n int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM filter_domains d JOIN filters f ON f.id=d.preset_id WHERE f.name=? AND d.domain=?`,
+			tc.filter, tc.domain,
+		).Scan(&n); err != nil {
+			t.Fatalf("domain check: %v", err)
+		}
+		if n != 1 {
+			t.Errorf("%s should contain %q exactly once (found %d)", tc.filter, tc.domain, n)
+		}
+	}
+
+	// Car Apps: always-on system filter in the System group.
+	var caSys, caEnabled int
+	var caGrp string
+	if err := db.QueryRow("SELECT is_system, enabled, grp FROM filters WHERE name='Car Apps'").Scan(&caSys, &caEnabled, &caGrp); err != nil {
+		t.Fatalf("Car Apps filter missing: %v", err)
+	}
+	if caSys != 1 || caEnabled != 1 || caGrp != "System" {
+		t.Errorf("Car Apps is_system=%d enabled=%d grp=%q, want 1/1/System", caSys, caEnabled, caGrp)
+	}
+
+	// Car Apps owns exactly its 4 port-holes: udp 443+19302, tcp 5228+4070.
+	for _, tc := range []struct {
+		table string
+		port  int
+	}{{"filter_udp_ports", 443}, {"filter_udp_ports", 19302}, {"filter_tcp_ports", 5228}, {"filter_tcp_ports", 4070}} {
+		var n int
+		q := "SELECT COUNT(*) FROM " + tc.table + " p JOIN filters f ON f.id=p.preset_id WHERE f.name='Car Apps' AND p.port=?"
+		if err := db.QueryRow(q, tc.port).Scan(&n); err != nil {
+			t.Fatalf("%s port check: %v", tc.table, err)
+		}
+		if n != 1 {
+			t.Errorf("Car Apps should own %s port %d exactly once (found %d)", tc.table, tc.port, n)
+		}
+	}
+
+	// A fresh install must carry NO legacy MAC-pinned port-hole rules — they
+	// only ever existed as runtime firewall_rules on the deployed Pi, and
+	// v23's DELETE removes them there.
+	var fw int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM firewall_rules WHERE direction='forward' AND action='accept' AND ((protocol='udp' AND dest_port IN ('443','19302')) OR (protocol='tcp' AND dest_port IN ('5228','4070')))`).Scan(&fw); err != nil {
+		t.Fatalf("firewall_rules check: %v", err)
+	}
+	if fw != 0 {
+		t.Errorf("fresh install has %d legacy MAC-pinned port-hole rules, want 0", fw)
 	}
 }

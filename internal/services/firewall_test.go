@@ -278,3 +278,48 @@ func TestVerifyRejectsEmptyMAC(t *testing.T) {
 		t.Fatalf("the error must indicate the list is malformed, got: %v", err)
 	}
 }
+
+// TestGenerateConfig_CarAppsPorts verifies the v23 "Car Apps" filter opens its
+// non-HTTPS port-holes (QUIC/UDP 443, STUN/UDP 19302, FCM/TCP 5228,
+// Spotify-AP/TCP 4070) in the forward chain for the FILTERED car — keyed on
+// the device's status, never a hardcoded MAC — and for nobody when nothing is
+// filtered.
+func TestGenerateConfig_CarAppsPorts(t *testing.T) {
+	db := memDB(t) // runs every migration incl. v23 → Car Apps enabled with its ports
+	s := &FirewallService{db: db, cfg: config.Config{
+		LANInterface: "wlan0",
+		WANInterface: "wlan1",
+		LANGateway:   "192.168.4.1",
+		SNIProxyPort: 8444,
+		DNSUpstream:  "1.1.1.1",
+	}}
+	// A neutral fixture MAC — the whole point is that the port-holes key on
+	// the device's 'filtered' status, not on any particular car's address.
+	const mac = "aa:bb:cc:00:00:01"
+	out := s.generateConfig(nil, deviceSnapshot{filtered: []string{mac}})
+
+	for _, want := range []string{
+		"ether saddr " + mac + " udp dport 443 ct state new log prefix \"[NETFILTER-ACCEPT] \" accept",
+		"ether saddr " + mac + " udp dport 19302 ct state new log prefix \"[NETFILTER-ACCEPT] \" accept",
+		"ether saddr " + mac + " tcp dport 5228 ct state new log prefix \"[NETFILTER-ACCEPT] \" accept",
+		"ether saddr " + mac + " tcp dport 4070 ct state new log prefix \"[NETFILTER-ACCEPT] \" accept",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("forward chain missing Car Apps port-hole:\n  %s", want)
+		}
+	}
+
+	// Car-agnostic + default-deny preserved: with no filtered device, none of
+	// the Car Apps port-holes render.
+	none := s.generateConfig(nil, deviceSnapshot{})
+	for _, absent := range []string{
+		"udp dport 443 ct state new",
+		"udp dport 19302 ct state new",
+		"tcp dport 5228 ct state new",
+		"tcp dport 4070 ct state new",
+	} {
+		if strings.Contains(none, absent) {
+			t.Errorf("port-hole %q opened with no filtered device (must be car-only)", absent)
+		}
+	}
+}
