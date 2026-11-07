@@ -122,3 +122,20 @@ func TestClassCountsSince(t *testing.T) {
 		t.Errorf("blocked=%d allowed=%d, want 5 and 5", blocked, allowed)
 	}
 }
+
+// ActiveSince reports which clients produced any traffic recently: by MAC for
+// forward/SNI rows, by IP for DNS rows (which carry no MAC).
+func TestActiveSince(t *testing.T) {
+	db := memDB(t)
+	s := NewTrafficLogService(db)
+	logRow(t, db, 2*time.Second, "AA:BB:CC:00:00:0A", "192.168.4.10", "a.example", "allowed", "sniproxy")
+	logRow(t, db, 2*time.Second, "", "192.168.4.11", "b.example", "resolved", "dns")
+	logRow(t, db, 30*time.Second, "aa:bb:cc:00:00:0c", "192.168.4.12", "c.example", "blocked", "sniproxy")
+	macs, ips, err := s.ActiveSince(time.Now().Add(-5 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !macs["aa:bb:cc:00:00:0a"] || !ips["192.168.4.11"] || macs["aa:bb:cc:00:00:0c"] || ips["192.168.4.12"] {
+		t.Errorf("macs=%v ips=%v; want A by MAC, B by IP, not C", macs, ips)
+	}
+}

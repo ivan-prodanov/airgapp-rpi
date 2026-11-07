@@ -67,6 +67,28 @@ func (h *DevicesHandler) List(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, out)
 }
 
+// Activity lists the devices (uppercase MACs) with any traffic in the last few
+// seconds, matched by MAC or by their current IP. The Devices page blips those rows.
+func (h *DevicesHandler) Activity(w http.ResponseWriter, r *http.Request) {
+	active := []string{}
+	macs, ips, err := h.trafficLog.ActiveSince(time.Now().Add(-5 * time.Second))
+	if err != nil {
+		JSON(w, http.StatusOK, map[string]any{"active": active})
+		return
+	}
+	devices, err := h.network.ListDevices()
+	if err != nil {
+		JSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, d := range devices {
+		if macs[strings.ToLower(d.MACAddress)] || (d.IPAddress != "" && ips[d.IPAddress]) {
+			active = append(active, d.MACAddress)
+		}
+	}
+	JSON(w, http.StatusOK, map[string]any{"active": active})
+}
+
 // macFromPath extracts and validates an uppercased MAC from chi's {mac}
 // path parameter. devices.mac_address is stored uppercase by
 // parseDHCPLeases/parseARP, so normalise here before the SQL comparison.

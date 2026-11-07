@@ -406,6 +406,31 @@ func (s *TrafficLogService) ClassCountsSince(mac, ip string, since time.Time) (b
 	return int(b.Int64), int(a.Int64)
 }
 
+// ActiveSince returns the clients that produced any traffic since the given
+// time: lower-cased MACs (forward and SNI rows) and IPs (DNS rows carry no MAC).
+func (s *TrafficLogService) ActiveSince(since time.Time) (macs, ips map[string]bool, err error) {
+	macs, ips = map[string]bool{}, map[string]bool{}
+	rows, err := s.db.Query(`SELECT DISTINCT LOWER(COALESCE(client_mac,'')), COALESCE(client_ip,'')
+		FROM query_log WHERE timestamp >= ?`, since.UTC().Format("2006-01-02 15:04:05"))
+	if err != nil {
+		return macs, ips, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mac, ip string
+		if err := rows.Scan(&mac, &ip); err != nil {
+			return macs, ips, err
+		}
+		if mac != "" {
+			macs[mac] = true
+		}
+		if ip != "" {
+			ips[ip] = true
+		}
+	}
+	return macs, ips, rows.Err()
+}
+
 func (s *TrafficLogService) CountByActionSince(action string, since time.Time) int {
 	var n int
 	err := s.db.QueryRow(

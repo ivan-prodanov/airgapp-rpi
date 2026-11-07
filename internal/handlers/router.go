@@ -164,6 +164,7 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 
 			r.Route("/devices", func(r chi.Router) {
 				r.Get("/", devH.List)
+				r.Get("/activity", devH.Activity)
 				r.Put("/{mac}", devH.Update)
 				r.Put("/{mac}/status", devH.SetStatus)
 				r.Delete("/{mac}", devH.Delete)

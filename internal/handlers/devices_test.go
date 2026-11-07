@@ -35,6 +35,7 @@ func newDevicesTest(t *testing.T) (*chi.Mux, *sql.DB) {
 	r := chi.NewRouter()
 	r.Route("/api/devices", func(r chi.Router) {
 		r.Get("/", h.List)
+		r.Get("/activity", h.Activity)
 		r.Put("/{mac}", h.Update)
 	})
 	return r, db
@@ -165,4 +166,27 @@ func TestListDevices_MarksTesla(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestDeviceActivity(t *testing.T) {
+	r, db := newDevicesTest(t)
+	addDevice(t, db, "AA:BB:CC:00:00:0A", "192.168.4.10", "a", "", 0)
+	addDevice(t, db, "AA:BB:CC:00:00:0B", "192.168.4.11", "b", "", 0)
+	addDevice(t, db, "AA:BB:CC:00:00:0C", "192.168.4.12", "c", "", 0)
+	addLogRows(t, db, "AA:BB:CC:00:00:0A", "192.168.4.10", "allowed", 1, "-2 seconds")
+	if _, err := db.Exec(`INSERT INTO query_log (timestamp, client_ip, domain, action, client_mac, source)
+		VALUES (datetime('now','-2 seconds'), '192.168.4.11', 'b.example', 'resolved', '', 'dns')`); err != nil {
+		t.Fatal(err)
+	}
+	addLogRows(t, db, "AA:BB:CC:00:00:0C", "192.168.4.12", "blocked", 1, "-30 seconds")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest("GET", "/api/devices/activity", nil))
+	var body struct{ Active []string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body, err)
+	}
+	got := strings.Join(body.Active, ",")
+	if rec.Code != 200 || !strings.Contains(got, "AA:BB:CC:00:00:0A") || !strings.Contains(got, "AA:BB:CC:00:00:0B") || strings.Contains(got, "AA:BB:CC:00:00:0C") {
+		t.Errorf("got %d %s, want A and B active, not C", rec.Code, rec.Body)
+	}
 }
