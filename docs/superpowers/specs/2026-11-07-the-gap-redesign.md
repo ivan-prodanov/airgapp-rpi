@@ -191,7 +191,7 @@ Decided 2026-11-07: the page has **no** regime switch and **no** pause button. T
 - **Section headings:** "Ports" and "Domains". Ports are read-only. Built-in filters can't be deleted.
 - **Hits:** allowed events per domain over the last 7 days, most-used first, exact numbers. Zero shows "no hits".
 - **Search** matches filter names and domains only.
-- **Rejected domains:** always-blocked domains and too-broad parents are refused with the existing server messages.
+- **Rejected domains:** always-blocked domains, too-broad parents, duplicates and invalid names are refused by the server in the mockup's words ("d is always blocked. It can't be allowed.", "d is too broad: …", "d is already in F.", "Enter a domain like cdn.example.com."). A pasted URL is accepted as its host.
 
 ### System `/system`
 - **Vitals:** uptime, °C and load, memory, storage, and WAN ↓/↑ as rates.
