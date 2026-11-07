@@ -25,8 +25,8 @@ type Filter struct {
 	// filtered device while it is enabled (filter_udp_ports /
 	// filter_tcp_ports), each with its own justification. Read-only in the
 	// API — seeded by migration and surfaced so the UI can list each as its
-	// own row (a filter with ports and no domains would, without
-	// these it renders empty). dst-agnostic: the DNS allow-list still gates
+	// own row (without them, a filter with ports and no domains would
+	// render empty). dst-agnostic: the DNS allow-list still gates
 	// which IPs the device reaches on these ports.
 	Ports     []FilterPort `json:"ports"`
 	CreatedAt time.Time    `json:"created_at"`
