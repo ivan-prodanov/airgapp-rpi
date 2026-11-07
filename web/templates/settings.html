@@ -172,7 +172,15 @@
                     <div>
                         <!-- QR is the primary path: hero, centered, fully visible. -->
                         <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
-                            <div x-html="qrSvg" style="width:232px; height:232px; background:#fff; padding:14px; border-radius:16px; box-sizing:border-box; display:grid; place-items:center;"></div>
+                            <div style="position:relative; width:232px; height:232px; background:#fff; padding:14px; border-radius:16px; box-sizing:border-box;">
+                                <div x-html="qrSvg" style="width:100%; height:100%; display:grid; place-items:center;"></div>
+                                <!-- Airgapp mark in the QR centre. renderEnrolQr uses 'H' error correction (~30%) so the covered modules still recover. -->
+                                <template x-if="qrSvg">
+                                    <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:52px; height:52px; background:#fff; border-radius:14px; padding:4px; box-sizing:border-box;">
+                                        <img src="/static/img/airgapp-icon.png" alt="" style="width:100%; height:100%; border-radius:10px; display:block;">
+                                    </div>
+                                </template>
+                            </div>
                             <div style="text-align:center; max-width:330px;">
                                 <div style="font-size:14px; font-weight:600; color:var(--fg);">Scan to set up the app</div>
                                 <div class="field-help" style="margin-top:4px;">Point the phone's Camera at this code — it opens airgapp and connects the relay. No typing.</div>
@@ -276,7 +284,7 @@ function settingsApp() {
 
         renderEnrolQr() {
             try {
-                const qr = qrcode(0, 'M'); // 0 = auto-size, 'M' = ~15% error correction
+                const qr = qrcode(0, 'H'); // 0 = auto-size, 'H' = ~30% error correction (covers the centre logo)
                 qr.addData(this.enrolUrl);
                 qr.make();
                 this.qrSvg = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
