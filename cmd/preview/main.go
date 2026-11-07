@@ -34,16 +34,17 @@ import (
 
 type kv map[string]any
 type mockState struct {
-	mu        sync.Mutex
-	devices   []kv
-	filters   []kv
-	domains   map[int64][]kv // filter id -> domains
-	traffic   []kv
-	muted     []kv
-	firewall  []kv
-	bandwidth []kv
-	settings  kv
-	nextID    int64
+	mu         sync.Mutex
+	devicePuts []map[string]any // PUT /api/devices/{mac} bodies, for the browser checks
+	devices    []kv
+	filters    []kv
+	domains    map[int64][]kv // filter id -> domains
+	traffic    []kv
+	muted      []kv
+	firewall   []kv
+	bandwidth  []kv
+	settings   kv
+	nextID     int64
 }
 
 var state = newMockState()
@@ -54,13 +55,14 @@ func newMockState() *mockState {
 	s := &mockState{
 		nextID: 100,
 		devices: []kv{
-			{"id": 1, "mac_address": "F4:F5:D8:1A:22:C7", "alias": "Tesla M3 — Garage", "hostname": "TeslaModel3-DC22", "ip_address": "192.168.4.42", "status": "filtered", "online": true, "ignore_traffic_log": false},
-			{"id": 2, "mac_address": "AC:DE:48:00:11:22", "alias": "iPhone (Pavel)", "hostname": "Pavel-iPhone", "ip_address": "192.168.4.31", "status": "open", "online": true, "ignore_traffic_log": false},
-			{"id": 3, "mac_address": "98:01:A7:9B:0C:14", "alias": "MBP — work", "hostname": "pavel-mbp", "ip_address": "192.168.4.22", "status": "open", "online": true, "ignore_traffic_log": false},
-			{"id": 4, "mac_address": "5C:CF:7F:8E:A4:11", "alias": "Sonos Beam", "hostname": "Sonos-BEAM", "ip_address": "192.168.4.51", "status": "blocked", "online": true, "ignore_traffic_log": true},
-			{"id": 5, "mac_address": "B8:27:EB:33:9D:18", "alias": "", "hostname": "raspberrypi-cam", "ip_address": "192.168.4.61", "status": "blocked", "online": true, "ignore_traffic_log": false},
-			{"id": 6, "mac_address": "DC:A6:32:71:5B:0E", "alias": "Roomba j7", "hostname": "iRobot-J7", "ip_address": "192.168.4.55", "status": "blocked", "online": false, "ignore_traffic_log": true},
-			{"id": 7, "mac_address": "00:17:88:7E:12:6A", "alias": "Hue bridge", "hostname": "Philips-hue", "ip_address": "192.168.4.71", "status": "blocked", "online": true, "ignore_traffic_log": true},
+			{"id": 1, "first_seen": ago("2400h"), "last_seen": ago("0s"), "mac_address": "F4:F5:D8:1A:22:C7", "alias": "Tesla M3 — Garage", "hostname": "TeslaModel3-DC22", "ip_address": "192.168.4.42", "status": "filtered", "online": true, "ignore_traffic_log": false},
+			{"id": 2, "first_seen": ago("5000h"), "last_seen": ago("0s"), "mac_address": "AC:DE:48:00:11:22", "alias": "iPhone (Pavel)", "hostname": "Pavel-iPhone", "ip_address": "192.168.4.31", "status": "open", "online": true, "ignore_traffic_log": false},
+			{"id": 3, "first_seen": ago("5000h"), "last_seen": ago("0s"), "mac_address": "98:01:A7:9B:0C:14", "alias": "MBP — work", "hostname": "pavel-mbp", "ip_address": "192.168.4.22", "status": "open", "online": true, "ignore_traffic_log": false},
+			{"id": 4, "first_seen": ago("3000h"), "last_seen": ago("0s"), "mac_address": "5C:CF:7F:8E:A4:11", "alias": "Sonos Beam", "hostname": "Sonos-BEAM", "ip_address": "192.168.4.51", "status": "blocked", "online": true, "ignore_traffic_log": true},
+			{"id": 5, "first_seen": ago("1200h"), "last_seen": ago("0s"), "mac_address": "B8:27:EB:33:9D:18", "alias": "", "hostname": "raspberrypi-cam", "ip_address": "192.168.4.61", "status": "blocked", "online": true, "ignore_traffic_log": false},
+			{"id": 6, "first_seen": ago("1200h"), "last_seen": ago("3h"), "mac_address": "DC:A6:32:71:5B:0E", "alias": "Roomba j7", "hostname": "iRobot-J7", "ip_address": "192.168.4.55", "status": "blocked", "online": false, "ignore_traffic_log": true},
+			{"id": 7, "first_seen": ago("900h"), "last_seen": ago("0s"), "mac_address": "00:17:88:7E:12:6A", "alias": "Hue bridge", "hostname": "Philips-hue", "ip_address": "192.168.4.71", "status": "blocked", "online": true, "ignore_traffic_log": true},
+			{"id": 8, "first_seen": ago("10m"), "last_seen": ago("0s"), "mac_address": "3A:7F:02:C9:11:5E", "alias": "", "hostname": "", "ip_address": "192.168.4.77", "status": "blocked", "online": true, "ignore_traffic_log": false},
 		},
 		filters: []kv{
 			{"id": 1, "name": "Tesla AP/Nav", "description": "Autopilot map tiles + nav backend. Excludes auth, OTA, telemetry.", "is_system": true, "enabled": true},
@@ -143,6 +145,15 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func okJSON(w http.ResponseWriter) { writeJSON(w, kv{"status": "ok"}) }
+
+// startedAt anchors the mock's growing counters.
+var startedAt = time.Now()
+
+// ago is an RFC 3339 timestamp the given duration ("10m", "3h") before now.
+func ago(d string) string {
+	dur, _ := time.ParseDuration(d)
+	return time.Now().Add(-dur).UTC().Format(time.RFC3339)
+}
 
 func writeStatusJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -317,17 +328,56 @@ func main() {
 		writeJSON(w, kv{"tesla": tesla, "hosts": hosts, "blocked_24h": 48280 + grow*5, "allowed_24h": 9044 + grow*2})
 	})
 
-	mux.HandleFunc("/api/devices", func(w http.ResponseWriter, req *http.Request) {
+	// Devices, as the real API serves them: the Tesla carries tesla:true and
+	// blocked_1h. Scenarios for the browser checks ride on the page's own query
+	// string, which the page forwards: ?scenario=notesla hides the Tesla,
+	// ?fail=status makes policy changes fail.
+	listDevices := func(w http.ResponseWriter, req *http.Request) {
 		state.mu.Lock()
 		defer state.mu.Unlock()
-		writeJSON(w, state.devices)
-	})
+		out := []kv{}
+		teslaSeen := false
+		for _, d := range state.devices {
+			v := kv{}
+			for k, x := range d {
+				v[k] = x
+			}
+			if !teslaSeen && strings.Contains(strings.ToLower(fmt.Sprint(d["alias"], " ", d["hostname"])), "tesla") {
+				teslaSeen = true
+				if req.URL.Query().Get("scenario") == "notesla" {
+					continue
+				}
+				blocked := 318 + int(time.Since(startedAt).Seconds())/2
+				if d["status"] == "open" {
+					blocked = 0
+				}
+				v["tesla"], v["blocked_1h"] = true, blocked
+			}
+			out = append(out, v)
+		}
+		writeJSON(w, out)
+	}
+	mux.HandleFunc("/api/devices", listDevices)
 	mux.HandleFunc("/api/devices/", func(w http.ResponseWriter, req *http.Request) {
-		// /api/devices/{mac}, /api/devices/{mac}/status
+		// /api/devices/, /api/devices/activity, /api/devices/{mac}, /api/devices/{mac}/status
 		path := strings.TrimPrefix(req.URL.Path, "/api/devices/")
+		if path == "" && req.Method == http.MethodGet {
+			listDevices(w, req)
+			return
+		}
 		segs := strings.Split(path, "/")
 		state.mu.Lock()
 		defer state.mu.Unlock()
+		if path == "activity" {
+			active := []string{}
+			for _, d := range state.devices {
+				if d["online"] == true && rand.Intn(4) == 0 {
+					active = append(active, d["mac_address"].(string))
+				}
+			}
+			writeJSON(w, kv{"active": active})
+			return
+		}
 		mac := strings.ToUpper(segs[0])
 		switch req.Method {
 		case http.MethodDelete:
@@ -335,6 +385,10 @@ func main() {
 			okJSON(w)
 		case http.MethodPut:
 			if len(segs) >= 2 && segs[1] == "status" {
+				if req.URL.Query().Get("fail") == "status" {
+					writeStatusJSON(w, http.StatusInternalServerError, kv{"error": "could not apply the firewall"})
+					return
+				}
 				var body struct{ Status string }
 				_ = json.NewDecoder(req.Body).Decode(&body)
 				for _, d := range state.devices {
@@ -345,21 +399,36 @@ func main() {
 				okJSON(w)
 				return
 			}
-			var body struct {
-				Alias            string `json:"alias"`
-				IgnoreTrafficLog bool   `json:"ignore_traffic_log"`
-			}
+			// Partial update, like the real API: only the fields sent change.
+			var body map[string]any
 			_ = json.NewDecoder(req.Body).Decode(&body)
+			_, hasAlias := body["alias"]
+			_, hasLog := body["ignore_traffic_log"]
+			if !hasAlias && !hasLog {
+				writeStatusJSON(w, http.StatusBadRequest, kv{"error": "nothing to update"})
+				return
+			}
+			state.devicePuts = append(state.devicePuts, body)
 			for _, d := range state.devices {
 				if strings.EqualFold(d["mac_address"].(string), mac) {
-					d["alias"] = body.Alias
-					d["ignore_traffic_log"] = body.IgnoreTrafficLog
+					if hasAlias {
+						d["alias"] = body["alias"]
+					}
+					if hasLog {
+						d["ignore_traffic_log"] = body["ignore_traffic_log"]
+					}
 				}
 			}
 			okJSON(w)
 		default:
 			http.NotFound(w, req)
 		}
+	})
+	// The browser check reads what the page sent.
+	mux.HandleFunc("/__preview/device-puts", func(w http.ResponseWriter, req *http.Request) {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		writeJSON(w, state.devicePuts)
 	})
 
 	mux.HandleFunc("/api/filters", func(w http.ResponseWriter, req *http.Request) {
@@ -619,8 +688,8 @@ func main() {
 	})
 	mux.HandleFunc("/api/system/connectivity", func(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, []kv{
-			{"host": "1.1.1.1:53",  "success": true,  "latency": "38 ms"},
-			{"host": "8.8.8.8:53",  "success": true,  "latency": "42 ms"},
+			{"host": "1.1.1.1:53", "success": true, "latency": "38 ms"},
+			{"host": "8.8.8.8:53", "success": true, "latency": "42 ms"},
 			{"host": "google.com:443", "success": true, "latency": "62 ms"},
 		})
 	})
