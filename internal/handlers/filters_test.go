@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -157,4 +158,20 @@ func TestListFiltersWithDomains(t *testing.T) {
 		return
 	}
 	t.Errorf("filter Video missing from %s", rec.Body)
+}
+
+// The page asks whether a domain could be allow-listed at all (its search
+// says so when nothing matches an always-blocked domain).
+func TestCheckDomain(t *testing.T) {
+	ft := newFiltersTest(t)
+	ft.r.Get("/api/filters/check", NewFiltersHandler(&services.Services{}, nil).Check)
+	for q, want := range map[string]string{
+		"hermes-prd.ap.tesla.services":   `{"allowable":false,"domain":"hermes-prd.ap.tesla.services","reason":"hermes-prd.ap.tesla.services is always blocked. It can't be allowed."}`,
+		"https://cdn.example.com/a.mp4": `{"allowable":true,"domain":"cdn.example.com","reason":""}`,
+	} {
+		rec := ft.do(t, "GET", "/api/filters/check?domain="+url.QueryEscape(q), "")
+		if got := strings.TrimSpace(rec.Body.String()); got != want {
+			t.Errorf("check %q = %s, want %s", q, got, want)
+		}
+	}
 }

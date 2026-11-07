@@ -172,6 +172,7 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 
 			r.Route("/filters", func(r chi.Router) {
 				r.Get("/", filtH.List)
+				r.Get("/check", filtH.Check)
 				r.Post("/", filtH.Create)
 				r.Get("/{id}", filtH.Get)
 				r.Put("/{id}", filtH.Update)

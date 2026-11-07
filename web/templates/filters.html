@@ -1,312 +1,260 @@
 {{define "title"}}Filters{{end}}
 
 {{define "content"}}
-<div x-data="filtersApp()" x-init="load()">
-    <div class="page-head">
-        <div>
-            <div class="page-head-eyebrow"><strong>Policy</strong> · global allow-lists</div>
-            <h1 class="page-head-title">Filters</h1>
-            <p class="page-head-sub">
-                Each filter is a curated list of allow-listed domains. Toggle one on to apply it to
-                <strong>every Filtered device</strong>. System filters ship with the binary and cannot
-                be deleted (their domain list is still editable). The <strong>Tesla AP/Nav</strong>
-                filter is what keeps Autopilot maps working without letting the car talk to Hermes.
-            </p>
-        </div>
-        <div class="page-head-right">
-            <button class="btn primary" @click="showNew = !showNew">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 3v10M3 8h10"/></svg>
-                <span x-text="showNew ? 'Cancel' : 'New filter'"></span>
-            </button>
-        </div>
+<div class="wrap pg-filters" x-data="filtersApp()">
+    <p class="eyebrow" data-rise>Allow-lists · for Filtered devices</p>
+    <div class="phead" data-rise>
+        <h1 class="h1">Filters</h1>
+        <button class="btnp" type="button" @click="openNew()" aria-haspopup="dialog"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6 1.5v9M1.5 6h9"/></svg>New filter</button>
     </div>
-
-    <!-- New-filter inline form -->
-    <div class="card" x-show="showNew" x-cloak>
-        <div class="card-head">
+    <div class="search" data-rise="1">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M11 11l3 3"/></svg>
+        <label class="vh" for="fq">Find a domain or filter</label>
+        <input id="fq" type="search" placeholder="Find a domain or filter" x-model="query" @input.debounce.250ms="checkQuery()" autocomplete="off" autocapitalize="none" spellcheck="false">
+    </div>
+    <p class="nomatch" x-show="noMatch" x-text="noMatchText" x-cloak></p>
+    <div class="flist" data-rise="2">
+        <template x-for="g in groups" :key="g.key">
             <div>
-                <div class="card-head-title">Create filter</div>
-                <div class="card-head-sub">Name + description required. The new filter starts off and empty.</div>
-            </div>
-        </div>
-        <div class="card-body">
-            <div class="row stretch" style="gap:14px;">
-                <div class="field" style="flex:1; margin-bottom:0;">
-                    <label class="label">Name</label>
-                    <input class="input" x-model="newForm.name" placeholder="e.g. Apple Music">
-                </div>
-                <div class="field" style="flex:2; margin-bottom:0;">
-                    <label class="label">Description · required</label>
-                    <textarea class="textarea" x-model="newForm.description" placeholder="What does this filter unlock?" style="min-height:44px;"></textarea>
-                </div>
-                <div style="display:flex; flex-direction:column; justify-content:flex-end; gap:8px;">
-                    <button class="btn primary" @click="addFilter()">Create</button>
-                    <button class="btn ghost" @click="showNew = false">Cancel</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Filter cards, grouped by heading (e.g. "System") -->
-    <template x-for="grp in groups()" :key="grp.name">
-    <div class="filter-group">
-        <template x-if="grp.name">
-            <div style="margin:22px 0 10px; display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;">
-                <span style="font-size:13px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--fg-dim);" x-text="grp.name"></span>
-                <span style="font-size:12px; color:var(--fg-mute);">car system services — toggle each independently</span>
-            </div>
-        </template>
-        <template x-for="f in grp.filters" :key="f.id">
-        <div class="filter-card" :class="(f.is_system ? 'is-system ' : '') + (expanded.has(f.id) ? 'is-open' : '')">
-            <div class="filter-head" @click="toggleExpand(f.id)" role="button" tabindex="0"
-                 @keydown.enter.prevent="toggleExpand(f.id)" @keydown.space.prevent="toggleExpand(f.id)">
-                <div class="filter-head-icon" x-text="(f.name || '?')[0]"></div>
-                <div class="filter-head-l">
-                    <div class="filter-head-row">
-                        <span class="filter-name" x-text="f.name"></span>
-                        <template x-if="f.is_system"><span class="badge solid">System</span></template>
-                        <template x-if="f.enabled">
-                            <span class="badge success dot">Applied · <span x-text="appliedLabel(f)"></span></span>
-                        </template>
-                        <template x-if="!f.enabled">
-                            <span class="badge muted dot">Off — not applied</span>
-                        </template>
-                    </div>
-                    <div class="filter-desc" x-text="f.description"></div>
-                </div>
-                <div class="filter-head-r" @click.stop>
-                    <label class="toggle" :title="f.enabled ? 'Turn off · stops applying to Filtered devices' : 'Turn on · applies to every Filtered device'">
-                        <input type="checkbox" :checked="f.enabled" @change="toggleFilter(f, $event.target.checked)">
-                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    </label>
-                    <template x-if="!f.is_system">
-                        <button class="btn-icon danger" @click="deleteFilter(f)" title="Delete filter">
-                            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l10 10M13 3L3 13"/></svg>
-                        </button>
-                    </template>
-                    <button class="filter-chev" @click="toggleExpand(f.id)" :aria-label="expanded.has(f.id) ? 'Collapse' : 'Expand'">
-                        <template x-if="expanded.has(f.id)">
-                            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4"/></svg>
-                        </template>
-                        <template x-if="!expanded.has(f.id)">
-                            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
-                        </template>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Expanded body -->
-            <div class="filter-body" x-show="expanded.has(f.id)" x-cloak>
-                <template x-if="hasPorts(f)">
-                    <div style="margin-bottom:18px;">
-                        <div class="field-help" style="margin-bottom:8px;">
-                            <strong>Opened ports</strong> — on for every Filtered device while this filter is
-                            enabled, independent of the domain list (dst-agnostic — the DNS allow-list still
-                            gates the destinations). Seeded by migration; read-only.
+                <div class="ghead"><h2 x-text="g.title"></h2><p x-text="g.sub"></p></div>
+                <template x-for="(x, i) in g.items" :key="x.f.id">
+                    <div class="frow" :class="rowClass(x, i, g.items.length)">
+                        <div class="f-id" @click="toggleOpen(x)">
+                            <div class="fname"><span class="fname-t" x-text="x.f.name"></span></div>
+                            <div class="fsub"><span class="adot"></span><span x-text="summary(x.f)"></span></div>
                         </div>
-                        <table class="tbl">
-                            <thead>
-                                <tr><th style="width:120px;">Port</th><th>Why</th></tr>
-                            </thead>
-                            <tbody>
-                                <template x-for="p in (f.ports || [])" :key="p.proto + p.port">
-                                    <tr>
-                                        <td class="cell-mac" style="color:var(--fg);" x-text="p.proto + ' ' + p.port"></td>
-                                        <td><span style="color:var(--fg-dim); font-size:12px;" x-text="p.description || '—'"></span></td>
-                                    </tr>
+                        <label class="f-sw"><span class="swl" aria-hidden="true" x-text="x.f.enabled ? 'On' : 'Off'"></span><span class="sw"><input type="checkbox" role="switch" :checked="x.f.enabled" @change="toggleFilter(x.f, $event)" :aria-label="x.f.name + ' filter'"><span class="track"><span class="k"></span></span></span></label>
+                        <button class="f-chev" type="button" @click="toggleOpen(x)" :aria-expanded="isOpen(x)" :aria-label="'Details for ' + x.f.name"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button>
+                        <div class="f-fold"><div class="f-fold-in"><div class="f-panel">
+                            <template x-if="(x.f.ports || []).length">
+                                <div class="fsec">
+                                    <h3>Ports</h3>
+                                    <ul class="plist">
+                                        <template x-for="p in x.f.ports" :key="p.proto + p.port"><li><b x-text="p.proto + ' ' + p.port"></b><span x-text="p.description"></span></li></template>
+                                    </ul>
+                                </div>
+                            </template>
+                            <template x-if="(x.f.domains || []).length || !(x.f.ports || []).length">
+                                <div class="fsec">
+                                    <h3>Domains<span x-show="x.filtered" x-text="x.domains.length + ' of ' + x.f.domains.length + ' match'"></span></h3>
+                                    <ul class="dlist">
+                                        <template x-for="d in x.domains" :key="d.id">
+                                            <li :class="{ fresh: fresh === d.id, hit: ticked[d.id] }">
+                                                <div class="dm-t"><b :title="d.domain" x-text="d.domain"></b><span x-show="d.description" x-text="d.description"></span></div>
+                                                <span class="dm-hits" :class="{ none: !d.hits }" x-text="d.hits ? fmt(d.hits) + ' hits' : 'no hits'"></span>
+                                                <button class="dm-x" type="button" @click="removeDomain(x.f, d)" :aria-label="'Remove ' + d.domain"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button>
+                                            </li>
+                                        </template>
+                                    </ul>
+                                    <p class="dempty" x-show="!(x.f.domains || []).length">No domains yet. Add the first one below.</p>
+                                </div>
+                            </template>
+                            <div class="dadd" role="group" :aria-label="'Add a domain to ' + x.f.name">
+                                <input class="finput" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Domain, e.g. cdn.example.com" x-model="draft(x.f).domain" @input="clearStatus(x.f)" @keydown.enter.prevent="addDomain(x.f)" :aria-label="'Domain to add to ' + x.f.name" :aria-invalid="status[x.f.id] && status[x.f.id].err ? 'true' : 'false'">
+                                <input class="finput prose" type="text" placeholder="Note (optional)" x-model="draft(x.f).note" @input="clearStatus(x.f)" @keydown.enter.prevent="addDomain(x.f)" aria-label="Note for this domain (optional)">
+                                <button class="btnq" type="button" @click="addDomain(x.f)">Add</button>
+                            </div>
+                            <div class="fstatus" :class="{ err: status[x.f.id] && status[x.f.id].err }" role="status" aria-live="polite" x-text="status[x.f.id] ? status[x.f.id].text : ''"></div>
+                            <div class="ffoot">
+                                <span class="fnote" x-show="x.f.is_system">Built-in: you can edit its domains, but it can't be deleted.</span>
+                                <button class="btn danger" type="button" x-show="!x.f.is_system && confirmDel !== x.f.id" @click="confirmDel = x.f.id">Delete filter</button>
+                                <template x-if="confirmDel === x.f.id">
+                                    <div class="d-confirm" role="group" :aria-label="'Confirm deleting ' + x.f.name">
+                                        <p x-text="'Delete ' + x.f.name + '? Filtered devices lose every domain it carried.'"></p>
+                                        <div class="btns"><button class="btn" type="button" @click="confirmDel = null">Cancel</button><button class="btn danger" type="button" @click="deleteFilter(x.f)">Delete filter</button></div>
+                                    </div>
                                 </template>
-                            </tbody>
-                        </table>
+                            </div>
+                        </div></div></div>
                     </div>
                 </template>
-                <div class="field-help" style="margin-bottom:14px;">
-                    Every entry needs a <strong>description</strong> — justify why the domain is on the
-                    list so the audit trail tells a story. New domains land <strong>disabled</strong>.
-                </div>
-                <div class="row stretch" style="margin-bottom:16px;">
-                    <input class="input" style="flex:1;"
-                           placeholder="domain (e.g. cdn.example.com)"
-                           :value="addForm[f.id] ? addForm[f.id].domain : ''"
-                           @input="getOrInit(f.id).domain = $event.target.value">
-                    <input class="input" style="flex:2;"
-                           placeholder="why? — required"
-                           :value="addForm[f.id] ? addForm[f.id].why : ''"
-                           @input="getOrInit(f.id).why = $event.target.value"
-                           @keydown.enter="addDomain(f)">
-                    <button class="btn primary" @click="addDomain(f)">
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 3v10M3 8h10"/></svg>
-                        Add
-                    </button>
-                </div>
-                <table class="tbl">
-                    <thead>
-                        <tr>
-                            <th style="width:60px;">On</th>
-                            <th>Domain (SNI suffix)</th>
-                            <th>Why</th>
-                            <th style="width:60px;" class="right"></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <template x-for="d in (f.domains || [])" :key="d.id">
-                            <tr>
-                                <td>
-                                    <label class="toggle">
-                                        <input type="checkbox" :checked="d.enabled" @change="toggleDomain(f, d, $event.target.checked)">
-                                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                                    </label>
-                                </td>
-                                <td class="cell-mac" style="color:var(--fg);" x-text="d.domain"></td>
-                                <td><span style="color:var(--fg-dim); font-size:12px;" x-text="d.description || '—'"></span></td>
-                                <td class="actions">
-                                    <button class="btn-icon danger" @click="deleteDomain(f, d)" title="Remove from filter">
-                                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l10 10M13 3L3 13"/></svg>
-                                    </button>
-                                </td>
-                            </tr>
-                        </template>
-                        <template x-if="(f.domains || []).length === 0 && !hasPorts(f)">
-                            <tr><td colspan="4" style="text-align:center; color:var(--fg-mute); padding:22px;">No domains yet. Add one above.</td></tr>
-                        </template>
-                        <template x-if="(f.domains || []).length === 0 && hasPorts(f)">
-                            <tr><td colspan="4" style="text-align:center; color:var(--fg-mute); padding:22px;">Ports-only filter — opens the ports above, no domains.</td></tr>
-                        </template>
-                    </tbody>
-                </table>
             </div>
-        </div>
         </template>
     </div>
-    </template>
+
+    <dialog class="ndlg" x-ref="dlg" @close="newOpen = false" @click="if ($event.target === $refs.dlg) $refs.dlg.close()" aria-labelledby="ndlg-h">
+        <div class="ndlg-form">
+            <div class="ndlg-head"><h2 id="ndlg-h">New filter</h2><button class="ndlg-x" type="button" @click="$refs.dlg.close()" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button></div>
+            <p>A filter is a named list of domains. It starts off: add domains, then turn it on.</p>
+            <label class="field"><span class="flabel">Name</span><input class="finput prose" type="text" maxlength="64" placeholder="e.g. Apple Music" x-model="newName" @input="newErr = ''" @keydown.enter.prevent="createFilter()" :aria-invalid="newErr ? 'true' : 'false'"></label>
+            <div class="fstatus err" role="status" aria-live="polite" x-text="newErr"></div>
+            <div class="btns"><button class="btn" type="button" @click="$refs.dlg.close()">Cancel</button><button class="btnp" type="button" @click="createFilter()">Create filter</button></div>
+        </div>
+    </dialog>
 </div>
 {{end}}
 
 {{define "scripts"}}
 <script>
+// The Gap filters page. A filter has one switch: its domains apply exactly when
+// it is on. Turning one on or off, and removing a domain, apply at once and
+// offer Undo; deleting a filter asks first.
 function filtersApp() {
+    const NAME = /^[A-Za-z0-9][A-Za-z0-9 _\-+'\/]{0,63}$/;
+    const GROUPS = [
+        { key: 'System', title: 'Car system', sub: 'What the Tesla needs to drive, navigate and stay online.' },
+        { key: '', title: 'Apps & streaming', sub: 'Turn on what you want to use in the car.' },
+    ];
     return {
-        filters: [],
-        expanded: new Set(),
-        showNew: false,
-        newForm: { name: '', description: '' },
-        addForm: {},
+        filters: [], loaded: false, open: {}, drafts: {}, status: {}, query: '',
+        confirmDel: null, fresh: null, freshFilter: null, newOpen: false, newName: '', newErr: '',
+        ticked: {}, active: {}, blocked: null,
 
+        init() {
+            this.load();
+            this.onVis = () => { if (document.visibilityState === 'visible') { this.load(); this.start(); } else this.stop(); };
+            document.addEventListener('visibilitychange', this.onVis);
+            this.start();
+        },
+        destroy() { this.stop(); document.removeEventListener('visibilitychange', this.onVis); },
+        start() { this.stop(); this.timer = setInterval(() => this.load(), 30000); },   // hits refresh
+        stop() { clearInterval(this.timer); },
+
+        // Filters with their domains and 7-day hits, in one request. Hits that went
+        // up since the last load tick (and their filter's dot blips).
         async load() {
-            this.filters = (await api.get('/api/filters')) || [];
-            for (const f of this.filters) {
-                f.domains = (await api.get('/api/filters/' + f.id + '/domains')) || [];
+            let fs;
+            try { fs = await api.get('/api/filters/?domains=1'); } catch (e) { return; }
+            const before = {};
+            this.filters.forEach(f => (f.domains || []).forEach(d => { before[d.id] = d.hits; }));
+            const ticked = {}, active = {};
+            (fs || []).forEach(f => (f.domains || []).forEach(d => {
+                if (this.loaded && before[d.id] !== undefined && d.hits > before[d.id]) { ticked[d.id] = true; active[f.id] = true; }
+            }));
+            this.filters = fs || [];
+            this.loaded = true;
+            if (Object.keys(ticked).length) {
+                this.ticked = ticked; this.active = active;
+                setTimeout(() => { this.ticked = {}; this.active = {}; }, 700);
             }
         },
 
-        enabledCount(f) { return (f.domains || []).filter(d => d.enabled).length; },
-
-        hasPorts(f) { return (f.ports || []).length > 0; },
-
-        // Badge label for an enabled filter: "enabled/total" domains when it
-        // has domains, else "N ports" for a ports-only filter (e.g. Car Apps),
-        // so the header never reads a misleading "0/0".
-        appliedLabel(f) {
-            const dom = (f.domains || []).length;
-            if (dom > 0) return this.enabledCount(f) + '/' + dom;
-            const n = (f.ports || []).length;
-            if (n > 0) return n + (n === 1 ? ' port' : ' ports');
-            return '0';
+        get q() { return this.query.trim().toLowerCase(); },
+        // Searching answers "is this allowed?", so only filter names and domains count.
+        get groups() {
+            const q = this.q;
+            return GROUPS.map(g => ({
+                key: g.key, title: g.title, sub: g.sub,
+                items: this.filters.filter(f => (f.group || '') === g.key).map(f => {
+                    const nameHit = !q || f.name.toLowerCase().includes(q);
+                    const doms = f.domains || [];
+                    const domHits = q ? doms.filter(d => d.domain.includes(q)) : doms;
+                    return { f, show: nameHit || domHits.length > 0, domains: nameHit ? doms : domHits, filtered: !nameHit };
+                }).filter(x => x.show),
+            })).filter(g => g.items.length);
+        },
+        get noMatch() { return !!this.q && this.loaded && this.groups.length === 0; },
+        get noMatchText() {
+            return this.blocked && this.blocked.q === this.q
+                ? this.query.trim() + ' is always blocked. No filter can allow it.'
+                : 'Nothing matches “' + this.query.trim() + '”, so Filtered devices can\'t reach it.';
+        },
+        // Whether an unmatched search is a domain nothing can ever allow.
+        async checkQuery() {
+            const q = this.q;
+            this.blocked = null;
+            if (!q.includes('.')) return;
+            try {
+                const r = await api.get('/api/filters/check?domain=' + encodeURIComponent(q));
+                if (r && !r.allowable && /always blocked/.test(r.reason || '') && this.q === q) this.blocked = { q };
+            } catch (e) { /* not worth a message */ }
         },
 
-        // Group filters by their `group` field for the UI. Known groups
-        // (System) come first in a fixed order; ungrouped filters render
-        // last under a blank heading.
-        groups() {
-            const order = ['System'];
-            const by = {};
-            for (const f of this.filters) {
-                const g = f.group || '';
-                (by[g] = by[g] || []).push(f);
-            }
-            const names = Object.keys(by).sort((a, b) => {
-                const ia = order.indexOf(a), ib = order.indexOf(b);
-                if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
-                if (a === '') return 1;
-                if (b === '') return -1;
-                return a.localeCompare(b);
+        fmt(n) { return Number(n).toLocaleString('en-US'); },
+        isOpen(x) { return !!this.open[x.f.id] || (!!this.q && x.filtered); },
+        toggleOpen(x) { this.open = Object.assign({}, this.open, { [x.f.id]: !this.isOpen(x) }); this.confirmDel = null; },
+        rowClass(x, i, n) {
+            return [x.f.enabled ? 'on' : '', this.isOpen(x) ? 'open' : '', i === 0 ? 'first' : '', i === n - 1 ? 'last' : '',
+                this.active[x.f.id] ? 'active' : '', this.freshFilter === x.f.id ? 'fresh' : ''].join(' ');
+        },
+        summary(f) {
+            const doms = f.domains || [], ports = f.ports || [], parts = [];
+            const hits = doms.reduce((a, d) => a + (d.hits || 0), 0);
+            if (doms.length) parts.push(doms.length + (doms.length === 1 ? ' domain' : ' domains'));
+            if (ports.length) parts.push(ports.length + (ports.length === 1 ? ' port' : ' ports'));
+            if (doms.length) parts.push(hits ? this.fmt(hits) + ' hits this week' : 'no hits this week');
+            if (!doms.length && !ports.length) parts.push('empty');
+            return parts.join(' · ');
+        },
+        draft(f) {
+            if (!this.drafts[f.id]) this.drafts[f.id] = { domain: '', note: '' };
+            return this.drafts[f.id];
+        },
+        setStatus(f, text, err) { this.status = Object.assign({}, this.status, { [f.id]: text ? { text, err: !!err } : null }); },
+        clearStatus(f) { if (this.status[f.id]) this.setStatus(f, null); },
+
+        async putEnabled(f, on) { await api.put('/api/filters/' + f.id + '/enabled', { enabled: on }); },
+        async toggleFilter(f, ev) {
+            const on = !f.enabled;
+            f.enabled = on;
+            try { await this.putEnabled(f, on); } catch (e) { f.enabled = !on; ev.target.checked = !on; this.load(); return; }
+            const n = (f.domains || []).length;
+            const what = n ? n + (n === 1 ? ' domain' : ' domains') : ((f.ports || []).length + ' ports');
+            notify(on ? f.name + ' on. Filtered devices can now reach its ' + what + '.' : f.name + ' off. Its ' + what + ' no longer apply.', 'info', {
+                undo: async () => { f.enabled = !on; try { await this.putEnabled(f, !on); } catch (e) { this.load(); } },
             });
-            return names.map(n => ({ name: n, filters: by[n] }));
         },
 
-        getOrInit(id) {
-            if (!this.addForm[id]) this.addForm[id] = { domain: '', why: '' };
-            return this.addForm[id];
-        },
-
-        toggleExpand(id) {
-            if (this.expanded.has(id)) this.expanded.delete(id); else this.expanded.add(id);
-            this.expanded = new Set(this.expanded); // trigger reactivity
-        },
-
-        async toggleFilter(f, enabled) {
-            const prev = f.enabled;
-            f.enabled = enabled;
-            try {
-                await api.put('/api/filters/' + f.id + '/enabled', { enabled });
-                notify('Filter "' + f.name + '" ' + (enabled ? 'enabled · applied to all Filtered devices' : 'disabled'), 'success');
-            } catch(e) { f.enabled = prev; }
-        },
-
-        async toggleDomain(f, d, enabled) {
-            const prev = d.enabled;
-            d.enabled = enabled;
-            try {
-                await api.put('/api/filters/domains/' + d.id, { description: d.description || '', enabled });
-            } catch(e) {
-                d.enabled = prev;
-                notify('Toggle failed', 'error');
-            }
-        },
-
-        async addFilter() {
-            const name = this.newForm.name.trim();
-            const description = this.newForm.description.trim();
-            if (!name) { notify('Name required', 'error'); return; }
-            if (!description) { notify('Description required — explain what this filter unlocks', 'error'); return; }
-            try {
-                await api.post('/api/filters', { name, description });
-                notify('Filter created · review and toggle on', 'success');
-                this.showNew = false;
-                this.newForm = { name: '', description: '' };
-                this.load();
-            } catch(e) {}
-        },
-
-        async deleteFilter(f) {
-            if (!confirm('Delete filter "' + f.name + '"? Filtered devices lose every domain it carried.')) return;
-            try {
-                await api.delete('/api/filters/' + f.id);
-                notify('Filter deleted', 'success');
-                this.load();
-            } catch(e) {}
-        },
-
+        // The server normalises (a pasted URL is fine) and refuses what can't be allowed,
+        // in the words shown here.
         async addDomain(f) {
-            const form = this.getOrInit(f.id);
-            const domain = (form.domain || '').trim();
-            const why = (form.why || '').trim();
-            if (!domain) { notify('Domain required', 'error'); return; }
-            if (!why)    { notify('Description required — justify every allow-list entry', 'error'); return; }
+            const dr = this.draft(f);
+            if (!dr.domain.trim()) { this.setStatus(f, 'Enter a domain like cdn.example.com.', true); return; }
+            let r;
             try {
-                await api.post('/api/filters/' + f.id + '/domains', { domain, description: why });
-                notify('Added (disabled — review and toggle on)', 'success');
-                this.addForm[f.id] = { domain: '', why: '' };
-                f.domains = (await api.get('/api/filters/' + f.id + '/domains')) || [];
-            } catch(e) {}
+                r = await this.postDomain(f, dr.domain, dr.note);
+            } catch (e) { this.setStatus(f, e.message, true); return; }
+            await this.load();
+            const nf = this.filters.find(x => x.id === f.id) || f;
+            const added = (nf.domains || []).find(d => d.id === r.id);
+            const name = added ? added.domain : dr.domain.trim();
+            this.fresh = r.id;
+            setTimeout(() => { if (this.fresh === r.id) this.fresh = null; }, 1400);
+            this.drafts[f.id] = { domain: '', note: '' };
+            this.setStatus(f, nf.enabled ? 'Added ' + name + '. Filtered devices can reach it now.' : 'Added ' + name + '. It applies once ' + f.name + ' is on.');
+        },
+        // POST without the global error toast: the reason belongs next to the field.
+        async postDomain(f, domain, note) {
+            const res = await fetch('/api/filters/' + f.id + '/domains', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+                body: JSON.stringify({ domain, description: (note || '').trim() }),
+            });
+            if (res.status === 401) { window.location = '/login'; throw new Error('Signed out.'); }
+            let data = null;
+            try { data = await res.json(); } catch (e) { /* empty */ }
+            if (!res.ok) throw new Error((data && data.error) || 'Couldn\'t add it. Try again.');
+            return data;
+        },
+        async removeDomain(f, d) {
+            try { await api.delete('/api/filters/domains/' + d.id); } catch (e) { return; }
+            f.domains = (f.domains || []).filter(x => x.id !== d.id);
+            notify('Removed ' + d.domain + ' from ' + f.name + '.', 'info', {
+                undo: async () => { try { await this.postDomain(f, d.domain, d.description); } catch (e) { notify(e.message, 'error'); } this.load(); },
+            });
         },
 
-        async deleteDomain(f, d) {
-            if (!confirm('Remove ' + d.domain + ' from ' + f.name + '?')) return;
-            try {
-                await api.delete('/api/filters/domains/' + d.id);
-                notify('Domain removed', 'success');
-                f.domains = (await api.get('/api/filters/' + f.id + '/domains')) || [];
-            } catch(e) {}
+        openNew() { this.newErr = ''; this.newOpen = true; this.$refs.dlg.showModal(); },
+        async createFilter() {
+            const name = this.newName.trim();
+            // Same rule as the server.
+            if (!NAME.test(name)) { this.newErr = name ? 'Use letters, numbers, spaces and _ - + \' / only, starting with a letter or number.' : 'Give the filter a name.'; return; }
+            if (this.filters.some(f => f.name.toLowerCase() === name.toLowerCase())) { this.newErr = 'There\'s already a filter called ' + name + '.'; return; }
+            let r;
+            try { r = await api.post('/api/filters', { name }); } catch (e) { this.newErr = e.message; return; }
+            this.$refs.dlg.close();
+            this.newName = '';
+            this.query = '';
+            await this.load();
+            this.open = Object.assign({}, this.open, { [r.id]: true });
+            this.freshFilter = r.id;
+            setTimeout(() => { if (this.freshFilter === r.id) this.freshFilter = null; }, 1400);
+            notify('Created ' + name + '. Add domains, then turn it on.');
+        },
+        async deleteFilter(f) {
+            this.confirmDel = null;
+            try { await api.delete('/api/filters/' + f.id); } catch (e) { return; }
+            this.filters = this.filters.filter(x => x.id !== f.id);
+            notify(f.name + ' deleted.');
         },
     };
 }

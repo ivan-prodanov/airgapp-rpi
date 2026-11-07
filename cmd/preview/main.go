@@ -544,6 +544,15 @@ func main() {
 			listFilters(w, req)
 			return
 		}
+		if path == "check" {
+			d, err := services.CheckAllowable(req.URL.Query().Get("domain"))
+			reason := ""
+			if err != nil {
+				reason = err.Error()
+			}
+			writeJSON(w, kv{"domain": d, "allowable": err == nil, "reason": reason})
+			return
+		}
 		// DELETE /api/filters/domains/{id}
 		if segs[0] == "domains" && len(segs) == 2 && req.Method == http.MethodDelete {
 			id, _ := strconv.ParseInt(segs[1], 10, 64)

@@ -198,6 +198,22 @@ func TestDevicesPage(t *testing.T) {
 	}
 }
 
+// The Gap filters page: groups, search, one switch per filter, the new-filter
+// dialog — no filter cards, no "why is it needed", no per-domain switches.
+func TestFiltersPage(t *testing.T) {
+	body, _ := renderPage(NewRenderer(web.Content), "filters.html", "filters")
+	for _, want := range []string{`class="flist"`, "Find a domain or filter", "New filter", `class="ndlg"`, "A filter is a named list of domains."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("filters page lacks %s", want)
+		}
+	}
+	for _, gone := range []string{"filter-card", "Why is it needed", "description is required"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("filters page still contains %q", gone)
+		}
+	}
+}
+
 func TestRenderEveryPage(t *testing.T) {
 	r := NewRenderer(web.Content)
 	for _, p := range testPages {

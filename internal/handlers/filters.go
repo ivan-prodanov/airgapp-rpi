@@ -67,6 +67,18 @@ func (h *FiltersHandler) Page(w http.ResponseWriter, r *http.Request) {
 
 // ── Filter CRUD ────────────────────────────────────────────────
 
+// Check says whether a typed or pasted domain could be allow-listed at all:
+// {domain, allowable, reason}. The Filters page's search uses it to tell
+// "nothing allows this" apart from "nothing can ever allow this".
+func (h *FiltersHandler) Check(w http.ResponseWriter, r *http.Request) {
+	domain, err := services.CheckAllowable(r.URL.Query().Get("domain"))
+	reason := ""
+	if err != nil {
+		reason = err.Error()
+	}
+	JSON(w, http.StatusOK, map[string]any{"domain": domain, "allowable": err == nil, "reason": reason})
+}
+
 // domainHits is a filter domain as the Filters page shows it: its note and the
 // allowed traffic it carried over the last 7 days.
 type domainHits struct {
