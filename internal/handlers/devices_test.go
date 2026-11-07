@@ -118,3 +118,51 @@ func TestUpdateDevice_Empty(t *testing.T) {
 		t.Errorf("got %d %s, want 400 nothing to update", rec.Code, rec.Body)
 	}
 }
+
+func listDevices(t *testing.T, r *chi.Mux) []map[string]any {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest("GET", "/api/devices/", nil))
+	var out []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body, err)
+	}
+	return out
+}
+
+// The Devices page needs to know which device is the Tesla and how much of its
+// traffic the gate blocked this hour; nothing else changes in the list.
+func TestListDevices_MarksTesla(t *testing.T) {
+	t.Run("with a Tesla", func(t *testing.T) {
+		r, db := newDevicesTest(t)
+		addDevice(t, db, "AA:BB:CC:00:00:01", "192.168.4.42", "tesla_model_y", "Model Y", 0)
+		addDevice(t, db, "AA:BB:CC:00:00:02", "192.168.4.43", "laptop", "", 0)
+		addLogRows(t, db, "AA:BB:CC:00:00:01", "192.168.4.42", "blocked", 3, "-10 minutes")
+		addLogRows(t, db, "AA:BB:CC:00:00:01", "192.168.4.42", "sinkholed", 2, "-10 minutes")
+		addLogRows(t, db, "AA:BB:CC:00:00:01", "192.168.4.42", "blocked", 1, "-2 hours")
+		for _, d := range listDevices(t, r) {
+			switch d["mac_address"] {
+			case "AA:BB:CC:00:00:01":
+				if d["tesla"] != true || d["blocked_1h"] != float64(5) {
+					t.Errorf("Tesla element: tesla=%v blocked_1h=%v, want true, 5", d["tesla"], d["blocked_1h"])
+				}
+			default:
+				if _, ok := d["tesla"]; ok {
+					t.Errorf("%v marked as the Tesla", d["mac_address"])
+				}
+				if _, ok := d["blocked_1h"]; ok {
+					t.Errorf("%v has blocked_1h", d["mac_address"])
+				}
+			}
+		}
+	})
+	t.Run("without a Tesla", func(t *testing.T) {
+		r, db := newDevicesTest(t)
+		addDevice(t, db, "AA:BB:CC:00:00:02", "192.168.4.43", "laptop", "", 0)
+		for _, d := range listDevices(t, r) {
+			if _, ok := d["tesla"]; ok {
+				t.Errorf("%v marked as the Tesla", d["mac_address"])
+			}
+		}
+	})
+}

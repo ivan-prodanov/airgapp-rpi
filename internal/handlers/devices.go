@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/iulianfsdro/rpi-network-filter/internal/models"
 	"github.com/iulianfsdro/rpi-network-filter/internal/services"
 )
 
@@ -37,13 +39,32 @@ func (h *DevicesHandler) Page(w http.ResponseWriter, r *http.Request) {
 	h.renderer.RenderPage(w, "devices.html", map[string]string{"page": "devices"})
 }
 
+// deviceView is a device as the console sees it: the stored fields, plus — on
+// the Tesla only — a marker and how many of its requests the gate blocked in
+// the last hour.
+type deviceView struct {
+	models.Device
+	Tesla     bool `json:"tesla,omitempty"`
+	Blocked1h *int `json:"blocked_1h,omitempty"`
+}
+
 func (h *DevicesHandler) List(w http.ResponseWriter, r *http.Request) {
 	devices, err := h.network.ListDevices()
 	if err != nil {
 		JSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	JSON(w, http.StatusOK, devices)
+	tesla := pickTesla(devices)
+	out := make([]deviceView, len(devices))
+	for i, d := range devices {
+		out[i] = deviceView{Device: d}
+		if tesla != nil && d.MACAddress == tesla.MACAddress {
+			blocked, _ := h.trafficLog.ClassCountsSince(d.MACAddress, d.IPAddress, time.Now().Add(-time.Hour))
+			out[i].Tesla = true
+			out[i].Blocked1h = &blocked
+		}
+	}
+	JSON(w, http.StatusOK, out)
 }
 
 // macFromPath extracts and validates an uppercased MAC from chi's {mac}
