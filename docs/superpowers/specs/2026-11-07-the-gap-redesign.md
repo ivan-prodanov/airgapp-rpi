@@ -121,15 +121,31 @@ The UI *is* the airgap:
 ## Pages
 
 ### Dashboard `/`
-- **Headline** (Martian Mono, uppercase), keyed by the Tesla's regime:
-  - Blocked: "Tesla is Blocked".
-  - Filtered: "Elon is Gated", with "Gated" in `--safe`.
-  - Open: "Elon is In", with "In" in `--danger`.
-- **Gate:** a vertical gate. The latest seven Tesla requests fan out from the car node to the gate. Blocked requests are cut with a red ×, and allowed requests cross in green. The fan refreshes about every 3.2s from real events.
-- **Counters:** Blocked and Allow-listed, with an odometer roll over 760ms. Sinkholed counts as blocked.
-- **Controls:** a pause button for the stream.
-- **Readouts:** a row along the bottom.
+Decided 2026-11-07: the page has **no** regime switch and **no** pause button. The mockup's Blocked/Filtered/Open switch is a demo control kept for the airgapp.net landing page. The old Guardian hero, the four stat cards, the car-lock observation card and the "Probe WAN" check are all **dropped** from the console.
 
+**The Tesla** is the device whose alias or hostname matches `/tesla/i`. When several match, an online one wins, then the most recently seen. This is decided on the server.
+
+**Headline** (Martian Mono, uppercase). It follows the Tesla's policy and is display-only:
+
+| Policy | Headline | Colours |
+|---|---|---|
+| Blocked | "Tesla is Blocked" | "Tesla is" in `--dim`, "Blocked" in `--danger` |
+| Filtered | "Elon is Gated" | "Elon is" in `--dim`, "Gated" in `--safe` |
+| Open | "Elon is In" | all in `--danger` |
+| No Tesla | "No Tesla yet" | all in `--dim` |
+
+**Gate**
+- The car node is on the left and the gate is a vertical line at x=600 in a 1000×700 viewBox.
+- There is one lane per **host**: the 7 most recent distinct domains the Tesla contacted in the last 24 h, newest first. Each host uses its most recent event.
+- Lane slot i sits at `y=(i+0.5)*100`.
+- **A lane crosses the gate** when that event was allowed: `allowed` or `resolved`. It is cut with a red × when the event was `blocked` or `sinkholed`.
+- **A lane is green** ("Safe") when the host is on the allow-list, meaning it matches an enabled filter and is not always-blocked. Otherwise it is red ("Danger"). Under Open, red lanes therefore cross the gate.
+- **Events belong to the Tesla** when `client_mac` matches its MAC or `client_ip` matches its IP. DNS and SNI rows carry only the IP.
+- **Sweeps:** the page polls every 3.2 s, and only while the tab is visible. When the set of hosts changes it runs the mockup's sweep: lanes reset, draw in over 0.85 s with a 0.07 s stagger, then the marks and host rows fade in.
+
+**Readouts:** Blocked · 24 h and Allow-listed · 24 h are the Tesla's events. Blocked is `blocked` plus `sinkholed`; Allow-listed is `allowed` plus `resolved`, the same classes as the Traffic page. They roll like an odometer over 760 ms. "This sweep" shows lanes crossed out of lanes drawn.
+
+**Layout:** the page is edge to edge (`.content-bleed`) and fills the viewport height below the top bar.
 ### Devices `/devices`
 - **Tesla card:**
   - Name, online status and IP. The MAC appears on desktop only.
@@ -254,7 +270,7 @@ These are outside the design. Each is fixed in the slice that owns the code.
 
 ## Open decisions
 1. **Sign-out:** proposed as the last row of System → Access. Until slice 6 it is a button on the Settings page.
-2. **Dashboard regime control:** show the Tesla's policy switch as in the mockup, or a read-only regime? An earlier note said the switch was a demo control.
+2. ~~Dashboard regime control~~: decided. There is no switch; the headline follows the Tesla's policy. The old dashboard cards are dropped.
 3. **Disabled filter domains:** what happens to rows that are currently disabled when the per-domain flag goes away, enable them or delete them?
 4. **Firewall, Stats, Bandwidth:** keep them reachable by URL, or remove them.
 5. **Enrolment link:** a universal link, so it falls back when Airgapp isn't installed.
