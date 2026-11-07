@@ -86,7 +86,9 @@ function dashApp() {
             this.loaded = true;
             this.tween(d.blocked_24h || 0, d.allowed_24h || 0);
             const hosts = d.hosts || [];
-            const key = hosts.map(h => h.id).join(',');
+            // Redraw when the hosts change, or when a host's verdict or allow-list status does
+            // (turning a filter on can flip the same hosts from Danger to Safe).
+            const key = hosts.map(h => h.id + (h.crossed ? 'c' : 'x') + (h.safe ? 's' : 'd')).join(',');
             if (key !== this.key) { this.key = key; this.sweep(hosts); }
         },
 
