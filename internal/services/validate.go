@@ -82,13 +82,25 @@ func ValidMAC(s string) bool {
 	return macStrictRe.MatchString(strings.ToLower(s))
 }
 
-// NormalizeDomain lowercases, trims whitespace, strips a leading "*."
-// wildcard, then rejects anything that isn't a strict hostname (no
-// slashes, whitespace or control chars — those would inject into the
-// dnsmasq address=/server= directives we generate). Returns "" for
-// invalid input; callers treat "" as "reject".
+// urlSchemeRe matches a URL scheme prefix ("https://") on a pasted address.
+var urlSchemeRe = regexp.MustCompile(`^[a-z][a-z0-9+.-]*://`)
+
+// NormalizeDomain lowercases and trims, forgives a pasted URL (drops the
+// scheme, path, query, fragment and port) and a trailing dot, strips a
+// leading "*." wildcard, then rejects anything that isn't a strict hostname
+// (no slashes, whitespace or control chars — those would inject into the
+// dnsmasq address=/server= directives we generate). Returns "" for invalid
+// input; callers treat "" as "reject".
 func NormalizeDomain(d string) string {
 	d = strings.ToLower(strings.TrimSpace(d))
+	d = urlSchemeRe.ReplaceAllString(d, "")
+	if i := strings.IndexAny(d, "/?#"); i >= 0 {
+		d = d[:i]
+	}
+	if i := strings.LastIndexByte(d, ':'); i >= 0 && i < len(d)-1 && strings.Trim(d[i+1:], "0123456789") == "" {
+		d = d[:i]
+	}
+	d = strings.TrimSuffix(d, ".")
 	d = strings.TrimPrefix(d, "*.")
 	if !ValidDomain(d) {
 		return ""

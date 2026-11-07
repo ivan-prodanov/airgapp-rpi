@@ -12,7 +12,6 @@ import (
 var (
 	ErrFilterNotFound = errors.New("filter not found")
 	ErrSystemFilter   = errors.New("system filters cannot be deleted")
-	ErrDescRequired   = errors.New("description is required — justify every allow-list entry")
 )
 
 // FilterService owns CRUD over the filter model: filters (the curated
@@ -203,46 +202,45 @@ func (s *FilterService) ListDomains(filterID int64) ([]models.FilterDomain, erro
 	return out, nil
 }
 
-// CreateDomain inserts a domain into a filter. Every entry is required
-// to carry a non-empty description — the operator must justify every
-// allow-list addition. New rows are inserted DISABLED (review-then-
-// enable). The protected-deny floor rejects known-bad Tesla endpoints
-// and broad parents that would re-admit one. An upsert onto an existing
-// row overwrites the description but leaves the enabled flag alone.
+// ErrBadDomain is the answer to anything that isn't a hostname.
+var ErrBadDomain = errors.New("Enter a domain like cdn.example.com.")
+
+// CreateDomain adds a domain to a filter; it applies whenever the filter is
+// on. The note is optional. A pasted URL is accepted as its host. The
+// always-blocked floor rejects known Tesla endpoints and parents broad enough
+// to re-admit one, and a domain already in the filter is refused. The errors
+// are written for the Filters page, which shows them as they are.
 func (s *FilterService) CreateDomain(filterID int64, d models.FilterDomain) (int64, error) {
 	domain := NormalizeDomain(d.Domain)
 	if domain == "" {
-		return 0, fmt.Errorf("domain is required")
-	}
-	desc := strings.TrimSpace(d.Description)
-	if desc == "" {
-		return 0, ErrDescRequired
+		return 0, ErrBadDomain
 	}
 	if isProtectedDenied(domain) {
-		return 0, fmt.Errorf("%q is a protected Tesla endpoint and cannot be allow-listed", domain)
+		return 0, fmt.Errorf("%s is always blocked. It can't be allowed.", domain)
 	}
 	if isProtectedAncestor(domain) {
-		return 0, fmt.Errorf("%q is too broad — it would admit a protected Tesla endpoint; allow the specific sub-domain instead", domain)
+		return 0, fmt.Errorf("%s is too broad: it would also allow always-blocked Tesla domains. Add the exact subdomain instead.", domain)
 	}
 	var id int64
 	err := s.db.QueryRow(`
 		INSERT INTO filter_domains (preset_id, domain, description)
 		VALUES (?, ?, ?)
-		ON CONFLICT(preset_id, domain) DO UPDATE SET
-			description = excluded.description
+		ON CONFLICT(preset_id, domain) DO NOTHING
 		RETURNING id
-	`, filterID, domain, desc).Scan(&id)
+	`, filterID, domain, strings.TrimSpace(d.Description)).Scan(&id)
+	if err == sql.ErrNoRows {
+		var name string
+		s.db.QueryRow(`SELECT name FROM filters WHERE id = ?`, filterID).Scan(&name)
+		return 0, fmt.Errorf("%s is already in %s.", domain, name)
+	}
 	if err != nil {
-		return 0, fmt.Errorf("upsert filter domain: %w", err)
+		return 0, fmt.Errorf("add filter domain: %w", err)
 	}
 	return id, nil
 }
 
-// UpdateDomain sets a domain's note.
+// UpdateDomain sets a domain's note (optional; empty clears it).
 func (s *FilterService) UpdateDomain(id int64, description string) error {
-	if strings.TrimSpace(description) == "" {
-		return ErrDescRequired
-	}
 	_, err := s.db.Exec(`UPDATE filter_domains SET description = ? WHERE id = ?`, strings.TrimSpace(description), id)
 	return err
 }
@@ -251,4 +249,3 @@ func (s *FilterService) DeleteDomain(id int64) error {
 	_, err := s.db.Exec("DELETE FROM filter_domains WHERE id = ?", id)
 	return err
 }
-

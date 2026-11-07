@@ -20,11 +20,10 @@ func dnsAllowed(t *testing.T, db *sql.DB) []string {
 	return got
 }
 
-// TestCreateDomain_ProtectedAndDescription verifies the filter-domain safety
-// behaviours: protected Tesla endpoints (and broad parents) are rejected
-// outright, and an empty description is rejected — every allow-list entry
-// needs a justification. (Domains have no switch of their own since v27.)
-func TestCreateDomain_ProtectedAndDescription(t *testing.T) {
+// TestCreateDomain_Protected verifies the filter-domain safety floor:
+// protected Tesla endpoints (and broad parents) are rejected outright.
+// (Domains have no switch of their own since v27, and the note is optional.)
+func TestCreateDomain_Protected(t *testing.T) {
 	db := memDB(t)
 	fs := NewFilterService(db)
 	fID := freshFilter(t, db, "FilterTest")
@@ -39,15 +38,6 @@ func TestCreateDomain_ProtectedAndDescription(t *testing.T) {
 			Domain: bad, Description: "should never land",
 		}); err == nil {
 			t.Errorf("CreateDomain accepted a protected/dangerous domain %q — must reject", bad)
-		}
-	}
-
-	// Empty / whitespace-only description is rejected.
-	for _, desc := range []string{"", "   ", "\t\n"} {
-		if _, err := fs.CreateDomain(fID, models.FilterDomain{
-			Domain: "spotify.com", Description: desc,
-		}); !errors.Is(err, ErrDescRequired) {
-			t.Errorf("CreateDomain with description=%q returned %v, want ErrDescRequired", desc, err)
 		}
 	}
 }
@@ -165,4 +155,58 @@ func filterByName(t *testing.T, fs []models.Filter, name string) models.Filter {
 	}
 	t.Fatalf("filter %q not found", name)
 	return models.Filter{}
+}
+
+// A domain's note is optional: an allow-list entry no longer needs a written
+// justification to be added.
+func TestCreateDomain_NoteOptional(t *testing.T) {
+	db := memDB(t)
+	fs := NewFilterService(db)
+	fID := freshFilter(t, db, "NoteTest")
+	if _, err := fs.CreateDomain(fID, models.FilterDomain{Domain: "cdn.example.com"}); err != nil {
+		t.Errorf("CreateDomain without a note: %v", err)
+	}
+}
+
+// A pasted URL, a wildcard or a trailing dot is stored as the bare host.
+func TestCreateDomain_Normalises(t *testing.T) {
+	db := memDB(t)
+	fs := NewFilterService(db)
+	fID := freshFilter(t, db, "NormTest")
+	for raw, want := range map[string]string{
+		"https://CDN.Example.com:443/path?q=1#x": "cdn.example.com",
+		"*.media.example.com.":                   "media.example.com",
+	} {
+		id, err := fs.CreateDomain(fID, models.FilterDomain{Domain: raw})
+		if err != nil {
+			t.Errorf("CreateDomain(%q): %v", raw, err)
+			continue
+		}
+		var got string
+		db.QueryRow(`SELECT domain FROM filter_domains WHERE id = ?`, id).Scan(&got)
+		if got != want {
+			t.Errorf("CreateDomain(%q) stored %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// Rejections speak the design's words: the Filters page shows them as they are.
+func TestCreateDomain_Messages(t *testing.T) {
+	db := memDB(t)
+	fs := NewFilterService(db)
+	fID := freshFilter(t, db, "MsgTest")
+	if _, err := fs.CreateDomain(fID, models.FilterDomain{Domain: "dup.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	for raw, want := range map[string]string{
+		"not a domain!":                "Enter a domain like cdn.example.com.",
+		"hermes-prd.ap.tesla.services": "hermes-prd.ap.tesla.services is always blocked. It can't be allowed.",
+		"tesla.services":               "tesla.services is too broad: it would also allow always-blocked Tesla domains. Add the exact subdomain instead.",
+		"dup.example.com":              "dup.example.com is already in MsgTest.",
+	} {
+		_, err := fs.CreateDomain(fID, models.FilterDomain{Domain: raw})
+		if err == nil || err.Error() != want {
+			t.Errorf("CreateDomain(%q) error = %v, want %q", raw, err, want)
+		}
+	}
 }
