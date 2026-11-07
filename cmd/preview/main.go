@@ -14,6 +14,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -180,7 +181,11 @@ func (r *renderer) renderLogin(w http.ResponseWriter) {
 
 // ── Main ──────────────────────────────────────────────────
 
+// listenAddr lets a second preview run beside one already holding :8080.
+var listenAddr = flag.String("addr", ":8080", "listen address")
+
 func main() {
+	flag.Parse()
 	rand.Seed(time.Now().UnixNano())
 	tmplFS, _ := fs.Sub(web.Content, "templates")
 	staticFS, _ := fs.Sub(web.Content, "static")
@@ -625,7 +630,7 @@ func main() {
 		})
 	})
 
-	addr := ":8080"
+	addr := *listenAddr
 	fmt.Printf("AIRGAP preview · open http://localhost%s\n", addr)
 	fmt.Println("Stub data resets on every restart. State changes are in-memory only.")
 	log.Fatal(http.ListenAndServe(addr, mux))

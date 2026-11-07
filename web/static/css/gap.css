@@ -62,3 +62,14 @@ code,.mono,.tnum{font-family:'Martian Mono',ui-monospace,monospace}
 .topbar{padding:10px 16px 0}
 .navlink{font-size:9.5px;letter-spacing:.03em}
 }
+
+/* Toast (app.js notify): one at a time, bottom centre, optional Undo, animated exit. */
+@keyframes toastin{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
+@keyframes toastout{to{opacity:0;transform:translate(-50%,10px)}}
+.toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 20px);transform:translateX(-50%);z-index:20;display:flex;align-items:center;gap:12px;width:max-content;max-width:calc(100vw - 32px);background:var(--txt);color:#0A0E16;border-radius:12px;padding:8px 10px 8px 16px;font-size:14px;font-weight:500;box-shadow:0 14px 34px rgba(0,0,0,.55);animation:toastin var(--t-panel) var(--ease-enter) both}
+.toast button{flex:none;font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.05em;font-size:11px;font-weight:600;min-height:36px;padding:0 12px;border:0;border-radius:8px;background:rgba(10,14,22,.1);color:#0A0E16;cursor:pointer}
+.toast button:hover{background:rgba(10,14,22,.18)}
+.toast.out{animation:toastout var(--t-exit) var(--ease-exit) both}
+.toast-error{box-shadow:inset 3px 0 0 var(--danger),0 14px 34px rgba(0,0,0,.55)}
+.toast-success{box-shadow:inset 3px 0 0 var(--safe),0 14px 34px rgba(0,0,0,.55)}
+@media(pointer:coarse){.toast button{min-height:44px}}

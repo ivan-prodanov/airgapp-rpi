@@ -32,20 +32,41 @@ const api = {
     delete: (url)       => api.request('DELETE', url),
 };
 
-function notify(msg, type = 'info') {
+// One toast at a time, bottom centre. opts.undo adds an Undo button; the toast
+// stays 7s with Undo and 4s without (opts.ms overrides), then leaves through a
+// 150ms exit animation (.out) instead of vanishing.
+let toastTimer = 0;
+function notify(msg, type = 'info', opts = {}) {
     const container = document.getElementById('toast-container');
     if (!container) return;
+    clearTimeout(toastTimer);
+    container.replaceChildren();
 
     const toast = document.createElement('div');
     toast.className = 'toast toast-' + type;
-    toast.textContent = msg;
-    container.appendChild(toast);
+    const text = document.createElement('span');
+    text.className = 'toast-t';
+    text.textContent = msg;
+    toast.append(text);
 
-    setTimeout(() => toast.classList.add('show'), 10);
-    setTimeout(() => {
-        toast.classList.remove('show');
-        setTimeout(() => toast.remove(), 300);
-    }, 3000);
+    const dismiss = () => {
+        if (toast.classList.contains('out')) return;
+        toast.classList.add('out');
+        setTimeout(() => toast.remove(), 150);
+    };
+    if (typeof opts.undo === 'function') {
+        const undo = document.createElement('button');
+        undo.type = 'button';
+        undo.textContent = 'Undo';
+        undo.addEventListener('click', () => {
+            clearTimeout(toastTimer);
+            opts.undo();
+            dismiss();
+        });
+        toast.append(undo);
+    }
+    container.append(toast);
+    toastTimer = setTimeout(dismiss, opts.ms ?? (opts.undo ? 7000 : 4000));
 }
 
 async function logout() {

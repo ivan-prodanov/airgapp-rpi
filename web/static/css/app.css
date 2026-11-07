@@ -454,21 +454,6 @@ code, .mono, .tnum { font-family: "JetBrains Mono", ui-monospace, monospace; fon
 .bar-fill.danger { background: var(--danger); }
 .bar-label { min-width: 60px; text-align: right; color: var(--fg); font-size: 12px; }
 
-/* ── Toast (driven by app.js notify()) ────────────────────── */
-#toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 200; display: flex; flex-direction: column; gap: 10px; }
-.toast {
-  background: var(--fg); color: var(--bg);
-  padding: 12px 18px; font-size: 12.5px;
-  min-width: 260px; max-width: 380px;
-  border-radius: 100px; display: flex; align-items: center; gap: 10px;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.5); font-weight: 500; cursor: pointer;
-  opacity: 0; transform: translateY(20px);
-  transition: opacity 0.2s, transform 0.2s cubic-bezier(0.18, 0.89, 0.32, 1.28);
-}
-.toast.show { opacity: 1; transform: none; }
-.toast-error { background: var(--danger); color: #fff; }
-.toast-info  { background: var(--bg-elev); color: var(--fg); border: 1px solid var(--line-bright); }
-
 /* ── Utility ──────────────────────────────────────────────── */
 .row { display: flex; gap: 10px; align-items: center; }
 .row.between { justify-content: space-between; }
