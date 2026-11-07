@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -111,4 +113,48 @@ func TestDeleteFilterReappliesFirewall(t *testing.T) {
 	if !applied {
 		t.Errorf("no nft apply after deleting a filter with a port: %v", ft.exec.Recorded()[before:])
 	}
+}
+
+// One request gives the Filters page every filter with its domains and their
+// 7-day hits: a host counts toward a domain when it is that domain or under it.
+func TestListFiltersWithDomains(t *testing.T) {
+	ft := newFiltersTest(t)
+	id := ft.userFilter(t, "Video", 1)
+	for _, d := range []string{"notgoogle.example", "googlevideo.com"} {
+		if _, err := ft.db.Exec(`INSERT INTO filter_domains (preset_id, domain, description) VALUES (?, ?, 'n')`, id, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add := func(host string, n int) {
+		for i := 0; i < n; i++ {
+			if _, err := ft.db.Exec(`INSERT INTO query_log (timestamp, client_ip, domain, action, source) VALUES (datetime('now'), '192.168.4.42', ?, 'allowed', 'sniproxy')`, host); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	add("r1.googlevideo.com", 3)
+	add("googlevideo.com", 1)
+	add("notgooglevideo.com", 5) // not under googlevideo.com
+	add("x.notgoogle.example", 2)
+	rec := ft.do(t, "GET", "/api/filters/?domains=1", "")
+	var fs []struct {
+		Name    string
+		Domains []struct {
+			Domain string
+			Hits   int
+		}
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &fs); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body, err)
+	}
+	for _, f := range fs {
+		if f.Name != "Video" {
+			continue
+		}
+		if fmt.Sprint(f.Domains) != "[{googlevideo.com 4} {notgoogle.example 2}]" {
+			t.Errorf("Video domains = %v, want [{googlevideo.com 4} {notgoogle.example 2}]", f.Domains)
+		}
+		return
+	}
+	t.Errorf("filter Video missing from %s", rec.Body)
 }

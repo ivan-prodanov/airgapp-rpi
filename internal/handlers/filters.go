@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -39,6 +43,10 @@ type FiltersHandler struct {
 	trafficLog *services.TrafficLogService
 	sni        *services.SNIProxyService
 	renderer   *Renderer
+
+	hitsMu sync.Mutex // guards the 7-day hit counts, recomputed at most every 30 s
+	hitsAt time.Time
+	hits   map[string]int
 }
 
 func NewFiltersHandler(svc *services.Services, renderer *Renderer) *FiltersHandler {
@@ -59,6 +67,23 @@ func (h *FiltersHandler) Page(w http.ResponseWriter, r *http.Request) {
 
 // ── Filter CRUD ────────────────────────────────────────────────
 
+// domainHits is a filter domain as the Filters page shows it: its note and the
+// allowed traffic it carried over the last 7 days.
+type domainHits struct {
+	ID          int64  `json:"id"`
+	Domain      string `json:"domain"`
+	Description string `json:"description"`
+	Hits        int    `json:"hits"`
+}
+
+type filterWithDomains struct {
+	models.Filter
+	Domains []domainHits `json:"domains"`
+}
+
+// List returns every filter. With ?domains=1 each carries its domains and
+// their 7-day hits, most-used first — everything the Filters page needs in
+// one request.
 func (h *FiltersHandler) List(w http.ResponseWriter, r *http.Request) {
 	fs, err := h.filter.List()
 	if err != nil {
@@ -68,7 +93,60 @@ func (h *FiltersHandler) List(w http.ResponseWriter, r *http.Request) {
 	if fs == nil {
 		fs = []models.Filter{}
 	}
-	JSON(w, http.StatusOK, fs)
+	if r.URL.Query().Get("domains") != "1" {
+		JSON(w, http.StatusOK, fs)
+		return
+	}
+	hosts := h.weekHits()
+	out := make([]filterWithDomains, len(fs))
+	for i, f := range fs {
+		ds, err := h.filter.ListDomains(f.ID)
+		if err != nil {
+			JSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		out[i] = filterWithDomains{Filter: f, Domains: make([]domainHits, len(ds))}
+		for j, d := range ds {
+			out[i].Domains[j] = domainHits{ID: d.ID, Domain: d.Domain, Description: d.Description, Hits: hitsFor(hosts, d.Domain)}
+		}
+		sort.SliceStable(out[i].Domains, func(a, b int) bool {
+			da, db := out[i].Domains[a], out[i].Domains[b]
+			if da.Hits != db.Hits {
+				return da.Hits > db.Hits
+			}
+			return da.Domain < db.Domain
+		})
+	}
+	JSON(w, http.StatusOK, out)
+}
+
+// weekHits is the allowed-traffic count per host over the last 7 days, cached
+// for 30 s: the Filters page refreshes it, and the scan touches a week of log.
+func (h *FiltersHandler) weekHits() map[string]int {
+	h.hitsMu.Lock()
+	defer h.hitsMu.Unlock()
+	if h.hits != nil && time.Since(h.hitsAt) < 30*time.Second {
+		return h.hits
+	}
+	m, err := h.trafficLog.AllowedByHostSince(time.Now().Add(-7 * 24 * time.Hour))
+	if err != nil {
+		log.Printf("[FILTERS] 7-day hits: %v", err)
+		return map[string]int{}
+	}
+	h.hits, h.hitsAt = m, time.Now()
+	return m
+}
+
+// hitsFor sums the hosts that are the domain or sit under it.
+func hitsFor(hosts map[string]int, domain string) int {
+	d := strings.ToLower(domain)
+	n := 0
+	for host, c := range hosts {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			n += c
+		}
+	}
+	return n
 }
 
 func (h *FiltersHandler) Get(w http.ResponseWriter, r *http.Request) {

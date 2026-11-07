@@ -148,7 +148,7 @@ func TestActiveSince(t *testing.T) {
 func TestRecentHosts_BoundedScan(t *testing.T) {
 	db := memDB(t)
 	var plan []string
-	rows, err := db.Query("EXPLAIN QUERY PLAN "+recentHostsSQL("(client_ip = ?)"), int64(1), "192.168.4.42")
+	rows, err := db.Query("EXPLAIN QUERY PLAN "+recentHostsSQL("(client_ip = ?)"), int64(1), "2026-01-01 00:00:00", "192.168.4.42")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,5 +161,26 @@ func TestRecentHosts_BoundedScan(t *testing.T) {
 	}
 	if joined := fmt.Sprint(plan); !strings.Contains(joined, "rowid>?") {
 		t.Errorf("host scan is not bounded by row id: %v", plan)
+	}
+}
+
+// AllowedByHostSince counts the rows that reached a host — allowed and
+// resolved — per host, over the window.
+func TestAllowedByHostSince(t *testing.T) {
+	db := memDB(t)
+	s := NewTrafficLogService(db)
+	logRow(t, db, time.Minute, dashTeslaMAC, dashTeslaIP, "r1.googlevideo.com", "allowed", "sniproxy")
+	logRow(t, db, time.Minute, dashOtherMAC, dashOtherIP, "R1.googlevideo.com", "allowed", "sniproxy")
+	logRow(t, db, time.Minute, "", dashTeslaIP, "googlevideo.com", "resolved", "dns")
+	logRow(t, db, time.Minute, dashTeslaMAC, dashTeslaIP, "googlevideo.com", "blocked", "sniproxy")
+	logRow(t, db, time.Minute, "", dashTeslaIP, "googlevideo.com", "sinkholed", "dns")
+	logRow(t, db, time.Minute, dashTeslaMAC, dashTeslaIP, "googlevideo.com", "logged", "forward")
+	logRow(t, db, 8*24*time.Hour, dashTeslaMAC, dashTeslaIP, "googlevideo.com", "allowed", "sniproxy")
+	got, err := s.AllowedByHostSince(time.Now().Add(-7 * 24 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["r1.googlevideo.com"] != 2 || got["googlevideo.com"] != 1 || len(got) != 2 {
+		t.Errorf("got %v, want r1.googlevideo.com:2 googlevideo.com:1", got)
 	}
 }

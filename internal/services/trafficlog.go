@@ -343,13 +343,15 @@ func deviceMatch(mac, ip string) (string, []any) {
 }
 
 // recentHostsSQL scans one device's newest classified events with a domain,
-// starting at a row id: the first id inside the time window. Bounding by id
+// starting at a row id: the first id inside the time window. The timestamp is
+// still checked (as +timestamp, so SQLite stays on the rowid range) in case a
+// clock step left an older row with a higher id. Bounding by id
 // (and keeping SQLite off the action index with +action) keeps the scan inside
 // the window — a parked car with no recent rows must not walk 30 days of log on
 // the daemon's only DB connection.
 func recentHostsSQL(match string) string {
 	return `SELECT id, domain, action FROM query_log
-		WHERE id >= ? AND ` + match + ` AND domain != ''
+		WHERE id >= ? AND +timestamp >= ? AND ` + match + ` AND domain != ''
 		  AND +action IN ('allowed','resolved','blocked','sinkholed')
 		ORDER BY id DESC LIMIT 500`
 }
@@ -374,7 +376,7 @@ func (s *TrafficLogService) RecentHosts(mac, ip string, since time.Time, limit i
 	if !firstID.Valid {
 		return out, nil
 	}
-	rows, err := s.db.Query(recentHostsSQL(match), append([]any{firstID.Int64}, args...)...)
+	rows, err := s.db.Query(recentHostsSQL(match), append([]any{firstID.Int64, since.UTC().Format("2006-01-02 15:04:05")}, args...)...)
 	if err != nil {
 		return out, err
 	}
@@ -396,6 +398,37 @@ func (s *TrafficLogService) RecentHosts(mac, ip string, since time.Time, limit i
 		if len(out) == limit {
 			break
 		}
+	}
+	return out, rows.Err()
+}
+
+// AllowedByHostSince counts, per host (lower-cased), the rows since the given
+// time that reached it — allowed and resolved. The Filters page turns these into
+// per-domain hits. The scan is bounded to the window by row id, like RecentHosts.
+func (s *TrafficLogService) AllowedByHostSince(since time.Time) (map[string]int, error) {
+	out := map[string]int{}
+	var firstID sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MIN(id) FROM query_log WHERE timestamp >= ?`,
+		since.UTC().Format("2006-01-02 15:04:05")).Scan(&firstID); err != nil {
+		return out, err
+	}
+	if !firstID.Valid {
+		return out, nil
+	}
+	rows, err := s.db.Query(`SELECT LOWER(domain), COUNT(*) FROM query_log
+		WHERE id >= ? AND +timestamp >= ? AND domain != '' AND +action IN ('allowed','resolved')
+		GROUP BY LOWER(domain)`, firstID.Int64, since.UTC().Format("2006-01-02 15:04:05"))
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var host string
+		var n int
+		if err := rows.Scan(&host, &n); err != nil {
+			return out, err
+		}
+		out[host] = n
 	}
 	return out, rows.Err()
 }
