@@ -22,6 +22,12 @@ type Config struct {
 	DHCPRangeEnd   string `yaml:"dhcp_range_end"`
 	DNSUpstream   string `yaml:"dns_upstream"`
 	SNIProxyPort  int    `yaml:"sni_proxy_port"`
+	// EnrolHost is the made-up hostname a LAN device (the car's browser, a
+	// phone on the AP) types to reach the self-service enrol-QR page over
+	// plain HTTP — no cert, no login. dnsmasq resolves it to LANGateway and
+	// the :80 spoof server vhosts it. It never resolves off-LAN (not a real
+	// TLD, not published via Funnel), so the page stays LAN-only.
+	EnrolHost     string `yaml:"enrol_host"`
 	DryRun        bool   `yaml:"dry_run"`
 	LogLevel      string `yaml:"log_level"`
 }
@@ -44,6 +50,7 @@ func Defaults() Config {
 		DHCPRangeEnd:   "192.168.4.250",
 		DNSUpstream:    "1.1.1.1,8.8.8.8",
 		SNIProxyPort:   8444,
+		EnrolHost:      "air.gapp",
 		DryRun:         false,
 		LogLevel:       "info",
 	}
@@ -77,6 +84,7 @@ func applyEnvOverrides(cfg *Config) {
 		"NETFILTER_DB_PATH":         &cfg.DBPath,
 		"NETFILTER_WAN_INTERFACE":   &cfg.WANInterface,
 		"NETFILTER_LAN_INTERFACE":   &cfg.LANInterface,
+		"NETFILTER_ENROL_HOST":      &cfg.EnrolHost,
 		"NETFILTER_LAN_SUBNET":      &cfg.LANSubnet,
 		"NETFILTER_LAN_GATEWAY":     &cfg.LANGateway,
 		"NETFILTER_DHCP_RANGE_START": &cfg.DHCPRangeStart,

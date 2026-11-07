@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Add this car — airgapp</title>
+    <!-- Served by the :80 enrol vhost from the same origin; no external assets. -->
+    <script src="/qrcode.min.js"></script>
+    <style>
+        :root {
+            --red: #e02434;
+            --bg: #0c0d0f;
+            --card: #17181b;
+            --fg: #f2f2f3;
+            --mute: #9a9ca1;
+            --line: #2d2e2f;
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+        body {
+            background: var(--bg);
+            color: var(--fg);
+            font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px 16px;
+            -webkit-text-size-adjust: 100%;
+        }
+        .card {
+            width: 100%;
+            max-width: 420px;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 28px 24px 26px;
+            text-align: center;
+        }
+        h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; letter-spacing: 0.1px; }
+        .sub { color: var(--mute); font-size: 13.5px; line-height: 1.5; margin: 0 0 22px; }
+        .qr-wrap {
+            background: var(--red);
+            border-radius: 14px;
+            width: 268px; height: 268px;
+            margin: 0 auto 18px;
+            display: flex; align-items: center; justify-content: center;
+            overflow: hidden;
+        }
+        .qr-wrap svg { width: 240px; height: 240px; display: block; }
+        .qr-wrap.empty { background: #1f2024; color: var(--mute); font-size: 13px; padding: 20px; }
+        button {
+            appearance: none; border: none; cursor: pointer;
+            background: var(--red); color: #fff;
+            font-size: 15px; font-weight: 600;
+            padding: 13px 20px; border-radius: 11px; width: 100%;
+            transition: opacity 0.15s;
+        }
+        button:active { opacity: 0.8; }
+        button:disabled { opacity: 0.5; cursor: default; }
+        .meta { margin-top: 14px; font-size: 13px; color: var(--mute); min-height: 18px; }
+        .meta strong { color: var(--fg); font-variant-numeric: tabular-nums; }
+        .err { color: #ff6b74; font-size: 13.5px; line-height: 1.5; margin-top: 14px; }
+        .foot { margin-top: 20px; font-size: 11.5px; color: #6b6d72; line-height: 1.5; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Add this car to your phone</h1>
+        <p class="sub">Generate a one-time code, then scan it with the airgapp app to connect your phone to this car's relay.</p>
+
+        <div id="qr" class="qr-wrap empty">Tap below to generate a code</div>
+
+        <button id="gen" onclick="generate()">Generate enrol code</button>
+        <div id="meta" class="meta"></div>
+        <div id="err" class="err"></div>
+
+        <p class="foot">The code lets a phone reach the relay. It can't unlock or drive the car — that still needs the phone's key to be paired at the car itself.</p>
+    </div>
+
+    <script>
+        var countdownTimer = null;
+
+        function fmt(sec) {
+            var m = Math.floor(sec / 60), s = sec % 60;
+            return m + ':' + (s < 10 ? '0' : '') + s;
+        }
+
+        function renderQr(enrolUrl) {
+            var qr = qrcode(0, 'H'); // high error-correction
+            qr.addData(enrolUrl);
+            qr.make();
+            var svg = qr.createSvgTag({ cellSize: 6, margin: 1, scalable: true })
+                .replace('fill="white"', 'fill="#e02434"')
+                .replace('fill="black"', 'fill="#ffffff"');
+            var wrap = document.getElementById('qr');
+            wrap.classList.remove('empty');
+            wrap.innerHTML = svg;
+        }
+
+        function startCountdown(sec) {
+            if (countdownTimer) clearInterval(countdownTimer);
+            var left = sec;
+            var meta = document.getElementById('meta');
+            function tick() {
+                if (left <= 0) {
+                    clearInterval(countdownTimer);
+                    meta.innerHTML = 'Code expired — generate a new one.';
+                    var wrap = document.getElementById('qr');
+                    wrap.classList.add('empty');
+                    wrap.innerHTML = 'Tap below to generate a code';
+                    document.getElementById('gen').textContent = 'Generate enrol code';
+                    return;
+                }
+                meta.innerHTML = 'Scan within <strong>' + fmt(left) + '</strong>';
+                left--;
+            }
+            tick();
+            countdownTimer = setInterval(tick, 1000);
+        }
+
+        async function generate() {
+            var btn = document.getElementById('gen');
+            var err = document.getElementById('err');
+            err.textContent = '';
+            btn.disabled = true;
+            btn.textContent = 'Generating…';
+            try {
+                var res = await fetch('/issue', { method: 'POST' });
+                var text = await res.text();
+                var data = text ? JSON.parse(text) : null;
+                if (!res.ok) {
+                    throw new Error((data && data.error) || 'Could not generate a code.');
+                }
+                renderQr(data.enrol_url);
+                startCountdown(data.expires_in_sec || 600);
+                btn.textContent = 'Generate a new code';
+            } catch (e) {
+                err.textContent = e.message || 'Something went wrong.';
+                document.getElementById('meta').textContent = '';
+            } finally {
+                btn.disabled = false;
+                if (btn.textContent === 'Generating…') btn.textContent = 'Generate enrol code';
+            }
+        }
+    </script>
+</body>
+</html>

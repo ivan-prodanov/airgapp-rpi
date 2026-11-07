@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTeslaToken_IssueReturnsHighEntropyPlaintext(t *testing.T) {
@@ -252,5 +253,82 @@ func TestTeslaToken_ListExposesPlaintextForReview(t *testing.T) {
 	// Revoked token: absent from the list, so its plaintext never ships.
 	if _, present := byName["phone-b"]; present {
 		t.Errorf("revoked token appeared in List — want active-only")
+	}
+}
+
+func TestTeslaToken_EphemeralClaimedBecomesPermanent(t *testing.T) {
+	db := memDB(t)
+	s := NewTeslaTokenService(db)
+
+	issued, err := s.IssueEphemeral("air.gapp self-enrol", 10*time.Minute)
+	if err != nil {
+		t.Fatalf("issue ephemeral: %v", err)
+	}
+	// Fresh out of the oven it carries a claim window.
+	var exp *string
+	if err := db.QueryRow("SELECT expires_at FROM tesla_client_tokens WHERE id = ?", issued.Token.ID).Scan(&exp); err != nil {
+		t.Fatalf("read expires_at: %v", err)
+	}
+	if exp == nil {
+		t.Fatalf("ephemeral token should have a non-NULL expires_at at issue")
+	}
+
+	// First use claims it.
+	if _, err := s.Validate(issued.Plain); err != nil {
+		t.Fatalf("validate within window: %v", err)
+	}
+	if err := db.QueryRow("SELECT expires_at FROM tesla_client_tokens WHERE id = ?", issued.Token.ID).Scan(&exp); err != nil {
+		t.Fatalf("read expires_at after claim: %v", err)
+	}
+	if exp != nil {
+		t.Errorf("expires_at should be cleared (NULL) after first use, got %q", *exp)
+	}
+
+	// Still valid on subsequent use (now permanent).
+	if _, err := s.Validate(issued.Plain); err != nil {
+		t.Errorf("claimed token should remain valid: %v", err)
+	}
+}
+
+func TestTeslaToken_EphemeralExpiredRejected(t *testing.T) {
+	db := memDB(t)
+	s := NewTeslaTokenService(db)
+
+	issued, err := s.IssueEphemeral("air.gapp self-enrol", 10*time.Minute)
+	if err != nil {
+		t.Fatalf("issue ephemeral: %v", err)
+	}
+	// Force the window into the past — the deterministic equivalent of "never scanned in time".
+	if _, err := db.Exec("UPDATE tesla_client_tokens SET expires_at = datetime('now','-1 minute') WHERE id = ?", issued.Token.ID); err != nil {
+		t.Fatalf("expire token: %v", err)
+	}
+
+	if _, err := s.Validate(issued.Plain); !errors.Is(err, ErrTeslaTokenInvalid) {
+		t.Errorf("expired unclaimed token: got err %v, want ErrTeslaTokenInvalid", err)
+	}
+}
+
+func TestTeslaToken_EphemeralIssuePrunesLapsed(t *testing.T) {
+	db := memDB(t)
+	s := NewTeslaTokenService(db)
+
+	stale, err := s.IssueEphemeral("stale", 10*time.Minute)
+	if err != nil {
+		t.Fatalf("issue stale: %v", err)
+	}
+	if _, err := db.Exec("UPDATE tesla_client_tokens SET expires_at = datetime('now','-1 minute') WHERE id = ?", stale.Token.ID); err != nil {
+		t.Fatalf("expire stale: %v", err)
+	}
+
+	// Issuing a new one prunes the lapsed, never-claimed row.
+	if _, err := s.IssueEphemeral("fresh", 10*time.Minute); err != nil {
+		t.Fatalf("issue fresh: %v", err)
+	}
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM tesla_client_tokens WHERE id = ?", stale.Token.ID).Scan(&count); err != nil {
+		t.Fatalf("count stale: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("lapsed unclaimed token should have been pruned, still present")
 	}
 }

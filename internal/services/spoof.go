@@ -1,16 +1,21 @@
 package services
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -49,16 +54,44 @@ var spoofConnManHeaders = map[string]string{
 	"X-Cache":          "Hit from cloudfront",
 }
 
-// SpoofService runs the captive-check responder (currently just Tesla
-// connman). The Tesla's :80 traffic is steered here by a firewall DNAT
-// rule; this service just answers it.
+// enrolTokenTTL is the claim window for a self-service air.gapp enrol code:
+// scan + first-use within this long or it lapses (see TeslaTokenService.Validate).
+const enrolTokenTTL = 10 * time.Minute
+
+// SpoofService runs the captive-check responder (Tesla connman) on :80/:443,
+// and — when enrol deps are wired via SetEnrolDeps — also vhosts the
+// self-service enrol-QR page on the same :80 listener under the EnrolHost
+// (air.gapp). The Tesla's :80 traffic is steered here by a firewall DNAT rule;
+// a LAN device typing http://air.gapp/ reaches the same listener by its real
+// gateway IP, and the Host header picks the branch.
 type SpoofService struct {
 	cfg  config.Config
 	exec *executor.Executor
+
+	// Enrol deps, injected by SetEnrolDeps (nil until then → the air.gapp
+	// vhost is simply off and every request gets the connman spoof).
+	webFS  fs.FS
+	tokens *TeslaTokenService
+	remote *RemoteService
 }
 
 func NewSpoofService(cfg config.Config, exec *executor.Executor) *SpoofService {
 	return &SpoofService{cfg: cfg, exec: exec}
+}
+
+// SetEnrolDeps turns on the air.gapp enrol vhost. Separate from the
+// constructor because the web embed FS lives in main and the token/remote
+// services are built alongside this one. Safe to leave uncalled — without it
+// the :80 listener is the plain connman spoof it always was.
+func (s *SpoofService) SetEnrolDeps(webFS fs.FS, tokens *TeslaTokenService, remote *RemoteService) {
+	s.webFS = webFS
+	s.tokens = tokens
+	s.remote = remote
+}
+
+// enrolEnabled reports whether the air.gapp vhost is wired and configured.
+func (s *SpoofService) enrolEnabled() bool {
+	return s.cfg.EnrolHost != "" && s.webFS != nil && s.tokens != nil && s.remote != nil
 }
 
 // EnsureNoDnsmasqHijack removes the legacy address= override if present.
@@ -153,6 +186,13 @@ func selfSignedCert(host string) (tls.Certificate, error) {
 // so the response is unconditional. Host + scheme are logged so a real
 // Tesla probe shows up in the journal as evidence.
 func (s *SpoofService) handle(w http.ResponseWriter, r *http.Request) {
+	// air.gapp enrol vhost — plain HTTP only (no cert), matched by Host header.
+	// Everything else, and ALL :443 traffic, falls through to the connman spoof.
+	if r.TLS == nil && s.enrolEnabled() && hostWithoutPort(r.Host) == s.cfg.EnrolHost {
+		s.handleEnrol(w, r)
+		return
+	}
+
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
@@ -165,4 +205,91 @@ func (s *SpoofService) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	log.Printf("[SPOOF] %s %s://%s%s → 200 (client=%s)", r.Method, scheme, r.Host, r.URL.Path, r.RemoteAddr)
+}
+
+// hostWithoutPort strips a trailing :port from a request Host so "air.gapp"
+// and "air.gapp:80" both match the configured EnrolHost.
+func hostWithoutPort(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
+}
+
+// handleEnrol routes the air.gapp vhost: the QR page, its one script, and the
+// unauthenticated token-issue endpoint. All LAN-only (air.gapp never resolves
+// off-LAN and :80 is wlan0-bound), which is the whole security premise: a relay
+// token can't command the car without the car separately authorising the key.
+func (s *SpoofService) handleEnrol(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/index.html"):
+		s.serveEnrolAsset(w, "static/enrol/airgapp.html", "text/html; charset=utf-8")
+	case r.Method == http.MethodGet && r.URL.Path == "/qrcode.min.js":
+		s.serveEnrolAsset(w, "static/js/qrcode.min.js", "application/javascript")
+	case r.Method == http.MethodPost && r.URL.Path == "/issue":
+		s.handleEnrolIssue(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// serveEnrolAsset writes an embedded web asset with an explicit content type.
+func (s *SpoofService) serveEnrolAsset(w http.ResponseWriter, fsPath, contentType string) {
+	data, err := fs.ReadFile(s.webFS, fsPath)
+	if err != nil {
+		log.Printf("[ENROL] missing asset %s: %v", fsPath, err)
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(data)
+}
+
+// handleEnrolIssue mints a fresh, short-lived enrol token and returns the
+// airgapp://enrol deep link as JSON for the page to render as a QR. No auth:
+// anyone on the LAN may mint one, by design — see handleEnrol.
+func (s *SpoofService) handleEnrolIssue(w http.ResponseWriter, r *http.Request) {
+	enrolURL, ttlSec, err := s.buildEnrolURL(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err != nil {
+		log.Printf("[ENROL] issue failed (client=%s): %v", r.RemoteAddr, err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[ENROL] issued self-service enrol token (ttl=%ds, client=%s)", ttlSec, r.RemoteAddr)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"enrol_url":      enrolURL,
+		"expires_in_sec": ttlSec,
+	})
+}
+
+// buildEnrolURL resolves the relay's reachable base URL (the public Funnel URL
+// when exposed, else the tailnet hostname), mints a claim-windowed token, and
+// assembles the airgapp://enrol?api=…&token=… deep link the app parses.
+func (s *SpoofService) buildEnrolURL(ctx context.Context) (string, int, error) {
+	st, err := s.remote.Status(ctx)
+	if err != nil {
+		return "", 0, fmt.Errorf("relay status unavailable: %w", err)
+	}
+	base := st.BLEFunnelURL
+	if base == "" {
+		if st.TailnetHostname == "" {
+			return "", 0, errors.New("relay is not reachable yet — connect Tailscale (and expose /api/ble via Funnel for phones that aren't on the tailnet)")
+		}
+		base = "https://" + st.TailnetHostname + "/api/ble"
+	}
+
+	label := "air.gapp " + time.Now().Format("2006-01-02 15:04")
+	issued, err := s.tokens.IssueEphemeral(label, enrolTokenTTL)
+	if err != nil {
+		return "", 0, fmt.Errorf("issue token: %w", err)
+	}
+
+	q := url.Values{}
+	q.Set("api", base) // full https URL incl. /api/ble; percent-encoded by Encode
+	q.Set("token", issued.Plain)
+	return "airgapp://enrol?" + q.Encode(), int(enrolTokenTTL.Seconds()), nil
 }

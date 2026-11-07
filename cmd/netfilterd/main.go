@@ -56,6 +56,10 @@ func main() {
 
 	svc := services.New(db, exec, cfg)
 
+	// Turn on the air.gapp self-service enrol vhost on the :80 spoof listener.
+	// Wired here because the embedded web FS lives in this package.
+	svc.Spoof.SetEnrolDeps(web.Content, svc.TeslaToken, svc.Remote)
+
 	if *initAdmin || *resetAdmin {
 		if *adminPass == "" {
 			log.Fatal("--password is required with --init-admin or --reset-admin")

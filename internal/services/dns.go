@@ -228,6 +228,14 @@ func (s *DNSService) Apply() error {
 	}
 	conf := buildDNSConfig(splitUpstreams(s.cfg.DNSUpstream), domains, openMACs)
 
+	// Self-service enrol page: a made-up LAN-only host → the Pi. More specific
+	// than address=/#/0.0.0.0, so it wins; never a real TLD and never published
+	// off-LAN, so it only resolves for devices using the Pi's resolver.
+	if s.cfg.EnrolHost != "" {
+		conf += fmt.Sprintf("\n# Self-service enrol QR page (LAN-only vanity host)\naddress=/%s/%s\n",
+			s.cfg.EnrolHost, s.cfg.LANGateway)
+	}
+
 	const confPath = "/etc/dnsmasq.d/netfilter-dns.conf"
 	os.Remove("/etc/dnsmasq.d/blocklist.conf") // legacy V2 file
 	if err := os.WriteFile(confPath, []byte(conf), 0644); err != nil {

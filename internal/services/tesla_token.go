@@ -39,6 +39,11 @@ type TeslaClientToken struct {
 	// re-display a user's enrolment QR without re-issuing (v25). List returns
 	// active tokens only, so this is always set there; never set on Validate/get.
 	Plain string `json:"plain,omitempty"`
+	// ExpiresAt is the claim window for a self-service air.gapp token: non-NULL
+	// means "must be scanned+used before this instant, else dead" (v26). Cleared
+	// to NULL on first successful Validate so a claimed token is permanent.
+	// Operator-issued tokens have it NULL. Only populated by Validate's scan.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // TeslaTokenIssue is what IssueToken returns. Plaintext is shown to the
@@ -90,6 +95,59 @@ func (s *TeslaTokenService) Issue(name string) (*TeslaTokenIssue, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert token: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("token id: %w", err)
+	}
+
+	row, err := s.get(id)
+	if err != nil {
+		return nil, err
+	}
+	return &TeslaTokenIssue{Token: *row, Plain: plain}, nil
+}
+
+// IssueEphemeral mints a bearer with a claim window: it works only if scanned
+// and first-used within ttl, after which Validate clears the window and the
+// token becomes permanent (see Validate). Used by the self-service air.gapp
+// enrol page so an unscanned QR can't linger as a live credential. Same shape
+// as Issue otherwise — the plaintext is returned once.
+//
+// expires_at is computed in UTC and stored in SQLite's datetime text format so
+// it compares directly against CURRENT_TIMESTAMP (also UTC) without timezone
+// ambiguity in the Validate fast-path.
+func (s *TeslaTokenService) IssueEphemeral(name string, ttl time.Duration) (*TeslaTokenIssue, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.New("token name cannot be empty")
+	}
+	if len(name) > 80 {
+		return nil, errors.New("token name too long (max 80 chars)")
+	}
+	if ttl <= 0 {
+		return nil, errors.New("ttl must be positive")
+	}
+
+	seed := make([]byte, teslaTokenBytes)
+	if _, err := rand.Read(seed); err != nil {
+		return nil, fmt.Errorf("seed bearer: %w", err)
+	}
+	plain := base64.RawURLEncoding.EncodeToString(seed)
+	hash := hashTeslaToken(plain)
+	expiresAt := time.Now().UTC().Add(ttl).Format("2006-01-02 15:04:05")
+
+	// Prune lapsed, never-claimed codes so repeated self-service issuance can't
+	// grow the table without bound. Claimed tokens have expires_at cleared to
+	// NULL, so this only ever removes dead unscanned QRs.
+	_, _ = s.db.Exec("DELETE FROM tesla_client_tokens WHERE expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP")
+
+	res, err := s.db.Exec(
+		"INSERT INTO tesla_client_tokens (name, token_hash, token_plain, expires_at) VALUES (?, ?, ?, ?)",
+		name, hash, plain, expiresAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert ephemeral token: %w", err)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
@@ -190,17 +248,31 @@ func (s *TeslaTokenService) Validate(plain string) (*TeslaClientToken, error) {
 	hash := hashTeslaToken(plain)
 
 	var t TeslaClientToken
+	// The expires_at clause enforces the claim window in the DB's own clock
+	// (CURRENT_TIMESTAMP, UTC) so there's no Go-side timezone comparison on the
+	// auth fast-path. An expired row simply doesn't match — indistinguishable
+	// from "not found"/"revoked", which is the point (no existence oracle).
 	err := s.db.QueryRow(`
-		SELECT id, name, created_at, last_used_at, revoked_at
+		SELECT id, name, created_at, last_used_at, revoked_at, expires_at
 		FROM tesla_client_tokens
-		WHERE token_hash = ? AND revoked_at IS NULL`,
+		WHERE token_hash = ? AND revoked_at IS NULL
+		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`,
 		hash,
-	).Scan(&t.ID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt)
+	).Scan(&t.ID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt, &t.ExpiresAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrTeslaTokenInvalid
 	}
 	if err != nil {
 		return nil, fmt.Errorf("validate token: %w", err)
+	}
+
+	// Claim-on-first-use: a self-service air.gapp token proves itself by being
+	// used inside its window (it passed the clause above). Clear the window so
+	// it is permanent from here on — only ever runs once per token, and an
+	// unclaimed one would already have failed the WHERE and never reach here.
+	if t.ExpiresAt != nil {
+		_, _ = s.db.Exec("UPDATE tesla_client_tokens SET expires_at = NULL WHERE id = ?", t.ID)
+		t.ExpiresAt = nil
 	}
 
 	// Best-effort touch — failure here doesn't deny access (the bearer

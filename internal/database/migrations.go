@@ -1115,6 +1115,14 @@ var migrations = []string{
 	// enrolled phones will re-scan the new per-user QR.
 	`ALTER TABLE tesla_client_tokens ADD COLUMN token_plain TEXT NOT NULL DEFAULT '';
 	DELETE FROM tesla_client_tokens;`,
+
+	// v26: optional claim window for self-service enrolment tokens. NULL means
+	// "never expires" (every operator-issued token, unchanged). A non-NULL
+	// expires_at is a self-issued air.gapp QR that must be scanned+claimed
+	// before it lapses — Validate rejects it past expiry and clears the column
+	// to NULL on first successful use, so a claimed token becomes permanent and
+	// an unscanned one can't linger. Existing rows get NULL, so nothing expires.
+	`ALTER TABLE tesla_client_tokens ADD COLUMN expires_at DATETIME;`,
 }
 
 // localSeeds holds operator-private seed statements that must NOT be
