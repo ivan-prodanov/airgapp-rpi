@@ -107,105 +107,6 @@
         </div>
     </div>
 
-    <!-- BLE client tokens — bearer auth for /api/ble/* -->
-    <div class="card">
-        <div class="card-head">
-            <div>
-                <div class="card-head-title">BLE client tokens</div>
-                <div class="card-head-sub">Bearer tokens authorising external clients to drive the car via <code style="font-size:11.5px;">/api/ble/*</code>. The token text is shown once at issue time and never persisted in plaintext.</div>
-            </div>
-            <div class="card-head-spacer"></div>
-            <button class="btn" @click="tokenDialogOpen = true; newTokenName = '';">Issue token</button>
-        </div>
-        <div class="card-body">
-            <table class="tbl">
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th style="width:160px;">Created</th>
-                        <th style="width:160px;">Last used</th>
-                        <th style="width:120px;">Status</th>
-                        <th style="width:100px;" class="right">&nbsp;</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <template x-for="t in bleTokens" :key="t.id">
-                        <tr>
-                            <td class="cell-primary" x-text="t.name"></td>
-                            <td class="cell-mac" x-text="new Date(t.created_at).toLocaleString()"></td>
-                            <td class="cell-mac" x-text="t.last_used_at ? new Date(t.last_used_at).toLocaleString() : '—'"></td>
-                            <td>
-                                <span class="badge dot" :class="t.revoked_at ? 'muted' : 'success'"
-                                      x-text="t.revoked_at ? 'revoked' : 'active'"></span>
-                            </td>
-                            <td class="actions">
-                                <button class="btn sm danger"
-                                        x-show="!t.revoked_at"
-                                        @click="revokeToken(t)">Revoke</button>
-                            </td>
-                        </tr>
-                    </template>
-                    <template x-if="bleTokens.length === 0">
-                        <tr><td colspan="5" style="text-align:center; color:var(--fg-mute); padding:22px;">No tokens issued yet.</td></tr>
-                    </template>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- Issue-token dialog -->
-    <div class="dialog-back" x-show="tokenDialogOpen" x-cloak @keydown.escape.window="tokenDialogOpen = false">
-        <div class="dialog">
-            <div class="dialog-head">
-                <div class="dialog-title">Issue BLE client token</div>
-                <button class="dialog-close" @click="tokenDialogOpen = false">&times;</button>
-            </div>
-            <div class="dialog-body">
-                <template x-if="!issuedPlain">
-                    <div>
-                        <label class="label">Client name</label>
-                        <input class="input" x-model="newTokenName" placeholder="ivan's macbook" @keydown.enter="issueToken()" autofocus>
-                        <div class="field-help">Operator-visible label — shows up in audit logs as <code>client:NAME</code>.</div>
-                    </div>
-                </template>
-                <template x-if="issuedPlain">
-                    <div style="display:flex; flex-direction:column; align-items:center; gap:16px;">
-                        <template x-if="qrSvg">
-                            <div style="display:flex; flex-direction:column; align-items:center; gap:14px;">
-                                <!-- Red field, white modules, Airgapp A centred (white-on-red, 'H' error correction). -->
-                                <div style="position:relative; width:232px; height:232px; background:#e02434; padding:14px; border-radius:16px; box-sizing:border-box;">
-                                    <div x-html="qrSvg" style="width:100%; height:100%; display:grid; place-items:center;"></div>
-                                    <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:52px; height:52px; background:#e02434; border-radius:14px; padding:4px; box-sizing:border-box;">
-                                        <img src="/static/img/airgapp-icon.png" alt="" style="width:100%; height:100%; border-radius:10px; display:block;">
-                                    </div>
-                                </div>
-                                <div class="field-help" style="margin:0; text-align:center; max-width:300px; font-size:13px;">
-                                    Scan with the phone's Camera. <strong>Airgapp must be installed</strong> on it.
-                                </div>
-                            </div>
-                        </template>
-                        <template x-if="!qrSvg">
-                            <div class="field-help" style="text-align:center; max-width:340px;">
-                                No QR — enable Tailscale Funnel for <code>/api/ble</code> on Remote access, then re-issue the token.
-                            </div>
-                        </template>
-                    </div>
-                </template>
-            </div>
-            <div class="dialog-foot">
-                <template x-if="!issuedPlain">
-                    <div style="display:flex; gap:8px;">
-                        <button class="btn ghost" @click="tokenDialogOpen = false">Cancel</button>
-                        <button class="btn primary" :disabled="!newTokenName.trim()" @click="issueToken()">Issue</button>
-                    </div>
-                </template>
-                <template x-if="issuedPlain">
-                    <button class="btn primary" @click="closeIssueDialog()">Done</button>
-                </template>
-            </div>
-        </div>
-    </div>
-
     <!-- System read-only info + actions -->
     <div class="card">
         <div class="card-head">
@@ -243,8 +144,6 @@
 {{end}}
 
 {{define "scripts"}}
-<!-- qrcode-generator 1.4.4 (MIT), vendored locally — the Pi dashboard runs offline. -->
-<script src="/static/js/qrcode.min.js"></script>
 <script>
 function settingsApp() {
     return {
@@ -254,121 +153,9 @@ function settingsApp() {
         saving: false,
         auditLogs: [],
 
-        // BLE client tokens (V4.4 Phase 1). bleTokens is the rendered
-        // list; tokenDialogOpen drives the issue/display modal;
-        // issuedPlain holds the one-time plaintext returned by POST and
-        // is wiped when the operator dismisses the dialog.
-        bleTokens: [],
-        tokenDialogOpen: false,
-        newTokenName: '',
-        issuedPlain: '',
-        // enrolUrl bundles {api, token, nickname} into a single
-        // airgapp://enrol?... URL — rendered as a QR to scan with the
-        // phone camera (primary), and copyable as a fallback.
-        // Computed in issueToken() once the plaintext is back.
-        enrolUrl: '',
-        // Inline SVG QR of enrolUrl, generated client-side (the Pi is
-        // offline) by the vendored qrcode-generator. Scanning it opens the
-        // airgapp:// deep link and provisions the app in one step.
-        qrSvg: '',
-
-        renderEnrolQr() {
-            try {
-                const qr = qrcode(0, 'H'); // 0 = auto-size, 'H' = ~30% error correction (covers the centre logo)
-                qr.addData(this.enrolUrl);
-                qr.make();
-                // Recolor to WHITE modules on the brand-red field (the library
-                // emits a white bg rect + a black module path). White-on-red keeps
-                // strong luminance contrast so it stays scannable (iOS handles the
-                // inverted code); black-on-red would be too low-contrast to read.
-                this.qrSvg = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true })
-                    .replace('fill="white"', 'fill="#e02434"')
-                    .replace('fill="black"', 'fill="#ffffff"');
-            } catch (e) {
-                this.qrSvg = ''; // Copy-URL fallback still works
-            }
-        },
-
         async load() {
             this.settings  = (await api.get('/api/settings'))     || {};
             this.auditLogs = (await api.get('/api/system/audit')) || [];
-            await this.loadTokens();
-        },
-        async loadTokens() {
-            try {
-                const r = await api.get('/api/tesla/tokens');
-                this.bleTokens = r.tokens || [];
-            } catch (e) { /* api wrapper toasted */ }
-        },
-        async issueToken() {
-            const name = this.newTokenName.trim();
-            if (!name) return;
-            try {
-                const r = await api.post('/api/tesla/tokens', { name });
-                this.issuedPlain = r.plain || '';
-
-                // The api URL must be the PUBLIC Tailscale Funnel URL for
-                // /api/ble — NOT window.location.origin. The operator views this
-                // dashboard over the LAN (e.g. https://192.168.4.1:8443, whose
-                // self-signed cert the phone can neither route to nor trust), but
-                // the phone reaches the relay over the public internet via Funnel
-                // (valid cert). Pull it from the remote status.
-                let apiBase = '';
-                try {
-                    const st = await api.get('/api/remote/status');
-                    if (st && st.ble_funnel && st.ble_funnel_url) apiBase = st.ble_funnel_url;
-                } catch (e) { /* handled below */ }
-
-                await this.loadTokens();
-
-                if (!apiBase) {
-                    this.enrolUrl = '';
-                    this.qrSvg = '';
-                    notify('Relay not reachable by the phone yet — enable Tailscale Funnel for /api/ble on Remote access, then re-issue the token. (The token above is still valid.)', 'error');
-                    return;
-                }
-
-                // ble_funnel_url already includes the /api/ble path.
-                const params = new URLSearchParams({
-                    api: apiBase,
-                    token: this.issuedPlain,
-                    nickname: name,
-                });
-                this.enrolUrl = 'airgapp://enrol?' + params.toString();
-                this.renderEnrolQr();
-            } catch (e) { /* api wrapper toasted */ }
-        },
-        async revokeToken(t) {
-            if (!confirm('Revoke "' + t.name + '"? This client will lose access immediately.')) return;
-            try {
-                await api.delete('/api/tesla/tokens/' + t.id);
-                notify('Token revoked', 'success');
-                await this.loadTokens();
-            } catch (e) {}
-        },
-        async copyToken() {
-            try {
-                await navigator.clipboard.writeText(this.issuedPlain);
-                notify('Copied', 'success');
-            } catch (e) {
-                notify('Could not copy — select manually', 'error');
-            }
-        },
-        async copyEnrolUrl() {
-            try {
-                await navigator.clipboard.writeText(this.enrolUrl);
-                notify('Enrolment URL copied', 'success');
-            } catch (e) {
-                notify('Could not copy — select manually', 'error');
-            }
-        },
-        closeIssueDialog() {
-            // Wipe plaintext from JS memory the instant the modal closes.
-            this.issuedPlain = '';
-            this.enrolUrl = '';
-            this.qrSvg = '';
-            this.newTokenName = '';
-            this.tokenDialogOpen = false;
         },
         async saveHotspot() {
             this.saving = true;

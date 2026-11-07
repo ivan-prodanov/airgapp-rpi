@@ -1106,6 +1106,15 @@ var migrations = []string{
 		WHERE port=18113 AND preset_id=(SELECT id FROM filters WHERE name='Grok');
 	UPDATE filter_udp_ports SET description='NTP time sync — public pool.ntp.org'
 		WHERE port=123   AND preset_id=(SELECT id FROM filters WHERE name='Time');`,
+
+	// v25: BLE client tokens become re-viewable per user. Store the plaintext
+	// alongside the hash so "Show QR" can rebuild the enrolment QR at any time
+	// (the operator's explicit choice for this personal appliance; the DB is
+	// root-only and behind dashboard auth). Also wipe the pile of old one-time,
+	// hash-only tokens for a clean start — they can't be re-shown anyway, and
+	// enrolled phones will re-scan the new per-user QR.
+	`ALTER TABLE tesla_client_tokens ADD COLUMN token_plain TEXT NOT NULL DEFAULT '';
+	DELETE FROM tesla_client_tokens;`,
 }
 
 // localSeeds holds operator-private seed statements that must NOT be

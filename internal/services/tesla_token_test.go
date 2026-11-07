@@ -182,3 +182,42 @@ func TestTeslaToken_IssuedTokensAreUnique(t *testing.T) {
 		t.Errorf("two issues produced the same plaintext — RNG fail")
 	}
 }
+
+// TestTeslaToken_ListExposesPlaintextForReview verifies v25's re-viewable QR:
+// List returns the stored plaintext for ACTIVE tokens (so the operator can
+// re-show a user's enrolment QR) but never for revoked ones.
+func TestTeslaToken_ListExposesPlaintextForReview(t *testing.T) {
+	db := memDB(t)
+	s := NewTeslaTokenService(db)
+
+	a, err := s.Issue("phone-a")
+	if err != nil {
+		t.Fatalf("issue a: %v", err)
+	}
+	b, err := s.Issue("phone-b")
+	if err != nil {
+		t.Fatalf("issue b: %v", err)
+	}
+	if err := s.Revoke(b.Token.ID); err != nil {
+		t.Fatalf("revoke b: %v", err)
+	}
+
+	list, err := s.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	byName := map[string]TeslaClientToken{}
+	for _, tok := range list {
+		byName[tok.Name] = tok
+	}
+
+	// Active token: plaintext is returned and matches what Issue handed back,
+	// so rebuilding the QR yields the same enrolment URL.
+	if got := byName["phone-a"].Plain; got != a.Plain {
+		t.Errorf("active token Plain = %q, want the issued plaintext %q", got, a.Plain)
+	}
+	// Revoked token: plaintext must be withheld.
+	if got := byName["phone-b"].Plain; got != "" {
+		t.Errorf("revoked token Plain = %q, want empty (never ship a revoked token's plaintext)", got)
+	}
+}

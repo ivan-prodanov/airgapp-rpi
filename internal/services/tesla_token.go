@@ -35,6 +35,10 @@ type TeslaClientToken struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	// Plain is the re-viewable bearer, populated by List for ACTIVE tokens so
+	// the operator can re-display a user's enrolment QR without re-issuing
+	// (v25). Empty for revoked tokens and never set on Validate/get.
+	Plain string `json:"plain,omitempty"`
 }
 
 // TeslaTokenIssue is what IssueToken returns. Plaintext is shown to the
@@ -81,8 +85,8 @@ func (s *TeslaTokenService) Issue(name string) (*TeslaTokenIssue, error) {
 	hash := hashTeslaToken(plain)
 
 	res, err := s.db.Exec(
-		"INSERT INTO tesla_client_tokens (name, token_hash) VALUES (?, ?)",
-		name, hash,
+		"INSERT INTO tesla_client_tokens (name, token_hash, token_plain) VALUES (?, ?, ?)",
+		name, hash, plain,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert token: %w", err)
@@ -103,7 +107,7 @@ func (s *TeslaTokenService) Issue(name string) (*TeslaTokenIssue, error) {
 // to display the active set + revoke individual entries.
 func (s *TeslaTokenService) List() ([]TeslaClientToken, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, created_at, last_used_at, revoked_at
+		SELECT id, name, created_at, last_used_at, revoked_at, token_plain
 		FROM tesla_client_tokens
 		ORDER BY revoked_at IS NULL DESC, created_at DESC`)
 	if err != nil {
@@ -114,8 +118,13 @@ func (s *TeslaTokenService) List() ([]TeslaClientToken, error) {
 	var out []TeslaClientToken
 	for rows.Next() {
 		var t TeslaClientToken
-		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt, &t.Plain); err != nil {
 			return nil, fmt.Errorf("scan token: %w", err)
+		}
+		// Only an active token's QR can be re-shown — never hand a revoked
+		// token's plaintext back to the client.
+		if t.RevokedAt != nil {
+			t.Plain = ""
 		}
 		out = append(out, t)
 	}
