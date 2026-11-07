@@ -169,36 +169,26 @@
                     </div>
                 </template>
                 <template x-if="issuedPlain">
-                    <div>
-                        <!-- QR is the primary path: hero, centered, fully visible. -->
-                        <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
-                            <div style="position:relative; width:232px; height:232px; background:#e02434; padding:14px; border-radius:16px; box-sizing:border-box;">
-                                <div x-html="qrSvg" style="width:100%; height:100%; display:grid; place-items:center;"></div>
-                                <!-- Airgapp mark in the QR centre. renderEnrolQr recolors to WHITE modules on the brand-red background and uses 'H' error correction (~30%) so the covered centre modules still recover. The red logo backing matches the field, so only the white A shows. -->
-                                <template x-if="qrSvg">
+                    <div style="display:flex; flex-direction:column; align-items:center; gap:16px;">
+                        <template x-if="qrSvg">
+                            <div style="display:flex; flex-direction:column; align-items:center; gap:14px;">
+                                <!-- Red field, white modules, Airgapp A centred (white-on-red, 'H' error correction). -->
+                                <div style="position:relative; width:232px; height:232px; background:#e02434; padding:14px; border-radius:16px; box-sizing:border-box;">
+                                    <div x-html="qrSvg" style="width:100%; height:100%; display:grid; place-items:center;"></div>
                                     <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:52px; height:52px; background:#e02434; border-radius:14px; padding:4px; box-sizing:border-box;">
                                         <img src="/static/img/airgapp-icon.png" alt="" style="width:100%; height:100%; border-radius:10px; display:block;">
                                     </div>
-                                </template>
+                                </div>
+                                <div class="field-help" style="margin:0; text-align:center; max-width:300px; font-size:13px;">
+                                    Scan with the phone's Camera. <strong>Airgapp must be installed</strong> on it.
+                                </div>
                             </div>
-                            <div style="text-align:center; max-width:330px;">
-                                <div style="font-size:14px; font-weight:600; color:var(--fg);">Scan to set up the app</div>
-                                <div class="field-help" style="margin-top:4px;">Point the phone's Camera at this code — it opens airgapp and connects the relay. No typing.</div>
+                        </template>
+                        <template x-if="!qrSvg">
+                            <div class="field-help" style="text-align:center; max-width:340px;">
+                                No QR — enable Tailscale Funnel for <code>/api/ble</code> on Remote access, then re-issue the token.
                             </div>
-                        </div>
-
-                        <!-- Fallback/backup, visually quiet: token + enrolment link. -->
-                        <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--line);">
-                            <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:8px;">
-                                <label class="label" style="margin:0;">Token · save as backup</label>
-                                <span style="font-size:11px; color:var(--ok); font-weight:600;">Shown once</span>
-                            </div>
-                            <div style="display:flex; gap:8px; align-items:center;">
-                                <input class="input" readonly :value="issuedPlain" style="flex:1; font-family:'JetBrains Mono', ui-monospace, monospace; font-size:12.5px;">
-                                <button class="btn sm" style="flex:0 0 auto;" @click="copyToken()">Copy</button>
-                            </div>
-                            <button class="btn sm ghost" style="margin-top:10px;" @click="copyEnrolUrl()">Copy enrolment link instead</button>
-                        </div>
+                        </template>
                     </div>
                 </template>
             </div>
