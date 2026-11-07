@@ -23,7 +23,8 @@
         </nav>
     </header>
 
-    <main class="content">
+    {{- /* The dashboard runs edge to edge; every other page keeps the content padding. */}}
+    <main class="content{{if eq .page "dashboard"}} content-bleed{{end}}">
         {{template "content" .}}
     </main>
 

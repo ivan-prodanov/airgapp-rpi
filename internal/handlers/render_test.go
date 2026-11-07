@@ -150,6 +150,38 @@ func TestLoginPage(t *testing.T) {
 	}
 }
 
+// The Gap dashboard: headline, gate with lane slots, readouts — and none of the
+// cards the redesign dropped (hero, stat cards, car lock, WAN probe, switch).
+func TestDashboardPage(t *testing.T) {
+	body, _ := renderPage(NewRenderer(web.Content), "dashboard.html", "dashboard")
+	for _, want := range []string{`class="dash"`, `class="hstmt"`, `class="gate"`, `class="lanes"`, "This sweep"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard lacks %s", want)
+		}
+	}
+	if n := strings.Count(body, `class="hostrow`); n != 7 {
+		t.Errorf("%d host rows, want 7 lane slots", n)
+	}
+	for _, gone := range []string{"Guardian", "Probe WAN", "stat-card", "lock_", "segbtn"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("dashboard still contains %q", gone)
+		}
+	}
+}
+
+// The dashboard runs edge to edge; other pages keep the content padding.
+func TestLayoutBleed(t *testing.T) {
+	r := NewRenderer(web.Content)
+	dash, _ := renderPage(r, "dashboard.html", "dashboard")
+	devs, _ := renderPage(r, "devices.html", "devices")
+	if !strings.Contains(dash, `<main class="content content-bleed">`) {
+		t.Error("dashboard main is not content-bleed")
+	}
+	if !strings.Contains(devs, `<main class="content">`) {
+		t.Error("devices main should be plain content")
+	}
+}
+
 func TestRenderEveryPage(t *testing.T) {
 	r := NewRenderer(web.Content)
 	for _, p := range testPages {

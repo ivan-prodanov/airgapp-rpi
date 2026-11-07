@@ -1,231 +1,182 @@
 {{define "title"}}Dashboard{{end}}
 
+{{- /* One lane slot in the host list; the gate has seven. */}}
+{{define "dash-hostrow"}}<li class="hostrow empty"><span class="hdot"></span><div class="hostmid"><div class="hname"></div><div class="hsub2"></div></div></li>{{end}}
+
 {{define "content"}}
-<div x-data="dashboardApp()" x-init="load()">
-    <div class="page-head">
-        <div>
-            <div class="page-head-eyebrow"><strong>Vehicle</strong> · <span x-text="teslaLabel"></span></div>
-            <h1 class="page-head-title">Guardian</h1>
-            <p class="page-head-sub">
-                Live status of the airgap between the vehicle and the manufacturer. The
-                <strong>protected-deny floor</strong> is sealed at compile time —
-                Hermes, OTA, telemetry, manufacturing and engineering hosts cannot be
-                allow-listed from this UI by design.
-            </p>
-        </div>
-        <div class="page-head-right">
-            <button class="btn" @click="refresh()">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M14 8a6 6 0 1 0-2 4.5"/><path d="M14 3v4h-4"/></svg>
-                Refresh
-            </button>
-            <button class="btn" @click="testConnectivity()" :disabled="testing">
-                <span x-show="!testing">Probe WAN</span>
-                <span x-show="testing">Probing…</span>
-            </button>
-        </div>
+<div class="dash" x-data="dashApp()">
+    <div class="herohead">
+        <h1 class="hstmt" data-rise :style="'color:' + head[2]"><span class="pre" x-text="head[0]">Elon is</span> <span class="word" :style="'color:' + head[3]" x-text="head[1]">Gated</span></h1>
     </div>
 
-    <!-- Guardian hero -->
-    <div class="guardian">
-        <div class="guardian-l">
-            <span class="guardian-eyebrow">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1l5 2v5c0 3-2 5-5 7-3-2-5-4-5-7V3l5-2z"/></svg>
-                Guardian active · <span x-text="data.protected_deny || 15"></span> endpoints sealed
-            </span>
-            <h2 class="guardian-title">Tesla is silenced.<br>FSD telemetry never left this network.</h2>
-            <p class="guardian-sub">
-                Hermes, OTA, telemetry, manufacturing and engineering hosts are dropped
-                at the SNI gate. The vehicle behaves as if it has internet — connman
-                captive-portal probe answered locally, nav tiles fetched through the
-                allow-list, everything else returns NXDOMAIN.
-            </p>
-            <div class="guardian-stats">
-                <div>
-                    <div class="guardian-stat-label">Outbound dropped · 24 h</div>
-                    <div class="guardian-stat-value danger tnum">
-                        <span x-text="formatNum(data.blocked_24h || 0)">0</span>
-                        <span class="guardian-stat-value-unit">requests</span>
-                    </div>
+    <div class="work" data-rise="1">
+        <div class="stage">
+            <div class="gatelabel">Airgapp</div>
+            <div class="stage-inner">
+                <div class="car" :class="{ off: tesla && !tesla.online }" :title="tesla && !tesla.online ? 'Tesla is offline' : 'Tesla'">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M3 13l1.6-4.6A2 2 0 0 1 6.5 7h11a2 2 0 0 1 1.9 1.4L21 13v4.5a.9.9 0 0 1-.9.9h-1.2a.9.9 0 0 1-.9-.9V16.5H6v1.5a.9.9 0 0 1-.9.9H3.9a.9.9 0 0 1-.9-.9z"/><circle cx="7.2" cy="15" r="1.3" fill="currentColor" stroke="none"/><circle cx="16.8" cy="15" r="1.3" fill="currentColor" stroke="none"/></svg>
+                    <span class="car-n">Tesla</span>
                 </div>
-                <div>
-                    <div class="guardian-stat-label">Allow-listed · 24 h</div>
-                    <div class="guardian-stat-value tnum">
-                        <span x-text="formatNum(data.allowed_24h || 0)">0</span>
-                        <span class="guardian-stat-value-unit">requests</span>
-                    </div>
-                </div>
-                <div>
-                    <div class="guardian-stat-label">Air-gapped for</div>
-                    <div class="guardian-stat-value tnum">
-                        <span x-text="data.system ? formatUptime(parseFloat(data.system.uptime)) : '—'"></span>
-                    </div>
-                </div>
+                <svg class="viz scene" x-ref="scene" viewBox="0 0 1000 700" preserveAspectRatio="none" fill="none" aria-hidden="true">
+                    <g class="gate">
+                        <line class="glow" x1="600" y1="0" x2="600" y2="700" stroke="#AFC7D4" stroke-width="6.5" opacity="0.46"></line>
+                        <line x1="600" y1="0" x2="600" y2="700" stroke="#DCEAF1" stroke-width="1.2" opacity="0.6"></line>
+                    </g>
+                    <g class="lanes" x-ref="lanes"></g>
+                </svg>
             </div>
         </div>
-        <div class="guardian-r">
-            <svg viewBox="0 0 280 200" class="guardian-r-svg" fill="none">
-                <defs>
-                    <radialGradient id="ag-glow" cx="0.5" cy="0.5" r="0.7">
-                        <stop offset="0%" stop-color="rgba(78,192,122,0.18)"/>
-                        <stop offset="100%" stop-color="rgba(78,192,122,0)"/>
-                    </radialGradient>
-                    <linearGradient id="ag-shield-grad" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stop-color="rgba(78,192,122,0.32)"/>
-                        <stop offset="100%" stop-color="rgba(78,192,122,0.05)"/>
-                    </linearGradient>
-                </defs>
-                <circle cx="140" cy="100" r="90" fill="url(#ag-glow)"/>
-                <circle cx="140" cy="100" r="86" stroke="rgba(78,192,122,0.18)" stroke-dasharray="2 4"/>
-                <circle cx="140" cy="100" r="68" stroke="rgba(78,192,122,0.3)" stroke-dasharray="2 4"/>
-                <circle cx="140" cy="100" r="50" stroke="rgba(78,192,122,0.5)"/>
-                <path d="M140 30 L180 46 V96 C180 122 160 138 140 152 C120 138 100 122 100 96 V46 Z"
-                      fill="url(#ag-shield-grad)" stroke="var(--ok)" stroke-width="1.4"/>
-                <g transform="translate(140, 100)">
-                    <rect x="-22" y="-32" width="44" height="64" rx="11" fill="var(--bg-elev)" stroke="var(--ok)" stroke-width="1.4"/>
-                    <rect x="-16" y="-22" width="32" height="14" rx="4" fill="rgba(78,192,122,0.12)" stroke="var(--ok)" stroke-width="0.8" opacity="0.7"/>
-                    <rect x="-16" y="8" width="32" height="14" rx="4" fill="rgba(78,192,122,0.08)" stroke="var(--ok)" stroke-width="0.8" opacity="0.5"/>
-                    <line x1="0" y1="-6" x2="0" y2="6" stroke="var(--ok)" stroke-width="0.6" opacity="0.6"/>
-                </g>
-                <g stroke="var(--danger)" stroke-width="1.6" fill="none" opacity="0.9">
-                    <line x1="232" y1="44" x2="244" y2="56"/>
-                    <line x1="244" y1="44" x2="232" y2="56"/>
-                    <line x1="36"  y1="44" x2="48"  y2="56"/>
-                    <line x1="48"  y1="44" x2="36"  y2="56"/>
-                    <line x1="232" y1="144" x2="244" y2="156"/>
-                    <line x1="244" y1="144" x2="232" y2="156"/>
-                </g>
-                <text x="140" y="186" text-anchor="middle" fill="var(--fg-dim)" font-size="9" letter-spacing="2" style="font-family: Inter, sans-serif; text-transform: uppercase;">Vehicle isolated</text>
-            </svg>
-        </div>
+        <aside class="panel" aria-label="The Tesla's latest hosts">
+            <ol class="hostlist" x-ref="hostlist">
+                {{template "dash-hostrow"}}{{template "dash-hostrow"}}{{template "dash-hostrow"}}{{template "dash-hostrow"}}{{template "dash-hostrow"}}{{template "dash-hostrow"}}{{template "dash-hostrow"}}
+            </ol>
+            <p class="panel-note" x-show="loaded && note" x-text="note" x-cloak></p>
+        </aside>
     </div>
 
-    <!-- 4-up stat grid -->
-    <div class="stat-grid">
-        <div class="stat-card">
-            <div class="stat-card-head">
-                <span class="stat-card-head-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 11h12M3.5 7l1-3h7l1 3M2.5 11l1-4h9l1 4"/><circle cx="5" cy="11.5" r="1" fill="currentColor"/><circle cx="11" cy="11.5" r="1" fill="currentColor"/></svg></span>
-                Devices online
-            </div>
-            <div class="stat-card-value tnum">
-                <span x-text="data.devices_online || 0">0</span>
-                <span class="stat-card-value-unit">/ <span x-text="data.devices_total || 0">0</span></span>
-            </div>
-            <div class="stat-card-sub"><span>Active leases</span><strong x-text="(data.devices_total - data.devices_online) + ' offline'"></strong></div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-card-head">
-                <span class="stat-card-head-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="4" height="3"/><rect x="6" y="3" width="4" height="3"/><rect x="10" y="3" width="4" height="3"/><rect x="2" y="6" width="3" height="3"/><rect x="5" y="6" width="6" height="3"/><rect x="11" y="6" width="3" height="3"/><rect x="2" y="9" width="4" height="3"/><rect x="6" y="9" width="4" height="3"/><rect x="10" y="9" width="4" height="3"/></svg></span>
-                Firewall rules
-            </div>
-            <div class="stat-card-value tnum">
-                <span x-text="data.firewall_rules || 0">0</span>
-                <span class="stat-card-value-unit">active</span>
-            </div>
-            <div class="stat-card-sub"><span>Default policy</span><strong>drop</strong></div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-card-head">
-                <span class="stat-card-head-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 3h12l-4.5 6V13L7 14V9L2 3z"/></svg></span>
-                Filters enabled
-            </div>
-            <div class="stat-card-value tnum">
-                <span x-text="data.filters_enabled || 0">0</span>
-                <span class="stat-card-value-unit">/ <span x-text="data.filters_total || 0">0</span></span>
-            </div>
-            <div class="stat-card-sub"><span>Tesla AP/Nav</span><strong style="color:var(--ok);">● ON</strong></div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-card-head">
-                <span class="stat-card-head-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1l5 2v5c0 3-2 5-5 7-3-2-5-4-5-7V3l5-2z"/></svg></span>
-                Protected-deny floor
-            </div>
-            <div class="stat-card-value tnum">
-                <span x-text="data.protected_deny || 15">15</span>
-                <span class="stat-card-value-unit">sealed</span>
-            </div>
-            <div class="stat-card-sub"><span>Compile-time</span><strong>no override</strong></div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-card-head">
-                <span class="stat-card-head-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3.5" y="7" width="9" height="6" rx="1"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg></span>
-                <span>Car lock (observing)</span>
-            </div>
-            <div class="stat-card-value" x-text="data.lock_state || 'Unknown'">Unknown</div>
-            <div class="stat-card-sub"><span>Occupant</span><strong x-text="data.lock_occupant || 'Unknown'"></strong></div>
-            <div class="stat-card-sub"><span>WiFi verdict</span><strong x-text="data.lock_wifi_verdict || ''"></strong></div>
-            <div class="stat-card-sub"><span>BLE link</span><strong x-text="data.lock_link || 'Not attached'"></strong></div>
-            <div class="stat-card-sub"><span>Last signal</span><strong x-text="data.lock_last_signal || 'never'"></strong></div>
-        </div>
+    <div class="readouts" data-rise="2">
+        <div><p class="ro-l">Blocked · 24 h</p><p class="ro-v danger" x-text="fmt(blockedShown)">0</p></div>
+        <div><p class="ro-l">Allow-listed · 24 h</p><p class="ro-v safe" x-text="fmt(allowedShown)">0</p></div>
+        <div><p class="ro-l">This sweep</p><p class="ro-v"><span x-text="crossedN">0</span><span class="slash">/</span><span x-text="drawnN">0</span></p></div>
     </div>
-
-    <!-- WAN probe results (the previous connectivity card, restyled) -->
-    <div class="section-head" x-show="connectivity.length > 0">
-        <div>
-            <div class="section-head-title">WAN probe</div>
-            <div class="section-head-sub">Direct TCP probes to public hosts via the LTE dongle.</div>
-        </div>
-    </div>
-    <div class="card" x-show="connectivity.length > 0" x-cloak>
-        <table class="tbl">
-            <thead><tr><th>Host</th><th style="width:140px;">Status</th><th class="right">Latency / error</th></tr></thead>
-            <tbody>
-                <template x-for="c in connectivity" :key="c.host">
-                    <tr>
-                        <td><span class="cell-primary" x-text="c.host"></span></td>
-                        <td>
-                            <span x-show="c.success" class="badge success dot">OK</span>
-                            <span x-show="!c.success" class="badge danger dot">FAIL</span>
-                        </td>
-                        <td class="right cell-mac" x-text="c.success ? (c.latency || '-') : (c.error || 'unreachable')"></td>
-                    </tr>
-                </template>
-            </tbody>
-        </table>
-    </div>
-
-    <p x-show="connectivity.length === 0" style="color:var(--fg-mute); margin-top:18px; font-size:13px;">
-        Press <strong style="color:var(--fg);">Probe WAN</strong> to check the LTE dongle's reachability to upstream resolvers.
-    </p>
 </div>
 {{end}}
 
 {{define "scripts"}}
 <script>
-function dashboardApp() {
+// The Gap dashboard. The gate draws one lane per host the Tesla contacted most
+// recently: green hosts are on the allow-list, red ones aren't; a lane crosses
+// the gate when the request was allowed and is cut when it was blocked.
+function dashApp() {
+    const GREEN = '#4ADE80', RED = '#FF5A3C', DIM = '#93A1B5', SLOTS = 7, SVG = 'http://www.w3.org/2000/svg';
+    const HEAD = {
+        blocked:  ['Tesla is', 'Blocked', DIM, RED],
+        filtered: ['Elon is', 'Gated', DIM, GREEN],
+        open:     ['Elon is', 'In', RED, RED],
+    };
+    const el = (tag, attrs) => { const e = document.createElementNS(SVG, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
     return {
-        data: {},
-        connectivity: [],
-        testing: false,
-        teslaLabel: 'fetching…',
-        async load() {
-            await this.refresh();
-            try {
-                const devices = await api.get('/api/devices');
-                const tesla = (devices || []).find(d => /tesla/i.test(d.alias || '') || /tesla/i.test(d.hostname || ''));
-                if (tesla) {
-                    this.teslaLabel = (tesla.alias || tesla.hostname || tesla.mac_address) + ' · MAC ' + tesla.mac_address;
-                } else {
-                    this.teslaLabel = 'no Tesla detected yet';
+        tesla: null, loaded: false, key: null, shown: [],
+        blockedShown: 0, allowedShown: 0, counted: false,
+        crossedN: 0, drawnN: 0,
+        get head() { return (this.tesla && HEAD[this.tesla.status]) || ['No Tesla', 'yet', DIM, DIM]; },
+        get note() {
+            if (!this.tesla) return 'Connect the Tesla to the Airgapp Wi-Fi.';
+            return this.drawnN ? '' : 'Nothing from the Tesla in the last 24 hours.';
+        },
+        fmt(n) { return n.toLocaleString('en-US'); },
+
+        init() {
+            this.buildLanes();
+            this.rows = [...this.$refs.hostlist.querySelectorAll('.hostrow')];
+            this.onVis = () => { if (document.visibilityState === 'visible') { this.poll(); this.start(); } else this.stop(); };
+            document.addEventListener('visibilitychange', this.onVis);
+            this.poll();
+            this.start();
+        },
+        destroy() { this.stop(); this.clearSweep(); clearInterval(this.tw); document.removeEventListener('visibilitychange', this.onVis); },
+        start() { this.stop(); this.timer = setInterval(() => this.poll(), 3200); },
+        stop() { clearInterval(this.timer); this.timer = 0; },
+
+        async poll() {
+            if (document.visibilityState !== 'visible') return;
+            let d;
+            try { d = await api.get('/api/dashboard' + location.search); } catch (e) { return; }
+            this.tesla = d.tesla;
+            this.loaded = true;
+            this.tween(d.blocked_24h || 0, d.allowed_24h || 0);
+            const hosts = d.hosts || [];
+            const key = hosts.map(h => h.id).join(',');
+            if (key !== this.key) { this.key = key; this.sweep(hosts); }
+        },
+
+        // Seven lane groups, built once: the lane, a red × where it is cut, a dot where it lands.
+        buildLanes() {
+            this.lanes = [];
+            for (let i = 0; i < SLOTS; i++) {
+                const g = el('g', {});
+                const ln = el('path', { class: 'ln', pathLength: '1' });
+                const cut = el('g', { class: 'mark cut' });
+                const a = el('line', { x1: '590', x2: '610', stroke: RED, 'stroke-width': '2.4', 'stroke-linecap': 'round' });
+                const b = el('line', { x1: '610', x2: '590', stroke: RED, 'stroke-width': '2.4', 'stroke-linecap': 'round' });
+                cut.append(a, b);
+                const dot = el('circle', { class: 'mark cross', cx: '988', r: '5' });
+                g.append(ln, cut, dot);
+                this.$refs.lanes.append(g);
+                this.lanes.push({ g, ln, cut, a, b, dot });
+            }
+        },
+
+        // Draw hosts into the slots. shown=false leaves them undrawn (dashoffset 1, marks and rows invisible).
+        paint(hosts, shown) {
+            this.lanes.forEach((L, i) => {
+                const h = hosts[i];
+                L.g.style.display = h ? '' : 'none';
+                if (!h) return;
+                const y = (i + 0.5) * 100, color = h.safe ? GREEN : RED;
+                L.ln.setAttribute('d', 'M200,350 C 360,350 440,' + y + ' 600,' + y + (h.crossed ? ' L1000,' + y : ''));
+                L.ln.style.stroke = color;
+                L.ln.style.strokeWidth = h.crossed ? 1.7 : 1.5;
+                L.ln.style.strokeDashoffset = shown ? 0 : 1;
+                L.ln.style.transitionDelay = (i * 0.07).toFixed(2) + 's';
+                L.cut.style.display = h.crossed ? 'none' : '';
+                L.a.setAttribute('y1', y - 10); L.a.setAttribute('y2', y + 10);
+                L.b.setAttribute('y1', y - 10); L.b.setAttribute('y2', y + 10);
+                L.dot.style.display = h.crossed ? '' : 'none';
+                L.dot.setAttribute('cy', y);
+                L.dot.setAttribute('fill', color);
+                for (const m of [L.cut, L.dot]) {
+                    m.style.opacity = shown ? 1 : 0;
+                    m.style.transitionDelay = (i * 0.07 + 0.5).toFixed(2) + 's';
                 }
-            } catch(e) { this.teslaLabel = '—'; }
-            setInterval(() => this.refresh(), 10000);
+            });
+            this.rows.forEach((row, i) => {
+                const h = hosts[i];
+                row.classList.toggle('empty', !h);
+                const dot = row.querySelector('.hdot'), name = row.querySelector('.hname'), sub = row.querySelector('.hsub2');
+                dot.className = 'hdot' + (h ? (h.safe ? ' safe' : ' danger') : '');
+                sub.className = 'hsub2' + (h ? (h.safe ? ' safe' : ' danger') : '');
+                name.textContent = h ? h.domain : '';
+                name.title = h ? h.domain : '';
+                sub.textContent = h ? (h.safe ? 'Safe' : 'Danger') : '';
+                row.style.opacity = !h || shown ? 1 : 0;
+                row.style.transitionDelay = (i * 0.05).toFixed(2) + 's';
+            });
         },
-        async refresh() {
-            try { this.data = await api.get('/api/dashboard'); } catch(e) {}
+
+        // A new set of hosts: the old lanes vanish at once, the new ones draw in (the mockup's sweep).
+        sweep(hosts) {
+            this.clearSweep();
+            const scene = this.$refs.scene;
+            const swap = () => {
+                this.shown = hosts;
+                this.drawnN = hosts.length;
+                this.crossedN = hosts.filter(h => h.crossed).length;
+                this.paint(hosts, false);
+                this.t2 = setTimeout(() => scene.classList.remove('notrans'), 40);
+                this.t3 = setTimeout(() => this.paint(hosts, true), 90);
+            };
+            scene.classList.add('notrans');
+            this.paint(this.shown, false);
+            if (this.swept) this.t1 = setTimeout(swap, 330); else swap();
+            this.swept = true;
         },
-        async testConnectivity() {
-            this.testing = true;
-            try { this.connectivity = await api.get('/api/system/connectivity'); } catch(e) {}
-            this.testing = false;
-        },
-        formatNum(n) { return (n || 0).toLocaleString(); },
-        formatUptime(sec) {
-            if (!sec || isNaN(sec)) return '—';
-            const d = Math.floor(sec / 86400);
-            const h = Math.floor((sec % 86400) / 3600);
-            const m = Math.floor((sec % 3600) / 60);
-            const s = Math.floor(sec % 60);
-            return `${d}d ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        clearSweep() { clearTimeout(this.t1); clearTimeout(this.t2); clearTimeout(this.t3); },
+
+        // Counters roll like an odometer; under reduced motion they jump.
+        tween(b, a) {
+            if (b === this.blockedShown && a === this.allowedShown && this.counted) return;
+            clearInterval(this.tw);
+            const from = this.counted ? [this.blockedShown, this.allowedShown] : [Math.max(0, b - 16), Math.max(0, a - 4)];
+            this.counted = true;
+            if (matchMedia('(prefers-reduced-motion: reduce)').matches) { this.blockedShown = b; this.allowedShown = a; return; }
+            const t0 = Date.now();
+            this.tw = setInterval(() => {
+                const p = Math.min(1, (Date.now() - t0) / 760), e = 1 - Math.pow(1 - p, 3);
+                this.blockedShown = Math.round(from[0] + (b - from[0]) * e);
+                this.allowedShown = Math.round(from[1] + (a - from[1]) * e);
+                if (p >= 1) clearInterval(this.tw);
+            }, 28);
         },
     };
 }
