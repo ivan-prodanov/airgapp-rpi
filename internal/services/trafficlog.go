@@ -314,6 +314,98 @@ func (s *TrafficLogService) RemoveMuted(id int64) error {
 // Guardian hero ("Outbound dropped · 24 h" / "Allow-listed · 24 h").
 // Errors are folded to 0 — the hero is glanceable, not authoritative,
 // and a failed count must not break the page render.
+// HostVerdict is one host a device contacted, with the verdict of its most
+// recent event: whether it crossed the gate (allowed/resolved) and whether the
+// host is on the allow-list at all ("safe").
+type HostVerdict struct {
+	ID      int64  `json:"id"`
+	Domain  string `json:"domain"`
+	Crossed bool   `json:"crossed"`
+	Safe    bool   `json:"safe"`
+}
+
+// IsAllowListed reports whether a host matches an enabled filter and is not on
+// the always-blocked floor.
+func (s *TrafficLogService) IsAllowListed(domain string) bool { return s.dnsResolvable(domain) }
+
+// deviceMatch is the WHERE fragment selecting one device's rows: by MAC, or by
+// IP, because DNS and SNI rows carry only the client IP. Empty when neither is known.
+func deviceMatch(mac, ip string) (string, []any) {
+	var parts []string
+	var args []any
+	if mac != "" {
+		parts = append(parts, "LOWER(client_mac) = LOWER(?)")
+		args = append(args, mac)
+	}
+	if ip != "" {
+		parts = append(parts, "client_ip = ?")
+		args = append(args, ip)
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
+}
+
+// RecentHosts returns up to limit distinct hosts a device contacted since the
+// given time, newest first, each with the verdict of its most recent event.
+// Only allowed/resolved/blocked/sinkholed events with a domain count; at most
+// the 500 newest such rows are scanned.
+func (s *TrafficLogService) RecentHosts(mac, ip string, since time.Time, limit int) ([]HostVerdict, error) {
+	out := []HostVerdict{}
+	match, args := deviceMatch(mac, ip)
+	if match == "" || limit <= 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(`SELECT id, domain, action FROM query_log
+		WHERE `+match+` AND timestamp >= ? AND domain != ''
+		  AND action IN ('allowed','resolved','blocked','sinkholed')
+		ORDER BY id DESC LIMIT 500`,
+		append(args, since.UTC().Format("2006-01-02 15:04:05"))...)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var id int64
+		var domain, action string
+		if err := rows.Scan(&id, &domain, &action); err != nil {
+			return out, err
+		}
+		key := strings.ToLower(domain)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, HostVerdict{ID: id, Domain: domain,
+			Crossed: action == "allowed" || action == "resolved", Safe: s.IsAllowListed(domain)})
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, rows.Err()
+}
+
+// ClassCountsSince counts one device's events since the given time by class,
+// the same classes as the Traffic page: blocked = blocked + sinkholed,
+// allowed = allowed + resolved. "logged" counts as neither. Best-effort: 0, 0
+// on error.
+func (s *TrafficLogService) ClassCountsSince(mac, ip string, since time.Time) (blocked, allowed int) {
+	match, args := deviceMatch(mac, ip)
+	if match == "" {
+		return 0, 0
+	}
+	var b, a sql.NullInt64
+	err := s.db.QueryRow(`SELECT SUM(action IN ('blocked','sinkholed')), SUM(action IN ('allowed','resolved'))
+		FROM query_log WHERE `+match+` AND timestamp >= ?`,
+		append(args, since.UTC().Format("2006-01-02 15:04:05"))...).Scan(&b, &a)
+	if err != nil {
+		return 0, 0
+	}
+	return int(b.Int64), int(a.Int64)
+}
+
 func (s *TrafficLogService) CountByActionSince(action string, since time.Time) int {
 	var n int
 	err := s.db.QueryRow(
