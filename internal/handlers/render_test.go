@@ -131,6 +131,23 @@ func TestSettingsInterimLinks(t *testing.T) {
 	}
 }
 
+// The login page uses the Gap theme and drops the old placeholder copy.
+func TestLoginPage(t *testing.T) {
+	rec := httptest.NewRecorder()
+	NewRenderer(web.Content).RenderLogin(rec, nil)
+	body := rec.Body.String()
+	for _, want := range []string{"/static/css/gap.css", "<title>Sign in — Airgapp</title>", ">Sign in</button>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("login page lacks %s", want)
+		}
+	}
+	for _, gone := range []string{"fonts.googleapis.com", "netfilterd-01", "Guardian", "Operator", "192.168.4.1"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("login page still contains %q", gone)
+		}
+	}
+}
+
 func TestRenderEveryPage(t *testing.T) {
 	r := NewRenderer(web.Content)
 	for _, p := range testPages {

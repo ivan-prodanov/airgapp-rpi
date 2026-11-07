@@ -3,43 +3,30 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign in — airgapp</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <title>Sign in — Airgapp</title>
+    <link rel="preload" href="/static/fonts/saira.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="/static/css/app.css">
+    <link rel="stylesheet" href="/static/css/gap.css">
 </head>
 <body>
-    <div class="login-screen" x-data="loginApp()">
-        <form class="login-card" @submit.prevent="login()">
-            <div class="login-mark">
-                <span class="brand-logo" style="width:132px; height:56px;"></span>
-            </div>
-            <div class="login-sub">
-                Sign in to <strong style="color:var(--fg);">netfilterd-01</strong>. The Guardian is
-                currently active — sessions are scoped to the operator account.
-            </div>
-            <div class="field">
-                <label class="label">Operator</label>
-                <input class="input" type="text" x-model="username" placeholder="admin" required autofocus>
-            </div>
-            <div class="field">
-                <label class="label">Passphrase</label>
-                <input class="input" type="password" x-model="password" placeholder="•••••••••••••" required>
-                <div class="field-help" x-show="error" style="color:var(--danger);">● <span x-text="error"></span></div>
-            </div>
-            <button class="btn primary" type="submit" style="width:100%; justify-content:center; padding:12px 16px;" :disabled="loading">
-                <span x-show="!loading">Sign in</span>
-                <span x-show="loading">Signing in…</span>
-            </button>
-            <div class="login-foot">
-                <span>192.168.4.1:8443</span>
-                <span>Self-signed certificate</span>
-            </div>
+    <main class="login" x-data="loginApp()">
+        <form class="login-card" @submit.prevent="login()" data-rise>
+            <h1 class="vh">Sign in to Airgapp</h1>
+            <span class="brand-logo login-logo" aria-hidden="true"></span>
+            <label class="login-field">
+                <span class="login-label">Username</span>
+                <input class="login-input" type="text" name="username" x-model="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+            </label>
+            <label class="login-field">
+                <span class="login-label">Password</span>
+                <input class="login-input" type="password" name="password" x-model="password" autocomplete="current-password" required>
+            </label>
+            <p class="login-error" role="alert" x-text="error"></p>
+            <button class="login-btn" type="submit" :disabled="loading" x-text="loading ? 'Signing in…' : 'Sign in'">Sign in</button>
         </form>
-    </div>
+    </main>
 
-    <div id="toast-container"></div>
+    <div id="toast-container" role="status" aria-live="polite"></div>
 
     <script src="/static/js/alpine.min.js" defer></script>
     <script src="/static/js/app.js"></script>
@@ -54,13 +41,25 @@
                 this.loading = true;
                 this.error = '';
                 try {
-                    await api.post('/api/login', {
-                        username: this.username,
-                        password: this.password,
+                    // Plain fetch, not api.post: api.request sends every 401 to /login,
+                    // which reloaded this page and lost the message.
+                    const res = await fetch('/api/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ username: this.username, password: this.password }),
                     });
-                    window.location = '/';
+                    if (res.ok) {
+                        window.location = '/';
+                        return;
+                    }
+                    let msg = '';
+                    try { msg = (await res.json()).error || ''; } catch (e) { /* no JSON body */ }
+                    if (res.status === 401) this.error = 'Wrong username or password.';
+                    else if (msg) this.error = msg.charAt(0).toUpperCase() + msg.slice(1);  // 429 lockout says when to retry
+                    else this.error = "Couldn't sign in. Try again.";
                 } catch (e) {
-                    this.error = 'Invalid credentials';
+                    this.error = "Couldn't sign in. Try again.";
                 } finally {
                     this.loading = false;
                 }
