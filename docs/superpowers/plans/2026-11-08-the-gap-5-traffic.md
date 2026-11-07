@@ -129,7 +129,7 @@ Behaviour (from the mockup, `Traffic.dc.html`):
 
 **Files:** `web/templates/traffic.html`, `web/static/css/gap.css`.
 
-**Interfaces:** Consumes `GET /api/filters?domains=1`, `POST /api/filters`, `PUT /api/filters/{id}/enabled`, `POST /api/filters/{id}/domains`, `DELETE /api/filters/{id}/domains/{did}`, `DELETE /api/filters/{id}`; the row's `cover` and `locked`.
+**Interfaces:** Consumes `GET /api/filters?domains=1`, `POST /api/filters`, `PUT /api/filters/{id}/enabled`, `POST /api/filters/{id}/domains`, `DELETE /api/filters/domains/{did}`, `DELETE /api/filters/{id}`; the row's `cover` and `locked`.
 
 - Blocked rows with a domain, not locked and not covered: **Allow** opens the dialog. Locked rows: Allow stays visible, `aria-disabled="true"`, focusable, dashed with a lock icon; activating it toasts "`<d>` is always blocked. It can't be allowed." Covered rows show a tag: "Allowed · `<filter>`" or "Pending · `<filter>` is off".
 - **Dialog** (`dialog.ndlg.adlg`, "Allow a domain"): editable domain; filter radios (`name="allow-target"`) with System-group filters first, an "off" mark on filters that are off, then "+ New filter"; the pre-selected option is the suggested filter (a filter listing the same registrable domain, the last two labels) and otherwise none, never the first in the list; "New filter name" when "+ New filter" is picked; optional note; status line; Cancel / Allow.
