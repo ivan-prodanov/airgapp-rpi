@@ -50,6 +50,8 @@
             </span>
         </div>
 
+        {{- /* Phones: the table keeps its 600px minimum and scrolls inside this wrapper, not the page. */}}
+        <div class="tbl-wrap">
         <table class="tbl">
             <thead>
                 <tr>
@@ -106,6 +108,7 @@
                 </template>
             </tbody>
         </table>
+        </div>
 
         <div style="display:flex; gap:10px; align-items:center; padding:14px 18px; border-top:1px solid var(--line); background:var(--bg-elev);" x-show="pages > 1">
             <button class="btn sm" :disabled="page <= 1" @click="page = Math.max(1, page-1); load()">← Prev</button>
