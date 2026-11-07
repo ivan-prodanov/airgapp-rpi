@@ -252,16 +252,15 @@ func (s *DNSService) Apply() error {
 	return nil
 }
 
-// allowedDomains is the GLOBAL union of every enabled filter_domain
-// across every filter whose own enabled flag is on. Filters are no
-// longer per-device — when a filter is on, every filtered device sees
-// every enabled domain inside it.
+// allowedDomains is the GLOBAL union of the domains of every filter that is
+// on. Filters are not per-device and domains have no switch of their own:
+// when a filter is on, every filtered device sees every domain inside it.
 func (s *DNSService) allowedDomains() ([]string, error) {
 	rows, err := s.db.Query(`
 		SELECT DISTINCT fd.domain
 		FROM filter_domains fd
 		JOIN filters f ON f.id = fd.preset_id
-		WHERE fd.enabled = 1 AND f.enabled = 1
+		WHERE f.enabled = 1
 		ORDER BY fd.domain ASC
 	`)
 	if err != nil {

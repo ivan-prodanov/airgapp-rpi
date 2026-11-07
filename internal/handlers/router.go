@@ -180,7 +180,6 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 				r.Get("/{id}/domains", filtH.ListDomains)
 				r.Post("/{id}/domains", filtH.CreateDomain)
 				r.Put("/domains/{domainID}", filtH.UpdateDomain)
-				r.Put("/domains/{domainID}/enabled", filtH.SetDomainEnabled)
 				r.Delete("/domains/{domainID}", filtH.DeleteDomain)
 			})
 

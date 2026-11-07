@@ -337,9 +337,11 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 		t.Errorf("Grok grp=%q, want System", grokGrp)
 	}
 
-	// Seed enabled-state invariants. As of v23 every system-filter domain
-	// row is enabled — v23 flipped on the last disabled one
-	// (oauth2.googleapis.com in YouTube).
+	// Seed enabled-state invariants, as of v26 (v27 dropped the per-domain
+	// flag). As of v23 every system-filter domain row is enabled — v23
+	// flipped on the last disabled one (oauth2.googleapis.com in YouTube).
+	db = openMemory(t)
+	migrateTo(t, db, 26)
 	enabledFilters := map[string]int{
 		"Nav":          0, // 0 disabled rows
 		"Maps":         0,
@@ -465,5 +467,63 @@ func TestMigrateV23SeedsLiveState(t *testing.T) {
 	}
 	if fw != 0 {
 		t.Errorf("fresh install has %d legacy MAC-pinned port-hole rules, want 0", fw)
+	}
+}
+
+// migrateTo applies migrations[:n] and records schema_version exactly as
+// Migrate does, so a test can seed state "as of vN" and then run Migrate to
+// apply the rest.
+func migrateTo(t *testing.T, db *sql.DB, n int) {
+	t.Helper()
+	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP)"); err != nil {
+		t.Fatalf("schema_version: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		if _, err := db.Exec(migrations[i]); err != nil {
+			t.Fatalf("apply v%d: %v", i+1, err)
+		}
+		if _, err := db.Exec("INSERT INTO schema_version (version) VALUES (?)", i+1); err != nil {
+			t.Fatalf("record v%d: %v", i+1, err)
+		}
+	}
+}
+
+func hasColumn(t *testing.T, db *sql.DB, table, col string) bool {
+	t.Helper()
+	rows, err := db.Query("SELECT name FROM pragma_table_info(?)", table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		rows.Scan(&name)
+		if name == col {
+			return true
+		}
+	}
+	return false
+}
+
+// v27: a domain applies exactly when its filter is on. Domains that were
+// switched off (UI additions were inserted off) are turned on — the user's
+// decision — and the per-domain flag goes away.
+func TestMigrateV27_DomainsTurnOn(t *testing.T) {
+	db := openMemory(t)
+	migrateTo(t, db, 26)
+	if _, err := db.Exec(`INSERT INTO filter_domains (preset_id, domain, description, enabled)
+		SELECT id, 'staged.example.com', 'added in the UI', 0 FROM filters WHERE name = 'YouTube'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	var n int
+	db.QueryRow(`SELECT COUNT(*) FROM filter_domains WHERE domain = 'staged.example.com'`).Scan(&n)
+	if n != 1 {
+		t.Errorf("staged domain rows = %d, want 1 (kept)", n)
+	}
+	if hasColumn(t, db, "filter_domains", "enabled") {
+		t.Error("filter_domains.enabled still exists")
 	}
 }

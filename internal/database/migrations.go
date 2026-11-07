@@ -1123,6 +1123,13 @@ var migrations = []string{
 	// to NULL on first successful use, so a claimed token becomes permanent and
 	// an unscanned one can't linger. Existing rows get NULL, so nothing expires.
 	`ALTER TABLE tesla_client_tokens ADD COLUMN expires_at DATETIME;`,
+
+	// v27: one switch per filter. A domain applies exactly when its filter is
+	// on; the per-domain enabled flag goes. Domains the UI inserted switched
+	// off (review-then-enable) are turned on first — the operator's decision
+	// for The Gap redesign — so nothing they added is lost.
+	`UPDATE filter_domains SET enabled = 1;
+	ALTER TABLE filter_domains DROP COLUMN enabled;`,
 }
 
 // localSeeds holds operator-private seed statements that must NOT be

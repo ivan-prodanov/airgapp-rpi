@@ -233,46 +233,20 @@ func (h *FiltersHandler) UpdateDomain(w http.ResponseWriter, r *http.Request) {
 		JSONError(w, http.StatusBadRequest, "invalid domain id")
 		return
 	}
-	var d models.FilterDomain
+	var d struct {
+		Description string `json:"description"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
 		JSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := h.filter.UpdateDomain(id, d); err != nil {
+	if err := h.filter.UpdateDomain(id, d.Description); err != nil {
 		JSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	h.audit.Log("filter.domain.update", strconv.FormatInt(id, 10))
 	if err := h.dns.Apply(); err != nil {
 		JSONError(w, http.StatusInternalServerError, "updated but failed to apply DNS: "+err.Error())
-		return
-	}
-	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// SetDomainEnabled is the single-domain toggle endpoint, used by the
-// checkbox on the Filters page. It does not require a description — the
-// description was supplied at CreateDomain time and is unchanged here.
-func (h *FiltersHandler) SetDomainEnabled(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "domainID"), 10, 64)
-	if err != nil {
-		JSONError(w, http.StatusBadRequest, "invalid domain id")
-		return
-	}
-	var req struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		JSONError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if err := h.filter.SetDomainEnabled(id, req.Enabled); err != nil {
-		JSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	h.audit.Log("filter.domain.enabled", strconv.FormatInt(id, 10)+"="+strconv.FormatBool(req.Enabled))
-	if err := h.dns.Apply(); err != nil {
-		JSONError(w, http.StatusInternalServerError, "saved but failed to apply DNS: "+err.Error())
 		return
 	}
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})

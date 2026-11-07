@@ -3,9 +3,8 @@ package models
 import "time"
 
 // Filter is a named bundle of allow-listed domains. A filter is GLOBAL:
-// when its Enabled flag is true, every domain it contains (whose own
-// per-domain enabled flag is also true) applies to every device with
-// status='filtered'. There is no per-device attachment — the operator
+// when its Enabled flag is true, every domain it contains applies to every
+// device with status='filtered' (domains have no switch of their own). There is no per-device attachment — the operator
 // toggles a filter on or off for the whole network.
 //
 // System filters (IsSystem=true) ship with the binary and represent
@@ -56,7 +55,6 @@ type FilterDomain struct {
 	FilterID       int64      `json:"preset_id"` // legacy column name; UI calls it filter_id
 	Domain         string     `json:"domain"`
 	Description    string     `json:"description"`
-	Enabled        bool       `json:"enabled"`
 	ResolvedIPs    string     `json:"resolved_ips"`
 	LastResolvedAt *time.Time `json:"last_resolved_at,omitempty"`
 	HitCount       int64      `json:"hit_count"`

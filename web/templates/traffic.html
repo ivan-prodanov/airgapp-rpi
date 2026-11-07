@@ -449,7 +449,7 @@ function trafficApp() {
                     for (const d of domains) {
                         const dom = (d.domain || '').toLowerCase();
                         if (!dom) continue;
-                        if (f.enabled && d.enabled) live.add(dom);
+                        if (f.enabled) live.add(dom);   // a domain applies when its filter is on (no per-domain switch)
                         else staged.add(dom);
                     }
                 }

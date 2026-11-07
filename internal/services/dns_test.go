@@ -46,34 +46,31 @@ func TestBuildDNSConfig(t *testing.T) {
 // TestAllowedDomainsExcludesDisabled — a disabled filter_domain must not
 // reach the DNS config (it is inert until enabled); the filter as a
 // whole must also be enabled, otherwise its rows stay off-list.
-func TestAllowedDomainsExcludesDisabled(t *testing.T) {
+// A domain is in the DNS allow-list exactly when its filter is on — there is
+// no per-domain switch.
+func TestAllowedDomainsFollowFilter(t *testing.T) {
 	db := memDB(t)
 	fID := freshFilter(t, db, "TestFilter") // freshFilter creates with enabled=1
-	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain, enabled) VALUES (?,'live.example.com',1)`, fID)
-	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain, enabled) VALUES (?,'staged.example.com',0)`, fID)
+	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain) VALUES (?,'live.example.com')`, fID)
 
 	s := NewDNSService(db, executor.New(true), config.Config{DNSUpstream: "1.1.1.1"})
-	got, err := s.allowedDomains()
-	if err != nil {
-		t.Fatalf("allowedDomains: %v", err)
-	}
-	set := map[string]bool{}
-	for _, d := range got {
-		set[d] = true
-	}
-	if !set["live.example.com"] {
-		t.Errorf("enabled domain missing from allowedDomains: %v", got)
-	}
-	if set["staged.example.com"] {
-		t.Errorf("disabled domain leaked into allowedDomains: %v", got)
-	}
-
-	// Now flip the filter off — even the enabled domain must drop out.
-	mustExec(t, db, `UPDATE filters SET enabled=0 WHERE id=?`, fID)
-	got, _ = s.allowedDomains()
-	for _, d := range got {
-		if d == "live.example.com" {
-			t.Errorf("domain leaked while filter is OFF: %v", got)
+	has := func() bool {
+		got, err := s.allowedDomains()
+		if err != nil {
+			t.Fatalf("allowedDomains: %v", err)
 		}
+		for _, d := range got {
+			if d == "live.example.com" {
+				return true
+			}
+		}
+		return false
+	}
+	if !has() {
+		t.Error("domain of an enabled filter missing from allowedDomains")
+	}
+	mustExec(t, db, `UPDATE filters SET enabled=0 WHERE id=?`, fID)
+	if has() {
+		t.Error("domain leaked while its filter is off")
 	}
 }

@@ -180,7 +180,7 @@ func (s *FilterService) Delete(id int64) error {
 
 func (s *FilterService) ListDomains(filterID int64) ([]models.FilterDomain, error) {
 	rows, err := s.db.Query(`
-		SELECT id, preset_id, domain, description, enabled,
+		SELECT id, preset_id, domain, description,
 		       resolved_ips, last_resolved_at, hit_count, created_at
 		FROM filter_domains
 		WHERE preset_id = ?
@@ -194,12 +194,10 @@ func (s *FilterService) ListDomains(filterID int64) ([]models.FilterDomain, erro
 	var out []models.FilterDomain
 	for rows.Next() {
 		var d models.FilterDomain
-		var enabled int
-		if err := rows.Scan(&d.ID, &d.FilterID, &d.Domain, &d.Description, &enabled,
+		if err := rows.Scan(&d.ID, &d.FilterID, &d.Domain, &d.Description,
 			&d.ResolvedIPs, &d.LastResolvedAt, &d.HitCount, &d.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan filter domain: %w", err)
 		}
-		d.Enabled = enabled == 1
 		out = append(out, d)
 	}
 	return out, nil
@@ -228,8 +226,8 @@ func (s *FilterService) CreateDomain(filterID int64, d models.FilterDomain) (int
 	}
 	var id int64
 	err := s.db.QueryRow(`
-		INSERT INTO filter_domains (preset_id, domain, description, enabled)
-		VALUES (?, ?, ?, 0)
+		INSERT INTO filter_domains (preset_id, domain, description)
+		VALUES (?, ?, ?)
 		ON CONFLICT(preset_id, domain) DO UPDATE SET
 			description = excluded.description
 		RETURNING id
@@ -240,30 +238,12 @@ func (s *FilterService) CreateDomain(filterID int64, d models.FilterDomain) (int
 	return id, nil
 }
 
-func (s *FilterService) UpdateDomain(id int64, d models.FilterDomain) error {
-	if strings.TrimSpace(d.Description) == "" {
+// UpdateDomain sets a domain's note.
+func (s *FilterService) UpdateDomain(id int64, description string) error {
+	if strings.TrimSpace(description) == "" {
 		return ErrDescRequired
 	}
-	enabled := 0
-	if d.Enabled {
-		enabled = 1
-	}
-	_, err := s.db.Exec(`
-		UPDATE filter_domains
-		SET description = ?, enabled = ?
-		WHERE id = ?
-	`, strings.TrimSpace(d.Description), enabled, id)
-	return err
-}
-
-// SetDomainEnabled toggles a single domain on/off without forcing the
-// caller to supply a description (used by the toggle in the UI).
-func (s *FilterService) SetDomainEnabled(id int64, enabled bool) error {
-	v := 0
-	if enabled {
-		v = 1
-	}
-	_, err := s.db.Exec(`UPDATE filter_domains SET enabled=? WHERE id=?`, v, id)
+	_, err := s.db.Exec(`UPDATE filter_domains SET description = ? WHERE id = ?`, strings.TrimSpace(description), id)
 	return err
 }
 
@@ -272,33 +252,3 @@ func (s *FilterService) DeleteDomain(id int64) error {
 	return err
 }
 
-// AllEnabledDomains returns the union of every enabled filter_domain
-// across every filter whose own enabled flag is on. This is the global
-// allow-list — every filtered device sees the same suffixes. The SNI
-// proxy uses it for its cache; the DNS layer uses it to decide which
-// hostnames get a server= line.
-func (s *FilterService) AllEnabledDomains() ([]string, error) {
-	rows, err := s.db.Query(`
-		SELECT DISTINCT fd.domain
-		FROM filter_domains fd
-		JOIN filters f ON f.id = fd.preset_id
-		WHERE fd.enabled = 1 AND f.enabled = 1
-		ORDER BY fd.domain ASC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("query enabled domains: %w", err)
-	}
-	defer rows.Close()
-
-	var out []string
-	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err != nil {
-			return nil, fmt.Errorf("scan domain: %w", err)
-		}
-		if d = strings.ToLower(strings.TrimSpace(d)); d != "" && ValidDomain(d) {
-			out = append(out, d)
-		}
-	}
-	return out, rows.Err()
-}

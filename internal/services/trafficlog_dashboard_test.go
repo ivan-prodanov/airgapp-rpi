@@ -83,8 +83,8 @@ func TestRecentHosts_Safe(t *testing.T) {
 	if _, err := db.Exec(`UPDATE filters SET enabled = 1 WHERE name = 'Connectivity'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO filter_domains (preset_id, domain, description, enabled)
-		SELECT id, 'ok.example', 'test', 1 FROM filters WHERE name = 'Connectivity'`); err != nil {
+	if _, err := db.Exec(`INSERT INTO filter_domains (preset_id, domain, description)
+		SELECT id, 'ok.example', 'test' FROM filters WHERE name = 'Connectivity'`); err != nil {
 		t.Fatal(err)
 	}
 	s.RefreshAllowCache()

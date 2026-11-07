@@ -55,7 +55,7 @@ type TrafficLogService struct {
 	mutedSuffix []string
 
 	// Allow-list suffix cache: the enabled filter domains (f.enabled &&
-	// d.enabled), used to classify a DNS query as "resolved" vs "sinkholed"
+	// filter is on), used to classify a DNS query as "resolved" vs "sinkholed"
 	// at INSERT time so the traffic filter can select sinkholes with a plain
 	// indexed action lookup instead of a per-row suffix scan over the whole
 	// log. Refreshed by RefreshAllowCache.
@@ -205,14 +205,14 @@ func (s *TrafficLogService) isMuted(domain string) bool {
 }
 
 // RefreshAllowCache rebuilds the in-memory allow-list suffix set from the
-// enabled filter domains (f.enabled && d.enabled). Used by dnsResolvable to
+// domains of filters that are on (f.enabled). Used by dnsResolvable to
 // classify DNS queries at INSERT time. Call after any filter change, or rely
 // on the periodic refresh.
 func (s *TrafficLogService) RefreshAllowCache() {
 	rows, err := s.db.Query(`
 		SELECT DISTINCT fd.domain
 		FROM filter_domains fd JOIN filters fl ON fl.id = fd.preset_id
-		WHERE fd.enabled = 1 AND fl.enabled = 1`)
+		WHERE fl.enabled = 1`)
 	if err != nil {
 		log.Printf("[TRAFFIC] refresh allow cache: %v", err)
 		return

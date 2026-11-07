@@ -244,14 +244,13 @@ func TestRefreshCache_FilteredSetAndSuffixes(t *testing.T) {
 	mustExec(t, db, `INSERT INTO devices (mac_address, ip_address, status) VALUES ('AA:BB:CC:00:00:01','10.0.0.10','filtered')`)
 	mustExec(t, db, `INSERT INTO devices (mac_address, ip_address, status) VALUES ('AA:BB:CC:00:00:02','10.0.0.20','open')`)
 
-	// Custom filter enabled with one live + one staged domain.
+	// Custom filter enabled with one domain (domains have no switch of their own).
 	mustExec(t, db, `INSERT INTO filters (name, description, is_system, enabled) VALUES ('FilterTest','','0','1')`)
 	var fID int64
 	if err := db.QueryRow(`SELECT id FROM filters WHERE name='FilterTest'`).Scan(&fID); err != nil {
 		t.Fatalf("get filter id: %v", err)
 	}
-	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain, enabled) VALUES (?, 'auth.tesla.com', 1)`, fID)
-	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain, enabled) VALUES (?, 'staged.example.com', 0)`, fID)
+	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain) VALUES (?, 'auth.tesla.com')`, fID)
 
 	// Seeded filters (the system presets + the v23 streaming/app filters)
 	// ship enabled; disable everything except our injected FilterTest so the
@@ -270,7 +269,7 @@ func TestRefreshCache_FilteredSetAndSuffixes(t *testing.T) {
 		t.Error("open device MAC must not be in the filtered set")
 	}
 	if len(s.suffixes) != 1 || s.suffixes[0] != "auth.tesla.com" {
-		t.Errorf("suffixes = %v, want [auth.tesla.com] (disabled domain excluded)", s.suffixes)
+		t.Errorf("suffixes = %v, want [auth.tesla.com] (only the enabled filter's domain)", s.suffixes)
 	}
 }
 
@@ -282,8 +281,8 @@ func seedFilteredCar(t *testing.T, db *sql.DB, recordedIP string) {
 	mustExec(t, db, `INSERT INTO devices (mac_address, ip_address, hostname, status)
 		VALUES ('0C:29:8F:93:2A:08', ?, 'tesla', 'filtered')`, recordedIP)
 	id := freshFilter(t, db, "TestLeaseAllowList")
-	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain, enabled)
-		VALUES (?, 'tile.googleapis.com', 1)`, id)
+	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain)
+		VALUES (?, 'tile.googleapis.com')`, id)
 }
 
 // ── clientMAC: live IP→MAC resolution at connection time ───────

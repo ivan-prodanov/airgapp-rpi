@@ -65,8 +65,8 @@ func NewSNIProxyService(cfg config.Config, db *sql.DB, trafficLog *TrafficLogSer
 }
 
 // RefreshCache rebuilds the two things the connection-time allow decision
-// needs: the GLOBAL allow-list (the union of filter_domains.enabled=1 across
-// every filter with its own enabled=1 toggle) and the set of status='filtered'
+// needs: the GLOBAL allow-list (every domain of every filter that is on —
+// domains have no switch of their own) and the set of status='filtered'
 // device MACs.
 //
 // It deliberately does NOT snapshot IP→device membership. That is resolved live
@@ -82,7 +82,7 @@ func (s *SNIProxyService) RefreshCache() {
 		SELECT DISTINCT fd.domain
 		FROM filter_domains fd
 		JOIN filters f ON f.id = fd.preset_id
-		WHERE fd.enabled = 1 AND f.enabled = 1
+		WHERE f.enabled = 1
 	`)
 	if err != nil {
 		log.Printf("[SNI] refresh: list domains: %v", err)
