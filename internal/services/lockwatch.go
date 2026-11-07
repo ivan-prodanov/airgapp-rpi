@@ -4,30 +4,33 @@ package services
 // the live BLE session's unsolicited fan-out, folds each frame through the pure
 // lockgate predicate, and calls the enforcer when the verdict FLIPS.
 //
-// It deliberately does not own a session. BLESessionService.Open preempts, so a
-// watcher-owned session would be force-closed by every phone Open; instead the
-// supervisor attaches to whatever session is live and opens one only when there
-// is none.
+// It only ever observes. The supervisor attaches to whatever session is live and,
+// when there is none, waits. It must not open one or keep one alive:
+//
+//   - Opening takes the adapter. It used to open a session 10s after any other
+//     closed, and a phone Open arriving during that scan had nothing to preempt, so
+//     it queued behind a session nobody asked for. All nine phone opens that took
+//     29s or more on 2026-11-07 started 1-4s before one of these, up to 1m51s.
+//   - Keeping a session alive would defeat the reaper for a phone that has gone away.
 //
 // Every failure path here fails OPEN. Losing the link, an unknown session, a
 // closed channel — all of them discard the accumulated verdict and go back to
 // "AP up", because being wrong must cost traffic, never connectivity.
 
 import (
-	"context"
 	"log"
 	"sync"
 	"time"
 )
 
 // sessionSource is the slice of BLESessionService lockwatch needs.
-// *BLESessionService satisfies it structurally; tests substitute a fake.
+// *BLESessionService satisfies it structurally; tests substitute a fake. It has no
+// Open and nothing that refreshes a session's idle clock, which is what makes the
+// watcher structurally incapable of competing with the phone for the radio.
 type sessionSource interface {
 	CurrentSession() (string, bool)
-	Open(ctx context.Context, vin string) (*BLESession, error)
 	Subscribe(id string) (int, <-chan []byte, error)
 	Unsubscribe(id string, subID int)
-	Touch(id string)
 }
 
 // LockWatchStatus is the read-only snapshot the UI and API render.
@@ -57,73 +60,9 @@ type LockWatchStatus struct {
 // passer-by leaves the AP up forever. Well under the 3-minute lease.
 const defaultSettleTick = 30 * time.Second
 
-// maxRetryBackoff caps supervise's exponential backoff after consecutive
-// attachAndPump failures. It is a bound on how much of the BLE adapter's time
-// a background observer may consume: no matter how long the car stays
-// unreachable, the watcher's own retries settle down to at most one attempt
-// every maxRetryBackoff, rather than hammering the adapter (and blocking the
-// phone's command path behind it — see supervise) at a fixed short cadence
-// forever.
+// maxRetryBackoff caps supervise's exponential backoff after consecutive attach
+// failures. Having no session to attach to is not a failure and does not back off.
 const maxRetryBackoff = 5 * time.Minute
-
-// defaultKeepaliveTick is how often attachAndPump refreshes the session's idle
-// clock when no frames are arriving.
-//
-// BLESessionService's reaper closes a session bleSessionTTL (5 min) after its
-// last touch, and until this existed the ONLY thing that touched was Exchange —
-// which the watcher never calls. So a healthy, silent car got its watcher
-// session reaped every five minutes forever: ~278 open/reap cycles a day, a
-// verdict that could never be older than the TTL, and a fresh
-// Open → AcquireBLEForVIN (ctx-blind bleMu, held across a BLE scan, before the
-// session is registered where preemptExisting could reach it) blocking the
-// phone's command path on that same cadence. Worse for the observe-only phase
-// this watcher exists to serve: VCSEC commonly pushes a status right after a
-// connect, so a push arriving every ~5 min would look identical whether the
-// car pushes on an idle link or only ever answers a fresh GATT connect — the
-// exact question being measured.
-//
-// 60s is comfortably under bleSessionTTL: several ticks are missed before the
-// reaper could fire, so one descheduled tick is not a lost session, while the
-// touch itself is a mutex and a clock read.
-//
-// The keepalive is BOUNDED by defaultMaxSilence — see there for why touching
-// unconditionally is worse than not touching at all.
-const defaultKeepaliveTick = 60 * time.Second
-
-// defaultMaxSilence is how long an attachment may go without receiving a
-// single frame before the keepalive gives up on it and lets the reaper collect
-// the session.
-//
-// This bound is not an optimisation, it is what keeps the watcher able to
-// notice a dead link at all. The keepalive above defeats the reaper by design:
-// with a 60s tick the session's idle time never reaches bleSessionTTL. But the
-// reaper is the ONLY thing that ends a wedged pump. attachAndPump exits on
-// s.stop or on the subscriber channel closing, and for a real BLE link that
-// channel is closed only by shutdownPump, reached only from stopPump, reached
-// only from Close() and reaper() — the vendored SDK's *ble.Connection.Close()
-// does not close its inbox, so conn.Receive() never closes on its own (see
-// runPump's header in tesla_session.go). Touch unconditionally and a link that
-// simply dies produces no exit anywhere: the session, the "Attached"
-// indicator, and bleMu persist forever; supervise never retries because
-// attachAndPump never returns; and the deferred noteSessionLost — which is the
-// entire fail-open mechanism, "BLE loss → AP up" — never runs, so a verdict of
-// locked+empty could hold the AP down indefinitely with no link left to change
-// it. That is the stranded-car outcome. Bounding the keepalive on liveness
-// restores the whole chain: stop touching → reaper collects within
-// bleSessionTTL → pump closes → attachAndPump returns → fail open + retry.
-//
-// 30 minutes is deliberately generous, not tuned. A tight bound cannot be
-// chosen yet because nobody knows how often a parked car actually pushes on an
-// idle link — that is precisely what this observe-only deployment is being run
-// to measure, and a bound shorter than the real idle-push interval would
-// manufacture the reconnect churn the keepalive was added to remove (and with
-// it the reconnect-triggered pushes that would corrupt the measurement). It
-// only has to be shorter than "forever". The price of being generous is
-// bounded and small: the dashboard can be wrong for at most maxSilence +
-// bleSessionTTL (~35 min) instead of indefinitely, and a healthy but silent car
-// reconnects at most once per ~35 min instead of every 5. Once the measurement
-// says how chatty an idle car really is, this can come down.
-const defaultMaxSilence = 30 * time.Minute
 
 // maxFramesDescribed caps the per-frame diagnostic per attachment. Enough for a
 // representative sample of what the car actually sends a keyless listener,
@@ -132,7 +71,6 @@ const maxFramesDescribed = 8
 
 type LockWatchService struct {
 	src sessionSource
-	vin string
 
 	// LOCK ORDERING: applyMu THEN mu, never the reverse. applyMu serialises
 	// decide-and-apply (see settle) and is the only lock held across the
@@ -174,14 +112,11 @@ type LockWatchService struct {
 	// reads UNKNOWN (also stays up) would flip have_status silently.
 	sawStatus bool
 
-	// retryDelay, settleTick, keepaliveTick and maxSilence are read by the
-	// goroutines Start launches WITHOUT holding a lock. That is safe only
-	// because they are written once, at construction, and (in tests) before
-	// Start — never after.
-	retryDelay    time.Duration
-	settleTick    time.Duration
-	keepaliveTick time.Duration
-	maxSilence    time.Duration
+	// retryDelay and settleTick are read by the goroutines Start launches WITHOUT
+	// holding a lock. That is safe only because they are written once, at
+	// construction, and (in tests) before Start — never after.
+	retryDelay time.Duration
+	settleTick time.Duration
 
 	stop      chan struct{}
 	stopOnce  sync.Once
@@ -190,16 +125,13 @@ type LockWatchService struct {
 	wg        sync.WaitGroup
 }
 
-func NewLockWatchService(src sessionSource, vin string) *LockWatchService {
+func NewLockWatchService(src sessionSource) *LockWatchService {
 	return &LockWatchService{
-		src:           src,
-		vin:           vin,
-		retryDelay:    10 * time.Second,
-		settleTick:    defaultSettleTick,
-		keepaliveTick: defaultKeepaliveTick,
-		maxSilence:    defaultMaxSilence,
-		stop:          make(chan struct{}),
-		done:          make(chan struct{}),
+		src:        src,
+		retryDelay: 10 * time.Second,
+		settleTick: defaultSettleTick,
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
 	}
 }
 
@@ -459,24 +391,10 @@ func (s *LockWatchService) resettleLoop() {
 
 // supervise keeps exactly one subscription alive for the process lifetime.
 //
-// The retry delay backs off exponentially on consecutive attachAndPump
-// failures (capped at maxRetryBackoff), and resets to the base s.retryDelay
-// the moment an attempt succeeds. This is mitigation for a ctx-blind lock
-// upstream, not a fix for it: attachAndPump's Open path reaches
-// TeslaService.AcquireBLEForVIN, which takes bleMu with a plain blocking
-// Lock() that ignores ctx (internal/services/tesla.go, AcquireBLEForVIN) and
-// holds it through a BLE scan bounded by teslaScanTimeout (15s). A concurrent
-// phone-driven Open cannot preempt a session still mid-scan —
-// BLESessionService.preemptExisting (internal/services/tesla_session.go) only
-// preempts sessions already registered in its map — so it blocks behind us
-// for that whole scan instead. At a flat retry cadence, a car that stays
-// unreachable would repeat that stall roughly every retryDelay forever, on
-// top of whatever the phone is trying to do. Backing off bounds how often a
-// background observer can do that to the phone's command path; it does not
-// touch bleMu or session registration (see BLESessionService.Open's comment
-// about the same ctx-blind mutex causing 5-minute on-car outages) — actually
-// fixing the lock is out of scope here because it touches the car's command
-// path.
+// It looks for a session every retryDelay. The delay backs off exponentially on
+// consecutive attach failures (capped at maxRetryBackoff) and resets the moment an
+// attempt does not fail. The look itself is only a map lookup, so an idle Pi costs
+// nothing and a new phone session is picked up within retryDelay.
 //
 // delay is a plain local variable, not a struct field: it belongs entirely to
 // this goroutine, so it needs no lock and can never be read inconsistently.
@@ -504,50 +422,26 @@ func (s *LockWatchService) supervise() {
 	}
 }
 
-// attachAndPump subscribes to the live session (opening one if none exists)
-// and consumes frames until the channel closes. Returns on any failure; the
-// caller (supervise) retries after a delay that grows on repeated failure.
+// attachAndPump subscribes to the live session, if there is one, and consumes
+// frames until the channel closes.
 //
-// The bool result reports whether this attempt achieved anything: true once
-// Subscribe has succeeded, regardless of how the pump subsequently ends
-// (Stop, the channel closing) — false for both early-return failure paths
-// (Open failed, Subscribe failed). supervise uses this alone to decide
-// whether to reset or grow its retry delay.
-func (s *LockWatchService) attachAndPump() (subscribed bool) {
-	// FIRST STATEMENT, deliberately: every exit from this function — Open
-	// failing, Subscribe failing, the channel closing, Stop — must leave the
-	// gate empty and therefore the AP up. Registering it only after a
-	// successful Subscribe would make fail-open depend on an argument about
-	// which paths can have set a down verdict, and that argument is false:
-	// ReportExternal is exported and drives the gate down from another
-	// goroutine entirely. A car asleep enough to fail Open is exactly when a
-	// stale "down" would strand it with no link.
+// The bool result reports whether the attempt was free of failure, which is all
+// supervise needs to decide whether to reset or grow its retry delay: true when
+// there was nothing to attach to, and true once Subscribe has succeeded however
+// the pump then ends (Stop, the channel closing). False only if Subscribe failed.
+func (s *LockWatchService) attachAndPump() (ok bool) {
+	// FIRST STATEMENT, deliberately: every exit from this function — no session,
+	// Subscribe failing, the channel closing, Stop — must leave the gate empty and
+	// therefore the AP up. Registering it only after a successful Subscribe would
+	// make fail-open depend on an argument about which paths can have set a down
+	// verdict, and that argument is false: ReportExternal is exported and drives
+	// the gate down from another goroutine entirely. A car with no session on it
+	// is exactly when a stale "down" would strand it with no link.
 	defer s.noteSessionLost()
 
-	id, ok := s.src.CurrentSession()
-	if !ok {
-		// Bound the open on Stop as well as the timeout, so shutdown is not
-		// hostage to a 30s dial. This bounds only the ctx-AWARE part of the
-		// path: Open → AcquireBLEForVIN takes bleMu with a plain Lock() that
-		// ignores ctx (internal/services/tesla.go), so Stop can still be
-		// delayed by that mutex. Cancelling here is the best a caller can do.
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		stopped := make(chan struct{})
-		go func() {
-			select {
-			case <-s.stop:
-				cancel()
-			case <-stopped:
-			}
-		}()
-		sess, err := s.src.Open(ctx, s.vin)
-		close(stopped)
-		cancel()
-		if err != nil {
-			log.Printf("[LOCKWATCH] open session: %v", err)
-			return
-		}
-		id = sess.ID
+	id, live := s.src.CurrentSession()
+	if !live {
+		return true
 	}
 
 	subID, ch, err := s.src.Subscribe(id)
@@ -557,10 +451,10 @@ func (s *LockWatchService) attachAndPump() (subscribed bool) {
 	}
 	defer s.src.Unsubscribe(id, subID)
 
-	// Subscribe succeeded: this attempt counts as achieving something no
-	// matter how the pump below eventually exits (Stop, the channel
-	// closing) — set it now, once, rather than at every exit point below.
-	subscribed = true
+	// Subscribe succeeded: this attempt counts as a success no matter how the pump
+	// below eventually exits (Stop, the channel closing) — set it now, once, rather
+	// than at every exit point below.
+	ok = true
 
 	attachedAt := time.Now()
 	s.mu.Lock()
@@ -588,74 +482,19 @@ func (s *LockWatchService) attachAndPump() (subscribed bool) {
 			id, time.Since(attachedAt).Truncate(time.Second), n, st, act, n-st-act)
 	}()
 
-	// Keepalive. The session's idle clock is otherwise only refreshed by
-	// Exchange, which is the phone's path, not ours — see defaultKeepaliveTick
-	// for why an un-touched watcher session is reaped every bleSessionTTL and
-	// why that ruins both the link and the measurement. Touching on each frame
-	// covers a talkative car; the ticker covers a silent one.
-	//
-	// The ticker is BOUNDED by s.maxSilence: it refreshes the idle clock only
-	// while frames are still arriving on a human-ish timescale. Touching
-	// unconditionally would defeat the reaper permanently, and the reaper is
-	// the only thing that can end this pump when the link dies — see
-	// defaultMaxSilence for the full chain, up to and including the AP staying
-	// down with no link left to raise it. Once the bound is exceeded the tick
-	// simply does nothing, lastUsed goes stale, and the reaper closes the
-	// session within bleSessionTTL — which closes ch, returns from here, and
-	// runs the deferred noteSessionLost that fails open.
-	//
-	// lastFrame is a plain local, like supervise's delay: it belongs to this
-	// goroutine alone (framesSeen is the shared copy, and it exists for the UI,
-	// not for this decision), so it needs no lock and cannot be read
-	// inconsistently. It starts at the attach instant, so a session that never
-	// says anything at all is bounded from the moment we attached.
-	//
-	// Holding the session indefinitely is the intent, not a leak: a phone Open
-	// preempts us (newest wins), whereupon this pump's channel closes and
-	// supervise re-attaches to the PHONE's session rather than opening a
-	// competing one. There is deliberately no "polite release" — preemption
-	// already is one.
-	//
-	// The ticker shares this select with the frame receive and s.stop, so a
-	// keepalive can never delay shutdown by more than the touch itself.
-	ka := time.NewTicker(s.keepaliveTick)
-	defer ka.Stop()
-	lastFrame := attachedAt
-	warnedSilent := false
-
 	for {
 		select {
 		case <-s.stop:
 			return
-		case <-ka.C:
-			if silence := time.Since(lastFrame); silence >= s.maxSilence {
-				// Log once per attachment, not once per tick: this is a
-				// deliberate hand-off to the reaper, and it should be findable
-				// in the journal without drowning it.
-				if !warnedSilent {
-					warnedSilent = true
-					log.Printf("[LOCKWATCH] session %s silent for %v (>= %v) — releasing it to the reaper",
-						id, silence.Round(time.Millisecond), s.maxSilence)
-				}
-				continue
-			}
-			s.src.Touch(id)
 		case frame, open := <-ch:
 			if !open {
 				log.Printf("[LOCKWATCH] session %s closed", id)
 				return
 			}
 			now := time.Now()
-			lastFrame = now
-			warnedSilent = false
 			s.mu.Lock()
 			s.framesSeen++
 			s.mu.Unlock()
-			// Before Ingest, not after: Ingest blocks for the whole enforcer
-			// call when it settles, and the point of touching is the clock.
-			// Also outside the mu section above — Touch takes the session
-			// service's own lock, and no lockwatch lock may be held across it.
-			s.src.Touch(id)
 			s.Ingest(frame, now)
 		}
 	}

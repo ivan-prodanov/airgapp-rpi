@@ -57,7 +57,11 @@ func (h *TeslaHandler) OpenBLESession(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := teslaCtx(r, 30*time.Second)
 	defer cancel()
 
-	sess, err := h.bleSess.Open(ctx, body.VIN)
+	var owner int64
+	if tok := GetBLEClient(r); tok != nil {
+		owner = tok.ID
+	}
+	sess, err := h.bleSess.Open(ctx, body.VIN, owner)
 	if err != nil {
 		JSONError(w, http.StatusBadGateway, err.Error())
 		return

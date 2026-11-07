@@ -77,8 +77,8 @@ func (h *TeslaHandler) MyTokenInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 // RevokeMyToken is the bearer-holder's self-destruct button. Marks
-// the caller's own token as revoked. Reversible only via re-issuing
-// from /settings on the Pi.
+// the caller's own token as revoked and ends its session. Reversible
+// only via re-issuing from /settings on the Pi.
 //
 // Distinct from RevokeToken (admin): no id param, no privilege escalation.
 func (h *TeslaHandler) RevokeMyToken(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +95,7 @@ func (h *TeslaHandler) RevokeMyToken(w http.ResponseWriter, r *http.Request) {
 		JSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.bleSess.CloseForToken(tok.ID)
 	if h.audit != nil {
 		h.audit.Log("tesla.token_self_revoke",
 			"client:"+tok.Name+" self-revoked their own token")
@@ -104,8 +105,9 @@ func (h *TeslaHandler) RevokeMyToken(w http.ResponseWriter, r *http.Request) {
 
 // RevokeToken is the admin "Remove" action: it HARD-deletes the token row by
 // its numeric id (from the list endpoint, never the plaintext). The user drops
-// off the list and loses relay access immediately — there is no revoked state
-// to display. (The DELETE route keeps its name for continuity.)
+// off the list and loses relay access immediately, including any session or
+// event stream it has open — there is no revoked state to display. (The DELETE
+// route keeps its name for continuity.)
 func (h *TeslaHandler) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -121,6 +123,7 @@ func (h *TeslaHandler) RevokeToken(w http.ResponseWriter, r *http.Request) {
 		JSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.bleSess.CloseForToken(id)
 	if user := GetUser(r); user != nil && h.audit != nil {
 		h.audit.Log("tesla.token_delete",
 			user.Username+" deleted BLE client token id="+idStr)

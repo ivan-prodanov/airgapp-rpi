@@ -35,9 +35,7 @@ func New(db *sql.DB, exec *executor.Executor, cfg config.Config) *Services {
 	network := NewNetworkService(db, cfg)
 	tesla := NewTeslaService(db, audit)
 	bleSession := NewBLESessionService(tesla)
-	// VIN resolves lazily inside Open when empty, so an unconfigured Pi
-	// still constructs cleanly and simply never attaches.
-	lockWatch := NewLockWatchService(bleSession, "")
+	lockWatch := NewLockWatchService(bleSession)
 
 	firewall := NewFirewallService(db, exec, cfg)
 	hotspot := NewHotspotService(db, exec)
@@ -78,7 +76,7 @@ func (s *Services) ApplyAll() {
 		log.Printf("[WARN] Failed to apply hotspot config: %v", err)
 	}
 
-	// PHASE 1 — OBSERVE ONLY. No enforcer is installed, so the watcher can
-	// read and log the car's lock state but cannot move the radio.
+	// PHASE 1 — OBSERVE ONLY. No enforcer is installed, so the watcher can read and
+	// log the car's lock state while a client has a session open. It never opens one.
 	s.LockWatch.Start()
 }

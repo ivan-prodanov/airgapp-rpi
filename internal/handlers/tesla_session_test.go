@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -39,13 +40,31 @@ type fakeBLESessions struct {
 	currentID   string
 	currentLive bool
 
-	mu          sync.Mutex
-	unsubCalled []string
-	closeCalled []string
+	// openSess, when set, is what Open returns.
+	openSess *services.BLESession
+
+	mu                sync.Mutex
+	unsubCalled       []string
+	closeCalled       []string
+	openOwners        []int64
+	closedTokenOwners []int64
 }
 
-func (f *fakeBLESessions) Open(ctx context.Context, vin string) (*services.BLESession, error) {
+func (f *fakeBLESessions) Open(ctx context.Context, vin string, owner int64) (*services.BLESession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.openOwners = append(f.openOwners, owner)
+	if f.openSess != nil {
+		return f.openSess, nil
+	}
 	return nil, errNotImplemented
+}
+
+func (f *fakeBLESessions) CloseForToken(owner int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closedTokenOwners = append(f.closedTokenOwners, owner)
+	return 0
 }
 
 func (f *fakeBLESessions) Exchange(ctx context.Context, id string, payload []byte, timeout time.Duration) ([]byte, error) {
@@ -291,5 +310,80 @@ func TestPairExternalPubkey_NoLiveSession_DoesNotCloseAnything(t *testing.T) {
 
 	if len(closed) != 0 {
 		t.Fatalf("Close calls = %v, want none (no live session to preempt)", closed)
+	}
+}
+
+// A session belongs to the bearer that opened it, so that removing the bearer can
+// end it. Goes through the real middleware: that is where the owner comes from.
+func TestOpenBLESessionRecordsTheBearerAsOwner(t *testing.T) {
+	tokens := newTestTokenService(t)
+	issued, err := tokens.Issue("phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeBLESessions{openSess: &services.BLESession{ID: "s1", VIN: "VIN"}}
+	h := &TeslaHandler{tokens: tokens, bleSess: fake}
+
+	r := chi.NewRouter()
+	r.With(BLEBearerRequired(tokens)).Post("/api/ble/sessions", h.OpenBLESession)
+	req := httptest.NewRequest(http.MethodPost, "/api/ble/sessions", strings.NewReader(`{"vin":"VIN"}`))
+	req.Header.Set("Authorization", "Bearer "+issued.Plain)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body)
+	}
+	if len(fake.openOwners) != 1 || fake.openOwners[0] != issued.Token.ID {
+		t.Fatalf("Open owners = %v, want [%d]", fake.openOwners, issued.Token.ID)
+	}
+}
+
+// Removing a user has to cut them off now: their session and event stream would
+// otherwise carry on, since the bearer is only checked when each one starts.
+func TestRevokeTokenClosesThatTokensSessions(t *testing.T) {
+	tokens := newTestTokenService(t)
+	issued, err := tokens.Issue("phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeBLESessions{}
+	h := &TeslaHandler{tokens: tokens, bleSess: fake}
+
+	r := chi.NewRouter()
+	r.Delete("/api/tesla/tokens/{id}", h.RevokeToken)
+	path := "/api/tesla/tokens/" + strconv.FormatInt(issued.Token.ID, 10)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, path, nil))
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body)
+	}
+	if len(fake.closedTokenOwners) != 1 || fake.closedTokenOwners[0] != issued.Token.ID {
+		t.Fatalf("CloseForToken calls = %v, want [%d]", fake.closedTokenOwners, issued.Token.ID)
+	}
+}
+
+func TestRevokeMyTokenClosesThatTokensSessions(t *testing.T) {
+	tokens := newTestTokenService(t)
+	issued, err := tokens.Issue("phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeBLESessions{}
+	h := &TeslaHandler{tokens: tokens, bleSess: fake}
+
+	r := chi.NewRouter()
+	r.With(BLEBearerRequired(tokens)).Delete("/api/ble/token", h.RevokeMyToken)
+	req := httptest.NewRequest(http.MethodDelete, "/api/ble/token", nil)
+	req.Header.Set("Authorization", "Bearer "+issued.Plain)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body)
+	}
+	if len(fake.closedTokenOwners) != 1 || fake.closedTokenOwners[0] != issued.Token.ID {
+		t.Fatalf("CloseForToken calls = %v, want [%d]", fake.closedTokenOwners, issued.Token.ID)
 	}
 }

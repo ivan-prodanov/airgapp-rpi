@@ -88,6 +88,47 @@ var (
 	adapterInitOK bool
 )
 
+// bleLock is a mutex a waiter can give up on.
+//
+// A plain sync.Mutex could not: Lock ignored the request's context, so a waiter
+// sat there for as long as the holder lived, which for a session means until
+// someone closes it. That produced the 5-minute outages of 2026-07-19, and the
+// 29s-1m51s opens of 2026-11-07, some of them long past the handler's own 30s
+// deadline. The zero value is ready to use.
+type bleLock struct {
+	once sync.Once
+	slot chan struct{}
+}
+
+func (l *bleLock) init() {
+	l.once.Do(func() { l.slot = make(chan struct{}, 1) })
+}
+
+// Lock takes the lock, or returns ctx's error if ctx ends first.
+func (l *bleLock) Lock(ctx context.Context) error {
+	l.init()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case l.slot <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Unlock releases the lock. Like sync.Mutex, unlocking an unlocked lock is a bug
+// and panics.
+func (l *bleLock) Unlock() {
+	l.init()
+	select {
+	case <-l.slot:
+	default:
+		panic("bleLock: unlock of unlocked lock")
+	}
+}
+
 // TeslaService is the slimmed-down post-Phase-4 service. The bleMu
 // serialises every BLE adapter operation; Linux can only host one
 // HCI client at a time and the SDK's session handshake isn't designed
@@ -97,7 +138,7 @@ type TeslaService struct {
 	audit   *AuditService
 	signer  TeslaSigner
 	adapter string
-	bleMu   sync.Mutex
+	bleMu   bleLock
 }
 
 // NewTeslaService wires the service. No poller — the Pi can't read
@@ -178,7 +219,7 @@ func (s *TeslaService) RequestPairingExternal(ctx context.Context, pubKeyRawSEC1
 // connection, and holds bleMu for the connection's lifetime. The
 // returned release closure closes the connection AND releases the
 // adapter mutex; the caller MUST eventually invoke it (typically via
-// defer) — otherwise every subsequent BLE operation blocks forever.
+// defer) — otherwise every subsequent BLE operation blocks until its context ends.
 //
 // This is the entry point for the byte-forwarder API
 // (BLESessionService).
@@ -186,7 +227,9 @@ func (s *TeslaService) AcquireBLEForVIN(ctx context.Context, vin string) (*ble.C
 	if err := initAdapter(s.adapter); err != nil {
 		return nil, nil, fmt.Errorf("BLE adapter init: %w", err)
 	}
-	s.bleMu.Lock()
+	if err := s.bleMu.Lock(ctx); err != nil {
+		return nil, nil, fmt.Errorf("waiting for the BLE adapter: %w", err)
+	}
 
 	scanCtx, scanCancel := context.WithTimeout(ctx, teslaScanTimeout)
 	defer scanCancel()
@@ -227,7 +270,9 @@ func (s *TeslaService) sendUnauthenticated(parent context.Context, vin string, s
 		return fmt.Errorf("BLE adapter init: %w", err)
 	}
 
-	s.bleMu.Lock()
+	if err := s.bleMu.Lock(parent); err != nil {
+		return fmt.Errorf("waiting for the BLE adapter: %w", err)
+	}
 	defer s.bleMu.Unlock()
 
 	priv, err := signer.Key()

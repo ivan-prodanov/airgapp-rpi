@@ -52,7 +52,7 @@ func decodeJSON(r *http.Request, v any) error {
 // without going through a real BLE adapter — *services.BLESessionService
 // satisfies this structurally with no changes on its side.
 type bleSessions interface {
-	Open(ctx context.Context, vin string) (*services.BLESession, error)
+	Open(ctx context.Context, vin string, owner int64) (*services.BLESession, error)
 	Exchange(ctx context.Context, id string, payload []byte, timeout time.Duration) ([]byte, error)
 	Close(id string) error
 	Subscribe(id string) (int, <-chan []byte, error)
@@ -60,8 +60,10 @@ type bleSessions interface {
 	// CurrentSession reports the id of the single live session, if any.
 	// *services.BLESessionService already implements exactly this method
 	// (added for lockwatch) — needed here too so PairExternalPubkey can
-	// preempt a watcher-held session before enrollment. See its call site.
+	// preempt a live session before enrollment. See its call site.
 	CurrentSession() (string, bool)
+	// CloseForToken ends whatever a removed bearer token still has open.
+	CloseForToken(owner int64) int
 }
 
 // lockWatcher is the slice of *services.LockWatchService these handlers need.
@@ -169,27 +171,18 @@ func (h *TeslaHandler) PairExternalPubkey(w http.ResponseWriter, r *http.Request
 	defer cancel()
 
 	// Preempt a live session BEFORE enrollment, here rather than inside
-	// TeslaService. The lockwatch background watcher now holds a BLE session
-	// open indefinitely by design (its keepalive Touch defeats the idle
-	// reaper — see BLESessionService/LockWatchService), and
-	// TeslaService.sendUnauthenticated (the transport RequestPairingExternal
-	// uses) takes bleMu with a plain Lock() and no preemption of its own —
-	// unlike BLESessionService.Open, which calls preemptExisting first. Left
-	// alone, that combination means sendUnauthenticated blocks on bleMu
-	// FOREVER: nothing ever closes the watcher's session, so the mutex never
-	// frees. TeslaService deliberately doesn't know about BLESessionService
-	// (composition is one-directional — BLESessionService holds a
-	// *TeslaService, never the reverse), so it can't preempt itself; this
-	// handler is the one place that holds both a bleSessions handle and the
-	// knowledge that enrollment is about to contend for the adapter. Closing
-	// here mirrors what Open already does via preemptExisting: an explicit,
-	// deliberate hand-off, not a new mechanism. The watcher's own supervisor
-	// loop reattaches on its own afterwards (attachAndPump re-opens/
-	// re-subscribes on failure), so nothing here needs to restore it.
+	// TeslaService. TeslaService.sendUnauthenticated (the transport
+	// RequestPairingExternal uses) takes bleMu with no preemption of its own, so
+	// left alone it would wait out its whole 45s context behind a session that is
+	// not coming back. TeslaService deliberately doesn't know about
+	// BLESessionService (composition is one-directional — BLESessionService holds
+	// a *TeslaService, never the reverse), so it can't preempt itself; this handler
+	// is the one place that holds both a bleSessions handle and the knowledge that
+	// enrollment is about to contend for the adapter. Closing here mirrors what
+	// Open already does via preemptExisting.
 	//
 	// Enrolling a new key is a rare, deliberate, owner-initiated action and
-	// should win over a background observer — the alternative is an HTTP
-	// worker (and the owner's UI) wedged forever with no explanation.
+	// should win over whatever session happens to be open.
 	if id, live := h.bleSess.CurrentSession(); live {
 		_ = h.bleSess.Close(id)
 	}

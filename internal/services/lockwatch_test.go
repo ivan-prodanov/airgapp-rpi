@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -13,49 +12,33 @@ import (
 )
 
 type fakeSessionSource struct {
-	mu      sync.Mutex
-	id      string
-	ch      chan []byte
-	openErr error
-	subErr  error
-	opens   int
-	subbed  int
-	unsubbd int
-	// openTimes records the wall-clock instant of each Open call, in call
-	// order. Backoff tests read this (via openTimestamps) to observe the GAP
-	// between consecutive attach attempts, rather than reaching into any
-	// LockWatchService internals — this is purely a test fixture.
-	openTimes []time.Time
-	// touches records the session id passed to each Touch call, in call order.
-	// The real BLESessionService.Touch resets a session's idle clock; the
-	// keepalive test asserts on these rather than on the reaper's behaviour.
-	touches []string
+	mu           sync.Mutex
+	id           string
+	ch           chan []byte
+	subErr       error
+	subbed       int
+	unsubbd      int
+	currentCalls int
+	// subAttempts records the wall-clock instant of each Subscribe call. Backoff
+	// tests read this to observe the GAP between consecutive attach attempts,
+	// rather than reaching into any LockWatchService internals.
+	subAttempts []time.Time
 }
 
 func (f *fakeSessionSource) CurrentSession() (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.currentCalls++
 	if f.id == "" {
 		return "", false
 	}
 	return f.id, true
 }
 
-func (f *fakeSessionSource) Open(ctx context.Context, vin string) (*BLESession, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.opens++
-	f.openTimes = append(f.openTimes, time.Now())
-	if f.openErr != nil {
-		return nil, f.openErr
-	}
-	f.id = "fake-session"
-	return &BLESession{ID: f.id, VIN: vin}, nil
-}
-
 func (f *fakeSessionSource) Subscribe(id string) (int, <-chan []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.subAttempts = append(f.subAttempts, time.Now())
 	if f.subErr != nil {
 		return 0, nil, f.subErr
 	}
@@ -73,31 +56,30 @@ func (f *fakeSessionSource) Unsubscribe(id string, subID int) {
 	f.unsubbd++
 }
 
-func (f *fakeSessionSource) Touch(id string) {
+func (f *fakeSessionSource) setSession(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.touches = append(f.touches, id)
+	f.id = id
 }
 
-// touchedIDs snapshots every Touch call's session id so far, in call order.
-func (f *fakeSessionSource) touchedIDs() []string {
+func (f *fakeSessionSource) counts() (subbed, unsubbd int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.touches...)
+	return f.subbed, f.unsubbd
 }
 
-func (f *fakeSessionSource) counts() (opens, subbed, unsubbd int) {
+func (f *fakeSessionSource) currentCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.opens, f.subbed, f.unsubbd
+	return f.currentCalls
 }
 
-// openTimestamps returns a snapshot of every Open call's timestamp so far,
-// in call order.
-func (f *fakeSessionSource) openTimestamps() []time.Time {
+// attemptTimestamps returns a snapshot of every Subscribe call's timestamp so
+// far, in call order.
+func (f *fakeSessionSource) attemptTimestamps() []time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]time.Time(nil), f.openTimes...)
+	return append([]time.Time(nil), f.subAttempts...)
 }
 
 // frames hands the test the channel the service is pumping, so a test can feed
@@ -197,7 +179,7 @@ func (r *recorder) last() (bool, bool) {
 // without running the supervisor at all.
 func TestIngestLockedAndEmptyWantsAPDown(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	s := NewLockWatchService(&fakeSessionSource{})
 	s.Ingest(lockedEmptyFrame(t), now)
 	st := s.Status()
 	if !st.HaveStatus || !st.Locked || st.Present {
@@ -214,7 +196,7 @@ func TestIngestLockedAndEmptyWantsAPDown(t *testing.T) {
 // actuator.
 func TestIngestGarbageLeavesTheVerdictUntouched(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	s := NewLockWatchService(&fakeSessionSource{})
 	var rec recorder
 	s.SetEnforcer(rec.fn)
 	s.Ingest(lockedEmptyFrame(t), now)
@@ -235,7 +217,7 @@ func TestIngestGarbageLeavesTheVerdictUntouched(t *testing.T) {
 
 func TestEnforcerCalledOnlyOnTransition(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	s := NewLockWatchService(&fakeSessionSource{})
 	var rec recorder
 	// Installing the enforcer asserts the CURRENT verdict immediately (the
 	// gate is empty, so: up). That is the first call.
@@ -266,7 +248,7 @@ func TestEnforcerCalledOnlyOnTransition(t *testing.T) {
 // calls Status(), which takes mu (NOT applyMu), so it pins exactly that
 // property: a refactor that settles-and-applies under mu hangs here.
 func TestEnforcerRunsWithoutTheStateLockHeld(t *testing.T) {
-	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	s := NewLockWatchService(&fakeSessionSource{})
 	now := time.Unix(1700000000, 0)
 	mustReturnWithin(t, 2*time.Second, "settle with a Status()-calling enforcer", func() {
 		s.SetEnforcer(func(up bool) { _ = s.Status() }) // fires once, immediately
@@ -276,14 +258,14 @@ func TestEnforcerRunsWithoutTheStateLockHeld(t *testing.T) {
 
 func TestNilEnforcerIsSafe(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	s := NewLockWatchService(&fakeSessionSource{})
 	// No SetEnforcer — this is Phase 1. Must not panic.
 	s.Ingest(lockedEmptyFrame(t), now)
 }
 
 func TestReportExternalDrivesTheSameState(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	s := NewLockWatchService(&fakeSessionSource{})
 	s.ReportExternal(true, false, now)
 	if s.Status().APShouldBeUp {
 		t.Fatal("an external locked+empty report must want the AP down")
@@ -294,15 +276,15 @@ func TestReportExternalDrivesTheSameState(t *testing.T) {
 // do so through the REAL teardown wiring (channel close → pump exit → deferred
 // reset), not by calling the unexported reset directly.
 func TestSessionLossFailsOpen(t *testing.T) {
-	f := &fakeSessionSource{}
-	s := NewLockWatchService(f, "VIN0")
+	f := &fakeSessionSource{id: "phone-session"}
+	s := NewLockWatchService(f)
 	// Long enough that the supervisor's re-attach cannot race the assertions.
 	s.retryDelay = 5 * time.Second
 	s.Start()
 	defer s.Stop()
 
 	waitFor(t, 2*time.Second, "the first subscription", func() bool {
-		_, subbed, _ := f.counts()
+		subbed, _ := f.counts()
 		return subbed >= 1
 	})
 	ch := f.frames()
@@ -315,57 +297,39 @@ func TestSessionLossFailsOpen(t *testing.T) {
 		st := s.Status()
 		return st.SessionID == "" && st.APShouldBeUp
 	})
-	if _, _, unsubbd := f.counts(); unsubbd < 1 {
+	if _, unsubbd := f.counts(); unsubbd < 1 {
 		t.Error("tearing down the pump must unsubscribe")
 	}
 }
 
-// The supervisor opens a session when none exists, and subscribes to it.
-func TestSupervisorOpensAndSubscribes(t *testing.T) {
+// The watcher attaches to a session as soon as there is one to attach to.
+func TestSupervisorAttachesWhenASessionAppears(t *testing.T) {
 	f := &fakeSessionSource{}
-	s := NewLockWatchService(f, "VIN0")
+	s := NewLockWatchService(f)
 	s.retryDelay = 5 * time.Millisecond
 	s.Start()
 	defer s.Stop()
 
-	waitFor(t, 2*time.Second, "the supervisor to open + subscribe", func() bool {
-		opens, subbed, _ := f.counts()
-		return opens >= 1 && subbed >= 1
-	})
-}
-
-// The structural constraint the whole design rests on: when a session is
-// already live the watcher ATTACHES to it and never opens one of its own.
-// Open preempts, so a watcher-owned session would force-close every phone
-// session and spend its life reconnecting.
-func TestSupervisorNeverOwnsASession(t *testing.T) {
-	f := &fakeSessionSource{id: "phone-session"}
-	s := NewLockWatchService(f, "VIN0")
-	s.retryDelay = 5 * time.Millisecond
-	s.Start()
-	defer s.Stop()
+	f.setSession("phone-session")
 
 	waitFor(t, 2*time.Second, "the watcher to attach", func() bool {
-		_, subbed, _ := f.counts()
+		subbed, _ := f.counts()
 		return subbed >= 1
 	})
-	if opens, _, _ := f.counts(); opens != 0 {
-		t.Fatalf("opens = %d, want 0 — the watcher must never open its own session", opens)
-	}
 }
 
-// Finding 2: the Open/Subscribe early returns must fail open too. The stale
-// verdict here came from ReportExternal (the phone's re-sync path, another
-// goroutine entirely), so "only a successful subscribe could have set a down
-// verdict" is not a defence — a car asleep enough to fail Open is exactly when
-// a stranded "down" leaves it with no link at all.
+// Finding 2: the early returns must fail open too. The stale verdict here came
+// from ReportExternal (the phone's re-sync path, another goroutine entirely), so
+// "only a successful subscribe could have set a down verdict" is not a defence —
+// a car with no session on it is exactly when a stranded "down" leaves it with no
+// link at all.
 func TestAttachFailureFailsOpen(t *testing.T) {
 	for name, f := range map[string]*fakeSessionSource{
-		"open fails":      {openErr: errors.New("scan timeout")},
-		"subscribe fails": {subErr: errors.New("session gone")},
+		"no session":      {},
+		"subscribe fails": {id: "phone-session", subErr: errors.New("session gone")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			s := NewLockWatchService(f, "VIN0")
+			s := NewLockWatchService(f)
 			s.retryDelay = 5 * time.Millisecond
 			s.ReportExternal(true, false, time.Now())
 			if s.Status().APShouldBeUp {
@@ -386,8 +350,8 @@ func TestAttachFailureFailsOpen(t *testing.T) {
 // silent after an approach must be re-settled by the clock. Without the ticker
 // the actuator stays on the stale "up" forever while Status() reports "down".
 func TestExpiredActivityLeaseSettlesWithoutANewFrame(t *testing.T) {
-	f := &fakeSessionSource{}
-	s := NewLockWatchService(f, "VIN0")
+	f := &fakeSessionSource{id: "phone-session"}
+	s := NewLockWatchService(f)
 	s.retryDelay = time.Hour // the attach succeeds; keep the retry loop out of it
 	s.settleTick = 5 * time.Millisecond
 	var rec recorder
@@ -419,7 +383,7 @@ func TestExpiredActivityLeaseSettlesWithoutANewFrame(t *testing.T) {
 // a second Start used to panic on a double close.
 func TestStartStopLifecycleIsRobust(t *testing.T) {
 	t.Run("stop without start returns", func(t *testing.T) {
-		s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+		s := NewLockWatchService(&fakeSessionSource{})
 		mustReturnWithin(t, 2*time.Second, "Stop() before Start()", func() {
 			s.Stop()
 			s.Stop()  // idempotent
@@ -429,13 +393,13 @@ func TestStartStopLifecycleIsRobust(t *testing.T) {
 	})
 
 	t.Run("double start and double stop", func(t *testing.T) {
-		f := &fakeSessionSource{}
-		s := NewLockWatchService(f, "VIN0")
+		f := &fakeSessionSource{id: "phone-session"}
+		s := NewLockWatchService(f)
 		s.retryDelay = 5 * time.Millisecond
 		s.Start()
 		s.Start() // must not launch a second supervisor or double-close done
 		waitFor(t, 2*time.Second, "the supervisor to attach", func() bool {
-			_, subbed, _ := f.counts()
+			subbed, _ := f.counts()
 			return subbed >= 1
 		})
 		mustReturnWithin(t, 2*time.Second, "Stop()", func() {
@@ -454,7 +418,7 @@ func TestStartStopLifecycleIsRobust(t *testing.T) {
 // not merely on the absence of a panic.
 func TestSetEnforcerAfterAPriorSettleStillAsserts(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	s := NewLockWatchService(&fakeSessionSource{})
 
 	// This settle runs against a nil enforcer (Phase 1) and burns lastWanted.
 	s.Ingest(lockedEmptyFrame(t), now) // locked + empty -> down
@@ -479,7 +443,7 @@ func TestSetEnforcerAfterAPriorSettleStillAsserts(t *testing.T) {
 // this was never broken, but belongs alongside the prior-settle case so the
 // two together pin SetEnforcer's contract regardless of history.
 func TestSetEnforcerBeforeAnySettleAsserts(t *testing.T) {
-	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	s := NewLockWatchService(&fakeSessionSource{})
 	var rec recorder
 	s.SetEnforcer(rec.fn)
 
@@ -497,7 +461,7 @@ func TestSetEnforcerBeforeAnySettleAsserts(t *testing.T) {
 // predecessor was already told.
 func TestSetEnforcerReplacingAnInstalledEnforcerAssertsToTheNewOne(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	s := NewLockWatchService(&fakeSessionSource{})
 
 	var first recorder
 	s.SetEnforcer(first.fn) // gate empty -> up; first gets called with true
@@ -532,7 +496,7 @@ func TestSetEnforcerReplacingAnInstalledEnforcerAssertsToTheNewOne(t *testing.T)
 // APShouldBeUp never depends on ActivityLease here and the assertion cannot
 // be perturbed by a lease expiring mid-test.
 func TestConcurrentMutatorsLastEnforcerCallMatchesFinalState(t *testing.T) {
-	s := NewLockWatchService(&fakeSessionSource{}, "VIN0")
+	s := NewLockWatchService(&fakeSessionSource{})
 	var rec recorder
 	s.SetEnforcer(rec.fn)
 
@@ -575,21 +539,21 @@ func TestConcurrentMutatorsLastEnforcerCallMatchesFinalState(t *testing.T) {
 // permanently-unreachable car is retried less and less often rather than
 // forever at the same short cadence. This test proves the delay GROWS across
 // consecutive failures — not merely that retries happen — by observing the
-// real gaps between Open call timestamps, without exposing any backoff state
+// real gaps between Subscribe call timestamps, without exposing any backoff state
 // on LockWatchService itself.
 func TestSuperviseBacksOffOnConsecutiveFailures(t *testing.T) {
-	f := &fakeSessionSource{openErr: errors.New("scan timeout")}
-	s := NewLockWatchService(f, "VIN0")
+	f := &fakeSessionSource{id: "phone-session", subErr: errors.New("session gone")}
+	s := NewLockWatchService(f)
 	s.retryDelay = 40 * time.Millisecond
 	s.Start()
 	defer s.Stop()
 
 	const wantAttempts = 5
 	waitFor(t, 5*time.Second, "enough failed attach attempts to observe backoff", func() bool {
-		return len(f.openTimestamps()) >= wantAttempts
+		return len(f.attemptTimestamps()) >= wantAttempts
 	})
 
-	times := f.openTimestamps()
+	times := f.attemptTimestamps()
 	if len(times) < wantAttempts {
 		t.Fatalf("got %d attempts, want at least %d", len(times), wantAttempts)
 	}
@@ -614,137 +578,6 @@ func TestSuperviseBacksOffOnConsecutiveFailures(t *testing.T) {
 	}
 }
 
-// The finding this pins: lastUsed was refreshed ONLY by Exchange, which is the
-// phone's path — the watcher never calls it. So the reaper destroyed the
-// watcher's session exactly bleSessionTTL after it opened, every time, on a
-// perfectly healthy car: ~278 open/reap cycles a day, a verdict that could
-// never be older than five minutes, and — fatally for the observe-only phase —
-// a reconnect on the very cadence the phase exists to measure, which would
-// make "the car pushes on an idle link" indistinguishable from "the car only
-// answers a fresh connect".
-//
-// The car being SILENT is the whole point: no frames are fed here, so nothing
-// but the keepalive ticker can produce a touch. The ids are asserted too, so a
-// regression that touches some other (or an empty) id fails rather than
-// passing on a bare count.
-func TestWatcherKeepsAQuietSessionAlive(t *testing.T) {
-	f := &fakeSessionSource{id: "phone-session"}
-	s := NewLockWatchService(f, "VIN0")
-	s.retryDelay = time.Hour // the attach succeeds; keep the retry loop out of it
-	s.keepaliveTick = 5 * time.Millisecond
-	s.Start()
-	defer s.Stop()
-
-	waitFor(t, 2*time.Second, "the watcher to attach", func() bool {
-		_, subbed, _ := f.counts()
-		return subbed >= 1
-	})
-
-	// Several ticks, so this cannot pass on a single touch that some other
-	// code path happened to make.
-	waitFor(t, 2*time.Second, "repeated keepalive touches with no frames arriving", func() bool {
-		return len(f.touchedIDs()) >= 3
-	})
-
-	for i, id := range f.touchedIDs() {
-		if id != "phone-session" {
-			t.Fatalf("touch[%d] = %q, want %q — the keepalive must refresh the session we are attached to", i, id, "phone-session")
-		}
-	}
-}
-
-// The critical finding this pins, and the reason the keepalive above is
-// BOUNDED. Touching unconditionally defeats the reaper permanently (idle never
-// reaches bleSessionTTL), and the reaper is the only thing that can end
-// attachAndPump when a link dies: the vendored SDK never closes conn.Receive()
-// for BLE, so the subscriber channel closes only via stopPump, reachable only
-// from Close() and reaper(). Defeat the reaper and a dead link produces no exit
-// at all — the pump, the "Attached" indicator and bleMu persist forever,
-// supervise never retries, and the deferred noteSessionLost (the entire
-// "BLE loss → fail open → AP up" mechanism) never runs.
-//
-// So: with NOTHING arriving, the watcher must stop touching once the silence
-// passes maxSilence, and leave the session for the reaper.
-//
-// The assertion is that the touch count FREEZES — polled across many further
-// ticks — rather than that it is merely small at one instant, so a regression
-// to unconditional touching cannot pass by being briefly slow. maxSilence and
-// the tick are shortened to keep it fast; the real values are 30 min / 60 s.
-func TestKeepaliveStopsTouchingAfterMaxSilence(t *testing.T) {
-	f := &fakeSessionSource{id: "phone-session"}
-	s := NewLockWatchService(f, "VIN0")
-	s.retryDelay = time.Hour // the attach succeeds; keep the retry loop out of it
-	s.keepaliveTick = 5 * time.Millisecond
-	s.maxSilence = 150 * time.Millisecond
-	s.Start()
-	defer s.Stop()
-
-	waitFor(t, 2*time.Second, "the watcher to attach", func() bool {
-		_, subbed, _ := f.counts()
-		return subbed >= 1
-	})
-
-	// While inside the bound the keepalive must actually be running — so a
-	// "froze" verdict below cannot be satisfied by never having touched at all.
-	waitFor(t, 2*time.Second, "keepalive touches while inside the silence bound", func() bool {
-		return len(f.touchedIDs()) >= 3
-	})
-
-	// And then it must stop. Each probe waits 20 keepalive ticks and asks
-	// whether a single touch happened in that window; unconditional touching
-	// answers "yes" every time and this times out.
-	waitFor(t, 3*time.Second, "the keepalive to stop touching a permanently silent session", func() bool {
-		before := len(f.touchedIDs())
-		time.Sleep(20 * s.keepaliveTick)
-		return len(f.touchedIDs()) == before
-	})
-
-	if got := len(f.touchedIDs()); got < 3 {
-		t.Fatalf("touches = %d, want at least 3 before the bound elapsed — the count froze because the keepalive never ran, not because it stopped", got)
-	}
-}
-
-// The other half of the property: the bound is on SILENCE, not on attachment
-// age. A car that is actually pushing must keep its session alive indefinitely,
-// so every frame resets the clock. A regression that anchors the bound on the
-// attach instant instead would hand a chatty, healthy link to the reaper every
-// maxSilence.
-//
-// Frames themselves also touch, so the assertion window is deliberately placed
-// AFTER the last frame is fed: every touch counted there is a keepalive touch,
-// and it happens well past maxSilence since the attach.
-func TestFramesResetTheSilenceBound(t *testing.T) {
-	f := &fakeSessionSource{id: "phone-session"}
-	s := NewLockWatchService(f, "VIN0")
-	s.retryDelay = time.Hour
-	s.keepaliveTick = 10 * time.Millisecond
-	s.maxSilence = 200 * time.Millisecond
-	s.Start()
-	defer s.Stop()
-
-	waitFor(t, 2*time.Second, "the watcher to attach", func() bool {
-		_, subbed, _ := f.counts()
-		return subbed >= 1
-	})
-	ch := f.frames()
-
-	// Keep talking for several times maxSilence, at half the bound — a car that
-	// pushes comfortably inside the window.
-	until := time.Now().Add(4 * s.maxSilence)
-	for time.Now().Before(until) {
-		ch <- activityFrame(t)
-		time.Sleep(s.maxSilence / 2)
-	}
-
-	// The last frame landed just now, so we are inside the bound again even
-	// though the attachment is ~4x maxSilence old. Keepalive touches must
-	// therefore still be happening.
-	before := len(f.touchedIDs())
-	waitFor(t, s.maxSilence/2, "keepalive touches to continue past maxSilence on a session that has been receiving frames", func() bool {
-		return len(f.touchedIDs())-before >= 3
-	})
-}
-
 // The dashboard's honesty depends on these two: "Attached" alone reads the same
 // after two seconds of a healthy quiet link as after nine hours of a dead one.
 // They must be set for the CURRENT attachment and cleared with it — a stale age
@@ -756,7 +589,7 @@ func TestFramesResetTheSilenceBound(t *testing.T) {
 // purpose.
 func TestAttachedSinceAndFramesSeenTrackTheAttachment(t *testing.T) {
 	f := &fakeSessionSource{id: "phone-session"}
-	s := NewLockWatchService(f, "VIN0")
+	s := NewLockWatchService(f)
 	s.retryDelay = 5 * time.Second // long enough that a re-attach cannot race the assertions
 	s.Start()
 	defer s.Stop()
@@ -795,8 +628,8 @@ func TestAttachedSinceAndFramesSeenTrackTheAttachment(t *testing.T) {
 // one at the top of its loop) must win over an in-flight multi-second
 // time.After, exactly as it already does for the un-backed-off delay.
 func TestStopReturnsPromptlyDuringABackedOffSleep(t *testing.T) {
-	f := &fakeSessionSource{openErr: errors.New("scan timeout")}
-	s := NewLockWatchService(f, "VIN0")
+	f := &fakeSessionSource{id: "phone-session", subErr: errors.New("session gone")}
+	s := NewLockWatchService(f)
 	s.retryDelay = 50 * time.Millisecond
 	s.Start()
 
@@ -806,10 +639,51 @@ func TestStopReturnsPromptlyDuringABackedOffSleep(t *testing.T) {
 	// so this genuinely exercises interrupting a BACKED-OFF sleep, not just
 	// the base retryDelay.
 	waitFor(t, 5*time.Second, "the backoff to grow past a comfortably long bound", func() bool {
-		return len(f.openTimestamps()) >= 6
+		return len(f.attemptTimestamps()) >= 6
 	})
 
 	mustReturnWithin(t, 300*time.Millisecond, "Stop() during a backed-off sleep", func() {
 		s.Stop()
 	})
+}
+
+// The lesson of 2026-11-07. With no session live, the watcher must wait, not
+// open one: its open would take the adapter lock, so a phone Open arriving during
+// its scan has nothing to preempt and queues behind a session nobody asked for.
+// All nine phone opens that took 29s or more that day started 1-4s before one of
+// these. sessionSource has no Open at all now, so this pins the rest: it stays
+// idle rather than attaching to nothing.
+func TestSupervisorWaitsWhenThereIsNoSession(t *testing.T) {
+	f := &fakeSessionSource{}
+	s := NewLockWatchService(f)
+	s.retryDelay = time.Millisecond
+	s.Start()
+	defer s.Stop()
+
+	time.Sleep(50 * time.Millisecond)
+
+	if subbed, _ := f.counts(); subbed != 0 {
+		t.Fatalf("subbed = %d, want 0 — nothing is live to watch", subbed)
+	}
+	if st := s.Status(); st.SessionID != "" || !st.APShouldBeUp {
+		t.Fatalf("status = %+v, want no session and the AP up", st)
+	}
+}
+
+// An idle Pi is not a failing Pi. Backoff exists for real attach failures; while
+// there is simply no session it must keep looking at the base cadence, or the
+// watcher would miss most of a phone session that starts after a quiet spell.
+func TestSupervisorDoesNotBackOffWhileIdle(t *testing.T) {
+	f := &fakeSessionSource{}
+	s := NewLockWatchService(f)
+	s.retryDelay = 5 * time.Millisecond
+	s.Start()
+	defer s.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Flat cadence gives ~40 looks; doubling from 5ms gives ~6.
+	if n := f.currentCallCount(); n < 12 {
+		t.Fatalf("looked for a session %d times in 200ms, want a flat cadence", n)
+	}
 }

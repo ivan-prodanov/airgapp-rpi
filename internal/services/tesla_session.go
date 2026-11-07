@@ -21,11 +21,10 @@
 //     calls Close (or the idle reaper does it). The "either / or"
 //     property survives because both paths route through bleMu.
 //
-//   - Idle TTL: 5 min from the last Exchange OR Touch. After that the
-//     reaper force-closes and releases bleMu so a stuck client never
-//     livelocks the BLE adapter. Touch exists because lockwatch holds a
-//     long-lived subscription and never Exchanges, so "idle" for it means
-//     "the pump is gone", not "no command was sent" — see Touch.
+//   - Idle TTL: 5 min from the last Exchange. After that the reaper
+//     force-closes and releases bleMu so a stuck client never livelocks
+//     the BLE adapter. Only the client that owns a session can keep it
+//     alive; an observer attached to it (lockwatch) does not count.
 //
 // Phase 3c will port the Tesla session crypto (P-256 ECDH against the
 // car's ephemeral pubkey from SessionInfo, AES-GCM under the derived
@@ -99,6 +98,7 @@ type frameWaiter struct {
 type internalSession struct {
 	id        string
 	vin       string
+	owner     int64 // id of the bearer token that opened it; see CloseForToken
 	conn      bleConn
 	release   func() // closes conn + releases TeslaService.bleMu
 	createdAt time.Time
@@ -140,15 +140,32 @@ func newInternalSession(id, vin string, conn bleConn, release func()) *internalS
 // not inheritance, so the public surface stays narrow.
 type BLESessionService struct {
 	tesla *TeslaService
+	// acquire gets the adapter and a connection. It is a seam so Open's ordering
+	// can be tested without a radio; in production it is AcquireBLEForVIN.
+	acquire func(ctx context.Context, vin string) (bleConn, func(), error)
 
 	mu       sync.Mutex
 	sessions map[string]*internalSession // 0 or 1 entries; bleMu serialises
+
+	// The newest Open still in flight, so a newer one can take over from it. openSeq
+	// goes up whenever an in-flight Open is superseded; an Open that has got the
+	// radio only registers its session if the number is still the one it started with.
+	openSeq       uint64
+	pendingCancel context.CancelFunc
+	pendingOwner  int64
 }
 
 // NewBLESessionService wires the service.
 func NewBLESessionService(t *TeslaService) *BLESessionService {
 	return &BLESessionService{
-		tesla:    t,
+		tesla: t,
+		acquire: func(ctx context.Context, vin string) (bleConn, func(), error) {
+			conn, release, err := t.AcquireBLEForVIN(ctx, vin)
+			if err != nil {
+				return nil, nil, err
+			}
+			return conn, release, nil
+		},
 		sessions: make(map[string]*internalSession),
 	}
 }
@@ -157,12 +174,14 @@ func NewBLESessionService(t *TeslaService) *BLESessionService {
 var (
 	ErrBLESessionNotFound = errors.New("BLE session not found")
 	ErrBLESessionTimeout  = errors.New("BLE session exchange timed out waiting for response")
+	ErrBLEOpenSuperseded  = errors.New("BLE open superseded by a newer one")
 )
 
 // Open scans for the given VIN and opens a fresh BLE connection. If
 // vin is empty, falls back to TeslaService's configured VIN. Returns
 // the session metadata on success — the caller drives subsequent
-// Exchange + Close by session ID.
+// Exchange + Close by session ID. owner is the id of the bearer token asking, so
+// that removing the token can end the session (see CloseForToken).
 //
 // Holds bleMu for the session's lifetime. If a session already exists it is
 // PREEMPTED — force-closed so this Open can take the adapter immediately.
@@ -179,7 +198,14 @@ var (
 // after 4-5 minutes the instant the reaper fired), and the timed-out opens
 // left zombie goroutines still queued on bleMu that then orphaned yet another
 // session. Newest client wins: close the stale one, connect the new one now.
-func (s *BLESessionService) Open(ctx context.Context, vin string) (*BLESession, error) {
+//
+// "Newest wins" also has to cover an Open still in flight, which has no session
+// to preempt yet. So a new Open cancels the previous one's context, and an Open
+// that got the radio anyway checks it has not been superseded before registering.
+// The number is bumped under s.mu BEFORE preempting, so either the older Open
+// registered first and gets preempted here, or it sees the new number and backs
+// out. There is no ordering in which it holds the radio unnoticed.
+func (s *BLESessionService) Open(ctx context.Context, vin string, owner int64) (*BLESession, error) {
 	if vin == "" {
 		v, err := s.tesla.RequireVIN()
 		if err != nil {
@@ -188,12 +214,17 @@ func (s *BLESessionService) Open(ctx context.Context, vin string) (*BLESession, 
 		vin = v
 	}
 
-	// Preempt BEFORE AcquireBLEForVIN: Close releases bleMu, so the Lock below
-	// is uncontended and returns in the normal scan+connect time instead of
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	seq := s.beginOpen(cancel, owner)
+	defer s.endOpen(seq)
+
+	// Preempt BEFORE acquiring: Close releases bleMu, so the Lock inside is
+	// uncontended and returns in the normal scan+connect time instead of
 	// blocking for the reaper TTL.
 	s.preemptExisting()
 
-	conn, release, err := s.tesla.AcquireBLEForVIN(ctx, vin)
+	conn, release, err := s.acquire(ctx, vin)
 	if err != nil {
 		return nil, err
 	}
@@ -206,11 +237,19 @@ func (s *BLESessionService) Open(ctx context.Context, vin string) (*BLESession, 
 	id := hex.EncodeToString(idBytes)
 
 	sess := newInternalSession(id, vin, conn, release)
-	go sess.runPump()
+	sess.owner = owner
 
 	s.mu.Lock()
+	if s.openSeq != seq {
+		s.mu.Unlock()
+		release()
+		log.Printf("[BLE-SESSION] open superseded after acquiring the adapter (vin=%s)", vin)
+		return nil, ErrBLEOpenSuperseded
+	}
 	s.sessions[id] = sess
 	s.mu.Unlock()
+
+	go sess.runPump()
 
 	log.Printf("[BLE-SESSION] opened %s (vin=%s)", id, vin)
 	go s.reaper(id)
@@ -634,6 +673,67 @@ func (s *BLESessionService) Close(id string) error {
 	return nil
 }
 
+// beginOpen records a new in-flight Open, cancelling the one before it, and
+// returns the number that Open must still hold when it comes to register.
+func (s *BLESessionService) beginOpen(cancel context.CancelFunc, owner int64) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingCancel != nil {
+		s.pendingCancel()
+		log.Printf("[BLE-SESSION] cancelling an open still in flight for a newer one")
+	}
+	s.openSeq++
+	s.pendingCancel = cancel
+	s.pendingOwner = owner
+	return s.openSeq
+}
+
+// endOpen forgets the in-flight Open numbered seq, if it is still the latest.
+func (s *BLESessionService) endOpen(seq uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.openSeq == seq {
+		s.pendingCancel = nil
+		s.pendingOwner = 0
+	}
+}
+
+// CloseForToken ends everything a bearer token has open: its session (which ends
+// that session's WS /events subscribers too) and any Open it still has in flight.
+// Returns how many sessions it closed.
+//
+// The bearer is only checked when a request starts, so removing a token used to
+// leave its session holding the radio, and its event stream running, until the
+// client went away. A removed user should lose access when they are removed.
+func (s *BLESessionService) CloseForToken(owner int64) int {
+	if owner == 0 {
+		return 0
+	}
+	s.mu.Lock()
+	if s.pendingCancel != nil && s.pendingOwner == owner {
+		s.pendingCancel()
+		s.pendingCancel = nil
+		s.pendingOwner = 0
+		s.openSeq++
+	}
+	var ids []string
+	for id, sess := range s.sessions {
+		if sess.owner == owner {
+			ids = append(ids, id)
+		}
+	}
+	s.mu.Unlock()
+
+	closed := 0
+	for _, id := range ids {
+		log.Printf("[BLE-SESSION] closing %s: its token was removed", id)
+		if s.Close(id) == nil {
+			closed++
+		}
+	}
+	return closed
+}
+
 // preemptExisting force-closes every currently-registered session so a new
 // Open can take the adapter immediately (see Open's header for why take-over
 // is correct on a single-user Pi). Snapshots the ids under the map lock, then
@@ -698,11 +798,9 @@ func (s *BLESessionService) get(id string) (*internalSession, error) {
 
 // CurrentSession returns the id of the single live session, if there is one.
 //
-// Exists for lockwatch, which must SUBSCRIBE to whatever session happens to be
-// live rather than owning one of its own: Open calls preemptExisting, so a
-// watcher-owned session would be force-closed by every phone Open and spend its
-// life reconnecting. The map holds 0 or 1 entries (bleMu serialises Open), so
-// "the first one" is unambiguous.
+// Exists for lockwatch, which subscribes to whatever session happens to be live
+// and never opens one of its own: see lockwatch.go. The map holds 0 or 1 entries
+// (bleMu serialises Open), so "the first one" is unambiguous.
 func (s *BLESessionService) CurrentSession() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -712,25 +810,8 @@ func (s *BLESessionService) CurrentSession() (string, bool) {
 	return "", false
 }
 
-// Touch is the exported keepalive: it refreshes the named session's idle
-// clock without exchanging anything.
-//
-// Exists for lockwatch. lastUsed used to be refreshed ONLY by Exchange, and
-// the watcher never calls Exchange — so the reaper destroyed the watcher's
-// session exactly bleSessionTTL after it opened, every time, on a perfectly
-// healthy car. That churn is not merely wasteful: it re-enters Open →
-// AcquireBLEForVIN (ctx-blind bleMu held across a scan) every five minutes
-// forever, it wipes the accumulated verdict on every reap, and — for the
-// observe-only phase this was built for — it makes "the car pushes status on
-// an idle link" indistinguishable from "the car answers a fresh GATT
-// connect", because a reconnect happens on exactly the cadence being measured.
-//
-// A no-op when the session is gone, like Unsubscribe, so a caller racing a
-// teardown does not need to check first.
-func (s *BLESessionService) Touch(id string) { s.touch(id) }
-
 // touch updates lastUsed on the named session. Used by Exchange to
-// keep the reaper from killing an actively-used session, and by Touch.
+// keep the reaper from killing an actively-used session.
 func (s *BLESessionService) touch(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
