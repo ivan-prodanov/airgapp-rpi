@@ -10,7 +10,7 @@
 </head>
 <body>
     <main class="login" x-data="loginApp()">
-        <form class="login-card" @submit.prevent="login()" data-rise>
+        <form class="login-card" method="post" @submit.prevent="login()" data-rise>
             <h1 class="vh">Sign in to Airgapp</h1>
             <span class="brand-logo login-logo" aria-hidden="true"></span>
             <label class="login-field">

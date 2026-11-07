@@ -136,7 +136,9 @@ func TestLoginPage(t *testing.T) {
 	rec := httptest.NewRecorder()
 	NewRenderer(web.Content).RenderLogin(rec, nil)
 	body := rec.Body.String()
-	for _, want := range []string{"/static/css/gap.css", "<title>Sign in — Airgapp</title>", ">Sign in</button>"} {
+	// method="post": submitted before Alpine binds @submit.prevent (slow load, password
+	// manager autofill+submit), a GET would put the password in the URL and the request log.
+	for _, want := range []string{"/static/css/gap.css", "<title>Sign in — Airgapp</title>", ">Sign in</button>", `method="post"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("login page lacks %s", want)
 		}

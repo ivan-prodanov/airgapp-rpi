@@ -368,6 +368,11 @@ code, .mono, .tnum { font-family: "JetBrains Mono", ui-monospace, monospace; fon
 .chip.active { background: var(--bg); color: var(--fg); }
 [data-theme="light"] .chip.active { background: var(--fg); color: var(--bg); }
 
+/* The live dot's pulse. Shared with the old sidebar once; kept for the Traffic page until it is ported. */
+@keyframes ag-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(78, 192, 122, 0.18); }
+  50%      { box-shadow: 0 0 0 6px rgba(78, 192, 122, 0); }
+}
 .live-indicator { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--ok); font-weight: 600; padding: 5px 12px; background: var(--ok-faint); border-radius: 100px; cursor: pointer; }
 .live-indicator::before { content: ""; width: 7px; height: 7px; background: var(--ok); border-radius: 50%; box-shadow: 0 0 0 3px rgba(0, 217, 126, 0.18); animation: ag-pulse 1.6s ease-in-out infinite; }
 .live-indicator.paused { color: var(--fg-mute); background: var(--bg-elev-2); }
