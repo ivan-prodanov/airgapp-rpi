@@ -401,19 +401,27 @@ func (s *NetworkService) DeviceIPByMAC(mac string) string {
 // UpdateDevice updates per-device metadata that isn't part of the status
 // classification: alias and the traffic-log mute flag. To change a device's
 // status use SetStatus.
-func (s *NetworkService) UpdateDevice(mac, alias string, ignoreTrafficLog bool) error {
-	ignoreInt := 0
-	if ignoreTrafficLog {
-		ignoreInt = 1
-	}
-	_, err := s.db.Exec(
-		"UPDATE devices SET alias = ?, ignore_traffic_log = ? WHERE mac_address = ?",
-		alias, ignoreInt, mac,
-	)
-	if err != nil {
-		return fmt.Errorf("update device %s: %w", mac, err)
+// SetAlias renames a device. An empty alias falls back to its hostname in the UI.
+func (s *NetworkService) SetAlias(mac, alias string) error {
+	if _, err := s.db.Exec("UPDATE devices SET alias = ? WHERE mac_address = ?", alias, mac); err != nil {
+		return fmt.Errorf("rename device %s: %w", mac, err)
 	}
 	return nil
+}
+
+// SetIgnoreTrafficLog turns traffic logging for a device off (ignore=true) or
+// back on, and reports whether the flag actually changed.
+func (s *NetworkService) SetIgnoreTrafficLog(mac string, ignore bool) (changed bool, err error) {
+	v := 0
+	if ignore {
+		v = 1
+	}
+	res, err := s.db.Exec("UPDATE devices SET ignore_traffic_log = ? WHERE mac_address = ? AND ignore_traffic_log != ?", v, mac, v)
+	if err != nil {
+		return false, fmt.Errorf("set logging for %s: %w", mac, err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 func (s *NetworkService) GetDeviceCount() (online, total int, err error) {

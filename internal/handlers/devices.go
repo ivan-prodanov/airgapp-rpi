@@ -62,8 +62,12 @@ func macFromPath(r *http.Request) (string, error) {
 	return mac, nil
 }
 
-// Update edits per-device metadata: alias and the traffic-log mute flag.
-// Status changes go through SetStatus (PUT /api/devices/{mac}/status).
+// Update edits per-device metadata: the alias and/or whether its traffic is
+// logged. Each field is optional and only the fields sent change, so renaming
+// a device never touches its logging. Turning logging off wipes the device's
+// history from query_log (by MAC for forward events, by its last-known IP for
+// DNS events) — only on the change from on to off. Status changes go through
+// SetStatus (PUT /api/devices/{mac}/status).
 func (h *DevicesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	mac, err := macFromPath(r)
 	if err != nil {
@@ -72,37 +76,42 @@ func (h *DevicesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Alias            string `json:"alias"`
-		IgnoreTrafficLog bool   `json:"ignore_traffic_log"`
+		Alias            *string `json:"alias"`
+		IgnoreTrafficLog *bool   `json:"ignore_traffic_log"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		JSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
-	if err := h.network.UpdateDevice(mac, req.Alias, req.IgnoreTrafficLog); err != nil {
-		JSONError(w, http.StatusInternalServerError, err.Error())
+	if req.Alias == nil && req.IgnoreTrafficLog == nil {
+		JSONError(w, http.StatusBadRequest, "nothing to update")
 		return
 	}
 
-	h.audit.Log("device.update",
-		"MAC="+mac+" ignore_log="+boolStr(req.IgnoreTrafficLog))
-
-	// When the user opts into log-suppression for this device, wipe the
-	// existing query_log entries (matched by MAC for forward events and
-	// by the device's last-known IP for DNS events), then refresh the
-	// in-memory ignore cache so subsequent events are dropped at insert
-	// time. Toggling off just refreshes the cache; past wiped rows are
-	// gone for good.
-	if req.IgnoreTrafficLog {
-		ip := h.network.DeviceIPByMAC(mac)
-		if n, err := h.trafficLog.WipeForDevice(mac, ip); err != nil {
-			log.Printf("[DEVICES] wipe query_log for %s/%s failed: %v", mac, ip, err)
-		} else if n > 0 {
-			h.audit.Log("device.wipe_logs", fmt.Sprintf("MAC=%s ip=%s deleted=%d", mac, ip, n))
+	if req.Alias != nil {
+		if err := h.network.SetAlias(mac, *req.Alias); err != nil {
+			JSONError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
+		h.audit.Log("device.rename", "MAC="+mac)
 	}
-	h.trafficLog.RefreshIgnoreCache()
+	if req.IgnoreTrafficLog != nil {
+		changed, err := h.network.SetIgnoreTrafficLog(mac, *req.IgnoreTrafficLog)
+		if err != nil {
+			JSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		h.audit.Log("device.logging", "MAC="+mac+" ignore_log="+boolStr(*req.IgnoreTrafficLog))
+		if changed && *req.IgnoreTrafficLog {
+			ip := h.network.DeviceIPByMAC(mac)
+			if n, err := h.trafficLog.WipeForDevice(mac, ip); err != nil {
+				log.Printf("[DEVICES] wipe query_log for %s/%s failed: %v", mac, ip, err)
+			} else if n > 0 {
+				h.audit.Log("device.wipe_logs", fmt.Sprintf("MAC=%s ip=%s deleted=%d", mac, ip, n))
+			}
+		}
+		h.trafficLog.RefreshIgnoreCache()
+	}
 
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
