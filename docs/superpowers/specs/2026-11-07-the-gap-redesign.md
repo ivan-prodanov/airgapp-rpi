@@ -138,10 +138,10 @@ Decided 2026-11-07: the page has **no** regime switch and **no** pause button. T
 - The car node is on the left and the gate is a vertical line at x=600 in a 1000×700 viewBox.
 - There is one lane per **host**: the 7 most recent distinct domains the Tesla contacted in the last 24 h, newest first. Each host uses its most recent event.
 - Lane slot i sits at `y=(i+0.5)*100`.
-- **A lane crosses the gate** when that event was allowed: `allowed` or `resolved`. It is cut with a red × when the event was `blocked` or `sinkholed`.
+- **A lane crosses the gate by the Tesla's policy, as in the mockup:** Blocked → nothing crosses, Open → everything crosses, Filtered → allow-listed hosts cross; the rest are cut with a red ×. (Raw event verdicts can't decide it: a blocked car's DNS still logs `resolved`, and an Open car's traffic bypasses the Pi unlogged. Decided in the slice-2 review.) With an Open car and no recent rows, the panel says "While Open, the Tesla's traffic passes without inspection."
 - **A lane is green** ("Safe") when the host is on the allow-list, meaning it matches an enabled filter and is not always-blocked. Otherwise it is red ("Danger"). Under Open, red lanes therefore cross the gate.
 - **Events belong to the Tesla** when `client_mac` matches its MAC or `client_ip` matches its IP. DNS and SNI rows carry only the IP.
-- **Sweeps:** the page polls every 3.2 s, and only while the tab is visible. When the set of hosts changes it runs the mockup's sweep: lanes reset, draw in over 0.85 s with a 0.07 s stagger, then the marks and host rows fade in.
+- **Sweeps:** the page polls every 3.2 s, only while the tab is visible, one request at a time. When the set of hosts changes (or a host's crossing or allow-list status) it runs the mockup's sweep: lanes reset, draw in over 0.85 s with a 0.07 s stagger, then the marks and host rows fade in. Fresh events for the same hosts repaint in place. The headline stays empty until the first response.
 
 **Readouts:** Blocked · 24 h and Allow-listed · 24 h are the Tesla's events. Blocked is `blocked` plus `sinkholed`; Allow-listed is `allowed` plus `resolved`, the same classes as the Traffic page. They roll like an odometer over 760 ms. "This sweep" shows lanes crossed out of lanes drawn.
 
