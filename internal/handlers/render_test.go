@@ -46,6 +46,27 @@ func TestRenderPageConcurrent(t *testing.T) {
 	wg.Wait()
 }
 
+// The Gap stylesheet loads after app.css (so its tokens win), fonts are
+// self-hosted, and the product name in the title is "Airgapp".
+func TestLayoutStylesheets(t *testing.T) {
+	body, _ := renderPage(NewRenderer(web.Content), "devices.html", "devices")
+	app, gap := strings.Index(body, `href="/static/css/app.css"`), strings.Index(body, `href="/static/css/gap.css"`)
+	if app < 0 || gap < 0 || gap < app {
+		t.Errorf("want app.css then gap.css, got app.css at %d, gap.css at %d", app, gap)
+	}
+	for _, want := range []string{
+		`<link rel="preload" href="/static/fonts/saira.woff2" as="font" type="font/woff2" crossorigin>`,
+		`<title>Devices — Airgapp</title>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("layout lacks %s", want)
+		}
+	}
+	if strings.Contains(body, "fonts.googleapis.com") {
+		t.Error("layout still requests Google Fonts")
+	}
+}
+
 func TestRenderEveryPage(t *testing.T) {
 	r := NewRenderer(web.Content)
 	for _, p := range testPages {

@@ -6,3 +6,36 @@
 /* Fonts: self-hosted variable woff2, latin subset (make fonts). */
 @font-face{font-family:'Saira';font-style:normal;font-weight:300 700;font-display:swap;src:url(/static/fonts/saira.woff2) format('woff2')}
 @font-face{font-family:'Martian Mono';font-style:normal;font-weight:400 600;font-display:swap;src:url(/static/fonts/martian-mono.woff2) format('woff2')}
+
+/* Tokens. Same selector as app.css's token block, so this later sheet wins. */
+:root,[data-theme="dark"]{
+--bg0:#070A12;
+--line:rgba(132,164,205,.14);--line2:rgba(132,164,205,.26);
+--panel:rgba(12,17,27,.55);
+--gate:#AFC7D4;--txt:#EAF0F7;--dim:#93A1B5;--faint:#7A879C;
+--safe:#4ADE80;--danger:#FF5A3C;--watch:#F5B544;--brand:#e02434;
+/* Motion */
+--t-fast:120ms;--t-panel:200ms;--t-exit:150ms;--t-blip:700ms;--t-flash:1.2s;--t-live:2s;--t-rise:400ms;
+--rise-1:60ms;--rise-2:120ms;--rise-3:180ms;
+--ease-std:cubic-bezier(.2,0,.38,.9);--ease-enter:cubic-bezier(0,0,.38,.9);--ease-exit:cubic-bezier(.2,0,1,.9);--ease-rise:cubic-bezier(0,0,.3,1);
+/* Bridge: app.css tokens re-pointed at the Gap palette for pages not yet ported. */
+--bg:var(--bg0);--bg-elev:#0C111B;--bg-elev-2:#121A28;--bg-inset:#05070D;
+--line-bright:var(--line2);--line-strong:var(--faint);
+--fg:var(--txt);--fg-dim:var(--dim);--fg-mute:var(--faint);--fg-faint:#4A5568;--accent:var(--txt);
+--danger-faint:rgba(255,90,60,.12);--warn:var(--watch);--warn-faint:rgba(245,181,68,.12);
+--ok:var(--safe);--ok-faint:rgba(74,222,128,.14);
+}
+
+/* Base */
+body{background:var(--bg0);color:var(--txt);font-family:'Saira','Helvetica Neue',sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;
+background-image:radial-gradient(130% 70% at 50% 0%,rgba(44,76,108,.16),rgba(7,10,18,0) 60%),linear-gradient(180deg,#080B14,#06080F);background-attachment:fixed}
+code,.mono,.tnum{font-family:'Martian Mono',ui-monospace,monospace}
+
+/* Motion: the frame is still; a page arrives top to bottom in one shared rhythm.
+   backwards fill only, so nothing lingers (a leftover transform breaks sticky/fixed children). */
+@keyframes rise{from{opacity:0;transform:translateY(12px)}}
+[data-rise]{animation:rise var(--t-rise) var(--ease-rise) backwards}
+[data-rise="1"]{animation-delay:var(--rise-1)}
+[data-rise="2"]{animation-delay:var(--rise-2)}
+[data-rise="3"]{animation-delay:var(--rise-3)}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:.01ms!important;transition-delay:0s!important}}
