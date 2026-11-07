@@ -1236,9 +1236,11 @@ func Migrate(db *sql.DB) error {
 		log.Printf("[DB] Migration v%d applied", version)
 	}
 
+	// A private seed written for an older schema must not stop the daemon:
+	// the schema is already migrated, so failing here would fail every start.
 	for i, stmt := range localSeeds {
 		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("apply local seed %d: %w", i, err)
+			log.Printf("[DB] WARN local seed %d not applied (update local_seed.go for the current schema): %v", i, err)
 		}
 	}
 

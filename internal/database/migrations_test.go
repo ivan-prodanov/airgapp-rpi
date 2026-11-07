@@ -632,3 +632,24 @@ func TestMigrateV29_CarAppsSplit(t *testing.T) {
 		}
 	})
 }
+
+// A private seed written for an older schema (here, the per-domain enabled
+// column v27 dropped) must not stop the daemon booting: the schema is
+// already migrated, so failing would fail every start, old binary included.
+func TestMigrate_LocalSeedFailureIsNotFatal(t *testing.T) {
+	saved := localSeeds
+	t.Cleanup(func() { localSeeds = saved })
+	localSeeds = []string{
+		`INSERT OR IGNORE INTO filter_domains (preset_id, domain, description, enabled)
+		 SELECT f.id, 'private.example', 'Old seed', 1 FROM filters f WHERE f.name = 'Connectivity'`,
+		`INSERT OR IGNORE INTO filter_domains (preset_id, domain, description)
+		 SELECT f.id, 'later.example', 'Good seed' FROM filters f WHERE f.name = 'Connectivity'`,
+	}
+	db := openMemory(t)
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate with a stale local seed: %v", err)
+	}
+	if !filterDomainSet(t, db, "Connectivity")["later.example"] {
+		t.Fatal("a good seed after a failing one was not applied")
+	}
+}
