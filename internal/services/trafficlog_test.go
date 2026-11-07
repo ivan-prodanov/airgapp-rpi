@@ -2,6 +2,7 @@ package services
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -130,5 +131,16 @@ func TestBlockedFilterIncludesSinkholed(t *testing.T) {
 	}
 	if r := svc.QueryPaginated(TrafficFilter{Action: "all"}); r.Total != 3 {
 		t.Fatalf("all filter: total=%d, want 3", r.Total)
+	}
+}
+
+// The Muted dialog shows the server's words as they are.
+func TestAddMuted_BadDomain(t *testing.T) {
+	svc := NewTrafficLogService(migratedDB(t))
+	if _, err := svc.AddMuted("not a domain!"); !errors.Is(err, ErrBadMuteDomain) {
+		t.Fatalf("AddMuted(bad) = %v, want ErrBadMuteDomain", err)
+	}
+	if ErrBadMuteDomain.Error() != "Enter a domain like apple.com." {
+		t.Fatalf("copy %q", ErrBadMuteDomain.Error())
 	}
 }

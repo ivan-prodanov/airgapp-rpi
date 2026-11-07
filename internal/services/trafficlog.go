@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -42,7 +43,7 @@ type TrafficLogService struct {
 	// burning hundreds of DNS queries per second) don't fill query_log.
 	// Refreshed periodically by RefreshIgnoreCache and on demand from the
 	// device-update handler.
-	ignoreMu   sync.RWMutex
+	ignoreMu    sync.RWMutex
 	ignoredMACs map[string]struct{}
 	ignoredIPs  map[string]struct{}
 
@@ -78,6 +79,7 @@ var nflogRe = regexp.MustCompile(
 )
 var nflogPortRe = regexp.MustCompile(`DPT=(\d+)`)
 var nflogMacRe = regexp.MustCompile(`MAC=([0-9a-f:]+)`)
+
 // Captures the policy name from log prefixes like "[NETFILTER-ACCEPT pol=Tesla]".
 var nflogPolicyRe = regexp.MustCompile(`\[NETFILTER-(?:ACCEPT|DROP)(?:-[A-Z]+)?\s+pol=([^\s\]]+)\]`)
 
@@ -280,12 +282,16 @@ func (s *TrafficLogService) ListMuted() ([]models.MutedDomain, error) {
 	return out, nil
 }
 
+// ErrBadMuteDomain is AddMuted's answer to something that isn't a domain,
+// worded for the Muted dialog, which shows it as it is.
+var ErrBadMuteDomain = errors.New("Enter a domain like apple.com.")
+
 // AddMuted inserts a suffix-match mute for domain (idempotent — re-enables
 // an existing row) and refreshes the cache so ingest applies it at once.
 func (s *TrafficLogService) AddMuted(domain string) (int64, error) {
 	pattern := NormalizeDomain(domain)
 	if pattern == "" {
-		return 0, fmt.Errorf("invalid domain")
+		return 0, ErrBadMuteDomain
 	}
 	var id int64
 	err := s.db.QueryRow(`
@@ -860,6 +866,133 @@ type TrafficFilter struct {
 	Protocol string
 }
 
+// searchClause matches q as a literal substring of a row's domain, client
+// IP, destination IP or port.
+func searchClause(q string) (string, []any) {
+	if utf8.RuneCountInString(q) >= 3 {
+		// FTS5 trigram path. Wrap the query as a double-quoted FTS5 string
+		// literal (internal quotes doubled) so it is matched as a literal
+		// substring across all query_log_fts columns rather than parsed as
+		// FTS query syntax.
+		return "id IN (SELECT rowid FROM query_log_fts WHERE query_log_fts MATCH ?)",
+			[]any{`"` + strings.ReplaceAll(q, `"`, `""`) + `"`}
+	}
+	// The trigram tokenizer needs 3-character grams; shorter queries fall
+	// back to an (unindexed) LIKE scan.
+	p := "%" + q + "%"
+	return "(domain LIKE ? OR client_ip LIKE ? OR dst_ip LIKE ? OR dst_port LIKE ?)", []any{p, p, p, p}
+}
+
+// FeedFilter selects the Traffic page's rows: newer than After (when set),
+// of one outcome (allowed, blocked, or all), one protocol, matching Query.
+type FeedFilter struct {
+	After   int64
+	Outcome string
+	Proto   string
+	Query   string
+	Limit   int
+}
+
+// Feed returns the newest rows matching f, newest first: at most f.Limit
+// (80 by default, 200 at most), and only those after f.After when it is set.
+// lastID is the log's newest id, whether or not that row matched, so the
+// next poll starts after it and never rescans.
+func (s *TrafficLogService) Feed(f FeedFilter) (entries []TrafficEntry, lastID int64, err error) {
+	if f.Limit <= 0 {
+		f.Limit = 80
+	}
+	if f.Limit > 200 {
+		f.Limit = 200
+	}
+	if err := s.db.QueryRow("SELECT COALESCE(MAX(id), 0) FROM query_log").Scan(&lastID); err != nil {
+		return nil, 0, fmt.Errorf("feed: newest id: %w", err)
+	}
+	where := []string{"id <= ?"}
+	args := []any{lastID}
+	if f.After > 0 {
+		where = append(where, "id > ?")
+		args = append(args, f.After)
+	}
+	switch f.Outcome {
+	case "allowed":
+		where = append(where, "action IN ('allowed','resolved')")
+	case "blocked":
+		where = append(where, "action IN ('blocked','sinkholed')")
+	}
+	if f.Proto != "" && !strings.EqualFold(f.Proto, "all") {
+		where = append(where, "UPPER(COALESCE(protocol,'')) = ?")
+		args = append(args, strings.ToUpper(f.Proto))
+	}
+	if f.Query != "" {
+		clause, qargs := searchClause(f.Query)
+		where = append(where, clause)
+		args = append(args, qargs...)
+	}
+	rows, err := s.db.Query(`
+		SELECT id, timestamp, client_ip, domain, dst_ip, dst_port, protocol, action, client_mac,
+		       COALESCE(source,'forward'), COALESCE(policy,'')
+		FROM query_log WHERE `+strings.Join(where, " AND ")+` ORDER BY id DESC LIMIT ?`, append(args, f.Limit)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("feed: query: %w", err)
+	}
+	defer rows.Close()
+	entries = []TrafficEntry{}
+	for rows.Next() {
+		var e TrafficEntry
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.SrcIP, &e.Domain, &e.DstIP, &e.DstPort,
+			&e.Protocol, &e.Action, &e.SrcMAC, &e.Source, &e.Policy); err != nil {
+			return nil, 0, fmt.Errorf("feed: scan: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, lastID, rows.Err()
+}
+
+// Verdict is the row's action, except for DNS rows stored before verdicts
+// were (action "query"): those get the verdict today's allow-list gives.
+func (s *TrafficLogService) Verdict(e TrafficEntry) string {
+	if e.Action != "query" {
+		return e.Action
+	}
+	if s.dnsResolvable(e.Domain) {
+		return "resolved"
+	}
+	return "sinkholed"
+}
+
+// MutedBy returns the mute pattern that covers domain, or "".
+func (s *TrafficLogService) MutedBy(domain string) string {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	if d == "" {
+		return ""
+	}
+	s.mutedMu.RLock()
+	defer s.mutedMu.RUnlock()
+	if _, ok := s.mutedExact[d]; ok {
+		return d
+	}
+	for _, p := range s.mutedSuffix {
+		if d == p || strings.HasSuffix(d, "."+p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// SourceMAC returns the sender's MAC, upper-cased, from a query_log
+// client_mac: a plain MAC, or the 14-octet header nflog writes
+// (destination, source, ethertype), whose octets 7-12 are the source.
+func SourceMAC(raw string) string {
+	parts := strings.Split(strings.TrimSpace(raw), ":")
+	switch len(parts) {
+	case 6:
+		return strings.ToUpper(raw)
+	case 14:
+		return strings.ToUpper(strings.Join(parts[6:12], ":"))
+	}
+	return ""
+}
+
 // QueryPaginated returns a page of query_log entries matching the filter.
 func (s *TrafficLogService) QueryPaginated(f TrafficFilter) PagedResult {
 	if f.Page < 1 {
@@ -892,21 +1025,9 @@ func (s *TrafficLogService) QueryPaginated(f TrafficFilter) PagedResult {
 	}
 
 	if f.Query != "" {
-		if utf8.RuneCountInString(f.Query) >= 3 {
-			// FTS5 trigram path. Wrap the query as a double-quoted FTS5
-			// string literal (internal quotes doubled) so it is matched
-			// as a literal substring across all query_log_fts columns
-			// rather than parsed as FTS query syntax.
-			ftsArg := `"` + strings.ReplaceAll(f.Query, `"`, `""`) + `"`
-			where = append(where, "id IN (SELECT rowid FROM query_log_fts WHERE query_log_fts MATCH ?)")
-			args = append(args, ftsArg)
-		} else {
-			// The trigram tokenizer needs 3-character grams; shorter
-			// queries fall back to an (unindexed) LIKE scan.
-			pattern := "%" + f.Query + "%"
-			where = append(where, "(domain LIKE ? OR client_ip LIKE ? OR dst_ip LIKE ? OR dst_port LIKE ?)")
-			args = append(args, pattern, pattern, pattern, pattern)
-		}
+		clause, qargs := searchClause(f.Query)
+		where = append(where, clause)
+		args = append(args, qargs...)
 	}
 
 	if f.From != "" {

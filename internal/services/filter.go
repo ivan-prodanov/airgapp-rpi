@@ -261,3 +261,60 @@ func (s *FilterService) DeleteDomain(id int64) error {
 	_, err := s.db.Exec("DELETE FROM filter_domains WHERE id = ?", id)
 	return err
 }
+
+// FilterCover names the filter that lists a domain.
+type FilterCover struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+// CoverIndex reads every filter's domains once and returns a matcher: the
+// filter that lists domain (itself or a parent, as the gate matches),
+// preferring one that is on, then the lowest id; nil when none does.
+func (s *FilterService) CoverIndex() (func(domain string) *FilterCover, error) {
+	rows, err := s.db.Query(`
+		SELECT f.id, f.name, f.enabled, fd.domain
+		FROM filter_domains fd JOIN filters f ON f.id = fd.preset_id
+		ORDER BY f.enabled DESC, f.id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("cover index: %w", err)
+	}
+	defer rows.Close()
+	type entry struct {
+		domain string
+		cover  *FilterCover
+	}
+	var all []entry
+	covers := map[int64]*FilterCover{}
+	for rows.Next() {
+		var id int64
+		var name, dom string
+		var en int
+		if err := rows.Scan(&id, &name, &en, &dom); err != nil {
+			return nil, fmt.Errorf("cover index scan: %w", err)
+		}
+		c := covers[id]
+		if c == nil {
+			c = &FilterCover{ID: id, Name: name, Enabled: en == 1}
+			covers[id] = c
+		}
+		all = append(all, entry{strings.ToLower(dom), c})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cover index rows: %w", err)
+	}
+	return func(domain string) *FilterCover {
+		d := strings.ToLower(strings.TrimSpace(domain))
+		if d == "" {
+			return nil
+		}
+		for _, e := range all { // already in preference order
+			if d == e.domain || strings.HasSuffix(d, "."+e.domain) {
+				c := *e.cover
+				return &c
+			}
+		}
+		return nil
+	}, nil
+}

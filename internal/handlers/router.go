@@ -47,6 +47,7 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 	fwH := NewFirewallHandler(svc, renderer)
 	bwH := NewBandwidthHandler(svc, renderer)
 	filtH := NewFiltersHandler(svc, renderer)
+	trafH := NewTrafficHandler(svc)
 	settingsH := NewSettingsHandler(db, svc, renderer)
 	sysH := NewSystemHandler(svc)
 	teslaH := NewTeslaHandler(svc)
@@ -169,6 +170,9 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 				r.Put("/{mac}/status", devH.SetStatus)
 				r.Delete("/{mac}", devH.Delete)
 			})
+
+			// GET /api/traffic/feed — the Traffic page's one request per tick.
+			r.Get("/traffic/feed", trafH.Feed)
 
 			r.Route("/filters", func(r chi.Router) {
 				r.Get("/", filtH.List)

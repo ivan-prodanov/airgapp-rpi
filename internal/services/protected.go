@@ -106,3 +106,8 @@ func isProtectedAncestor(domain string) bool {
 // floor. Used by the dashboard handler so the Guardian hero displays
 // "<N> endpoints sealed" without UI code needing to know the constant.
 func ProtectedDenyCount() int { return len(protectedDeny) }
+
+// IsAlwaysBlocked reports whether no filter can ever allow domain: it is, or
+// is under, a protected Tesla endpoint (with the same exemptions the gate
+// makes). The Traffic page shows Allow locked for these.
+func IsAlwaysBlocked(domain string) bool { return isProtectedDenied(domain) }
