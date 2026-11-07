@@ -90,7 +90,11 @@
 // it is on. Turning one on or off, and removing a domain, apply at once and
 // offer Undo; deleting a filter asks first.
 function filtersApp() {
-    const NAME = /^[A-Za-z0-9][A-Za-z0-9 _\-+'\/]{0,63}$/;
+    // The server's rule (services.ValidPresetName): names end up in config files.
+    const NAME = /^[A-Za-z0-9][A-Za-z0-9 _\-+\/]{0,63}$/;
+    // The host in a search, as the server normalises a domain: a pasted URL, a port
+    // or a *. prefix reduced to the host itself.
+    const hostOf = q => q.replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split(/[\/?#]/)[0].replace(/:\d+$/, '').replace(/\.$/, '').replace(/^\*\./, '');
     const GROUPS = [
         { key: 'System', title: 'Car system', sub: 'What the Tesla needs to drive, navigate and stay online.' },
         { key: '', title: 'Apps & streaming', sub: 'Turn on what you want to use in the car.' },
@@ -99,6 +103,7 @@ function filtersApp() {
         filters: [], loaded: false, open: {}, drafts: {}, status: {}, query: '',
         confirmDel: null, fresh: null, freshFilter: null, newOpen: false, newName: '', newErr: '',
         ticked: {}, active: {}, blocked: null,
+        gen: {},   // per-filter change counters: a refresh read before a change mustn't undo it
 
         init() {
             this.load();
@@ -113,8 +118,10 @@ function filtersApp() {
         // Filters with their domains and 7-day hits, in one request. Hits that went
         // up since the last load tick (and their filter's dot blips).
         async load() {
+            const sent = Object.assign({}, this.gen);
             let fs;
             try { fs = await api.get('/api/filters/?domains=1'); } catch (e) { return; }
+            fs = this.keepChanged(fs || [], sent);
             const before = {};
             this.filters.forEach(f => (f.domains || []).forEach(d => { before[d.id] = d.hits; }));
             const ticked = {}, active = {};
@@ -129,16 +136,31 @@ function filtersApp() {
             }
         },
 
+        touch(id) { this.gen[id] = (this.gen[id] || 0) + 1; },
+        cur(f) { return this.filters.find(x => x.id === f.id) || f; },
+        // A filter changed here after a refresh went out keeps what it shows now:
+        // the refresh was read before the change.
+        keepChanged(fs, sent) {
+            const changed = id => (this.gen[id] || 0) !== (sent[id] || 0);
+            const local = new Map(this.filters.map(f => [f.id, f]));
+            const out = [];
+            fs.forEach(f => { if (!changed(f.id)) out.push(f); else if (local.has(f.id)) out.push(local.get(f.id)); });
+            this.filters.forEach(f => { if (changed(f.id) && !fs.some(x => x.id === f.id)) out.push(f); });
+            return out;
+        },
+
         get q() { return this.query.trim().toLowerCase(); },
         // Searching answers "is this allowed?", so only filter names and domains count.
         get groups() {
-            const q = this.q;
+            const q = this.q, host = hostOf(q), needle = host || q;
+            // A host counts when a listed domain contains it, or covers it as the gate does.
+            const hits = d => d.domain.includes(needle) || (host.includes('.') && (host === d.domain || host.endsWith('.' + d.domain)));
             return GROUPS.map(g => ({
                 key: g.key, title: g.title, sub: g.sub,
                 items: this.filters.filter(f => (f.group || '') === g.key).map(f => {
                     const nameHit = !q || f.name.toLowerCase().includes(q);
                     const doms = f.domains || [];
-                    const domHits = q ? doms.filter(d => d.domain.includes(q)) : doms;
+                    const domHits = q ? doms.filter(hits) : doms;
                     return { f, show: nameHit || domHits.length > 0, domains: nameHit ? doms : domHits, filtered: !nameHit };
                 }).filter(x => x.show),
             })).filter(g => g.items.length);
@@ -189,11 +211,19 @@ function filtersApp() {
         async toggleFilter(f, ev) {
             const on = !f.enabled;
             f.enabled = on;
+            this.touch(f.id);
             try { await this.putEnabled(f, on); } catch (e) { f.enabled = !on; ev.target.checked = !on; this.load(); return; }
             const n = (f.domains || []).length;
             const what = n ? n + (n === 1 ? ' domain' : ' domains') : ((f.ports || []).length + ' ports');
             notify(on ? f.name + ' on. Filtered devices can now reach its ' + what + '.' : f.name + ' off. Its ' + what + ' no longer apply.', 'info', {
-                undo: async () => { f.enabled = !on; try { await this.putEnabled(f, !on); } catch (e) { this.load(); } },
+                // The list may have been refreshed since: undo the filter as it is now.
+                undo: async () => {
+                    const c = this.cur(f);
+                    c.enabled = !on;
+                    this.touch(f.id);
+                    try { await this.putEnabled(c, !on); } catch (e) { /* the reload shows what the server has */ }
+                    this.load();
+                },
             });
         },
 
@@ -206,6 +236,7 @@ function filtersApp() {
             try {
                 r = await this.postDomain(f, dr.domain, dr.note);
             } catch (e) { this.setStatus(f, e.message, true); return; }
+            this.touch(f.id);
             await this.load();
             const nf = this.filters.find(x => x.id === f.id) || f;
             const added = (nf.domains || []).find(d => d.id === r.id);
@@ -229,9 +260,15 @@ function filtersApp() {
         },
         async removeDomain(f, d) {
             try { await api.delete('/api/filters/domains/' + d.id); } catch (e) { return; }
-            f.domains = (f.domains || []).filter(x => x.id !== d.id);
+            this.touch(f.id);
+            const c = this.cur(f);
+            c.domains = (c.domains || []).filter(x => x.id !== d.id);
             notify('Removed ' + d.domain + ' from ' + f.name + '.', 'info', {
-                undo: async () => { try { await this.postDomain(f, d.domain, d.description); } catch (e) { notify(e.message, 'error'); } this.load(); },
+                undo: async () => {
+                    this.touch(f.id);
+                    try { await this.postDomain(f, d.domain, d.description); } catch (e) { notify(e.message, 'error'); }
+                    this.load();
+                },
             });
         },
 
@@ -239,10 +276,11 @@ function filtersApp() {
         async createFilter() {
             const name = this.newName.trim();
             // Same rule as the server.
-            if (!NAME.test(name)) { this.newErr = name ? 'Use letters, numbers, spaces and _ - + \' / only, starting with a letter or number.' : 'Give the filter a name.'; return; }
+            if (!NAME.test(name)) { this.newErr = name ? 'Use letters, numbers, spaces and _ - + / only, starting with a letter or number.' : 'Give the filter a name.'; return; }
             if (this.filters.some(f => f.name.toLowerCase() === name.toLowerCase())) { this.newErr = 'There\'s already a filter called ' + name + '.'; return; }
             let r;
             try { r = await api.post('/api/filters', { name }); } catch (e) { this.newErr = e.message; return; }
+            this.touch(r.id);
             this.$refs.dlg.close();
             this.newName = '';
             this.query = '';
@@ -255,6 +293,7 @@ function filtersApp() {
         async deleteFilter(f) {
             this.confirmDel = null;
             try { await api.delete('/api/filters/' + f.id); } catch (e) { return; }
+            this.touch(f.id);
             this.filters = this.filters.filter(x => x.id !== f.id);
             notify(f.name + ' deleted.');
         },

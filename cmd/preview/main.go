@@ -23,7 +23,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -672,7 +671,6 @@ func main() {
 		}
 		return nil
 	}
-	nameRe := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 _\-+'/]{0,63}$`)
 	listFilters := func(w http.ResponseWriter, req *http.Request) {
 		with := req.URL.Query().Get("domains") == "1"
 		out := []kv{}
@@ -691,7 +689,7 @@ func main() {
 		var body struct{ Name string }
 		_ = json.NewDecoder(req.Body).Decode(&body)
 		name := strings.TrimSpace(body.Name)
-		if !nameRe.MatchString(name) {
+		if !services.ValidPresetName(name) {
 			writeStatusJSON(w, http.StatusBadRequest, kv{"error": "invalid filter name"})
 			return
 		}
