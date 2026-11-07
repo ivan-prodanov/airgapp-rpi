@@ -330,6 +330,10 @@ PYSEED
 # Pi 4's BCM43455 radio hosts both WiFi and BLE. We need both unblocked
 # for V4's Tesla integration. rfkill can soft-block bluetooth at boot
 # on some images (we've hit this); unblock both unconditionally.
+#
+# This is the PROVISION-TIME unblock (current boot only). On every reboot,
+# systemd-rfkill restores the saved soft-block, so the boot-time re-unblock
+# lives in nf-wlan0.service's ExecStartPre (runs Before=netfilterd.service).
 info "Unblocking WiFi + Bluetooth radios..."
 rfkill unblock wifi || true
 rfkill unblock bluetooth || true
