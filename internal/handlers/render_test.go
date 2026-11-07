@@ -182,6 +182,22 @@ func TestLayoutBleed(t *testing.T) {
 	}
 }
 
+// The Gap devices page: the Tesla's card, the colour key and the roster — no
+// lease table and no client-side Tesla regex any more.
+func TestDevicesPage(t *testing.T) {
+	body, _ := renderPage(NewRenderer(web.Content), "devices.html", "devices")
+	for _, want := range []string{`class="specimen`, `class="legend"`, `class="roster"`, "Other devices", `name="pol-tesla"`, "Open the Tesla"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("devices page lacks %s", want)
+		}
+	}
+	for _, gone := range []string{"<table", "Lease table", "/tesla/i"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("devices page still contains %q", gone)
+		}
+	}
+}
+
 func TestRenderEveryPage(t *testing.T) {
 	r := NewRenderer(web.Content)
 	for _, p := range testPages {

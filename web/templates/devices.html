@@ -1,240 +1,291 @@
 {{define "title"}}Devices{{end}}
 
 {{define "content"}}
-<div x-data="devicesApp()" x-init="load()">
-    <div class="page-head">
-        <div>
-            <div class="page-head-eyebrow"><strong>Roster</strong> · <span x-text="onlineCount"></span> online of <span x-text="devices.length"></span> total</div>
-            <h1 class="page-head-title">Devices</h1>
-            <p class="page-head-sub">
-                New devices land as <strong style="color:var(--danger);">Blocked</strong>. Promote to
-                <strong>Filtered</strong> (SNI-gated by enabled filters) or
-                <strong style="color:var(--ok);">Open</strong> (full passthrough). The Tesla is highlighted —
-                it's the reason this exists.
-            </p>
-        </div>
-        <div class="page-head-right">
-            <button class="btn" @click="load()">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M14 8a6 6 0 1 0-2 4.5"/><path d="M14 3v4h-4"/></svg>
-                Refresh
-            </button>
-        </div>
+<div class="wrap" x-data="devicesApp()">
+    <div class="phead" data-rise>
+        <p class="eyebrow">On the network · <b x-text="nOnline + ' online'">0 online</b> of <span x-text="nTotal">0</span></p>
+        <h1 class="h1">Devices</h1>
     </div>
 
-    <div class="card" style="overflow:visible;">
-        <div class="card-head">
-            <div>
-                <div class="card-head-title">Lease table</div>
-                <div class="card-head-sub" x-text="'Last ARP sweep · just now · ' + devices.length + ' entries'"></div>
-            </div>
-            <span class="card-head-spacer"></span>
-            <span class="badge danger" x-text="counts.blocked + ' blocked'"></span>
-            <span class="badge info"   x-text="counts.filtered + ' filtered'"></span>
-            <span class="badge success" x-text="counts.open + ' open'"></span>
-        </div>
-        <div class="card-body tight">
-            <table class="tbl">
-                <thead>
-                    <tr>
-                        <th>Device</th>
-                        <th style="width:110px;">Online</th>
-                        <th style="width:170px;">MAC</th>
-                        <th style="width:140px;">IP</th>
-                        <th style="width:160px;">Traffic</th>
-                        <th style="width:80px;" title="Off = traffic events from this device are dropped before they hit query_log. Firewall rules still apply.">Log</th>
-                        <th style="width:80px;" class="right"></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <template x-for="d in devices" :key="d.mac_address">
-                        <tr :class="(isTesla(d) ? 'row-tesla ' : '') + 'clickable'" @click="editDevice(d)">
-                            <td>
-                                <div class="dev-row">
-                                    <div class="dev-avatar" :class="isTesla(d) ? 'tesla' : ''" x-text="avatarLetter(d)"></div>
-                                    <div>
-                                        <div class="dev-row-name" x-text="d.alias || d.hostname || 'Unknown device'"></div>
-                                        <div class="dev-row-sub">
-                                            <template x-if="isTesla(d)">
-                                                <span style="color:var(--danger);">● Vehicle · protected target</span>
-                                            </template>
-                                            <template x-if="!isTesla(d)">
-                                                <span x-text="(d.alias && d.hostname) ? '↳ ' + d.hostname : (d.hostname ? '' : '↳ unrecognised')"></span>
-                                            </template>
-                                        </div>
-                                    </div>
-                                </div>
-                            </td>
-                            <td>
-                                <template x-if="d.online"><span class="badge success dot">Online</span></template>
-                                <template x-if="!d.online"><span class="badge muted dot">Offline</span></template>
-                            </td>
-                            <td class="cell-mac" x-text="d.mac_address"></td>
-                            <td class="cell-mac" x-text="d.ip_address || '—'"></td>
-                            <td @click.stop>
-                                <span class="status-pill" :class="d.status">
-                                    <span class="status-pill-dot"></span>
-                                    <span class="status-pill-label" x-text="statusLabel(d.status)"></span>
-                                    <span class="status-pill-chev">
-                                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
-                                    </span>
-                                    <select :value="d.status" @change="setStatus(d, $event.target.value)">
-                                        <option value="blocked">Blocked</option>
-                                        <option value="filtered">Filtered</option>
-                                        <option value="open">Open</option>
-                                    </select>
-                                </span>
-                            </td>
-                            <td @click.stop>
-                                <label class="toggle" :title="d.ignore_traffic_log ? 'Logging suppressed' : 'Logging on'">
-                                    <input type="checkbox" :checked="!d.ignore_traffic_log" @change="toggleLog(d)">
-                                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                                </label>
-                            </td>
-                            <td class="actions">
-                                <button class="btn-icon danger" @click.stop="deleteDevice(d)" title="Forget device — it returns as Blocked if it reconnects">
-                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l10 10M13 3L3 13"/></svg>
-                                </button>
-                                <span class="row-chev" aria-hidden="true">
-                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg>
-                                </span>
-                            </td>
-                        </tr>
-                    </template>
-                    <template x-if="devices.length === 0">
-                        <tr><td colspan="7" style="text-align:center; color:var(--fg-mute); padding:32px;">No devices yet — connect something to the hotspot and it'll appear here as Blocked.</td></tr>
-                    </template>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- Edit dialog -->
-    <div class="dialog-back" x-show="editing" x-cloak @click.self="closeEdit()">
-        <div class="dialog">
-            <div class="dialog-head">
-                <div class="dialog-title">Edit device · <code x-text="editForm.mac"></code></div>
-                <button class="dialog-close" @click="closeEdit()">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l10 10M13 3L3 13"/></svg>
-                </button>
-            </div>
-            <div class="dialog-body">
-                <div class="field">
-                    <label class="label">Alias</label>
-                    <input class="input" type="text" x-model="editForm.alias" placeholder="e.g. Tesla M3 — Garage">
-                    <div class="field-help">Overrides the DHCP hostname in displays.</div>
-                </div>
-                <div class="field">
-                    <label class="label">Ignore traffic logs</label>
-                    <div class="row">
-                        <label class="toggle danger">
-                            <input type="checkbox" x-model="editForm.ignore_traffic_log">
-                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                        </label>
-                        <span style="font-size:12.5px; color:var(--fg-dim);" x-text="editForm.ignore_traffic_log ? 'Logs suppressed' : 'Logging active'"></span>
+    <section class="specimen" :class="'s-' + teslaPolicy" aria-labelledby="tesla-h" data-rise="1">
+        <div class="spec-l">
+            <h2 class="spec-name" id="tesla-h">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M3 13l1.6-4.6A2 2 0 0 1 6.5 7h11a2 2 0 0 1 1.9 1.4L21 13v4.5a.9.9 0 0 1-.9.9h-1.2a.9.9 0 0 1-.9-.9V16.5H6v1.5a.9.9 0 0 1-.9.9H3.9a.9.9 0 0 1-.9-.9z"/><circle cx="7.2" cy="15" r="1.3" fill="currentColor" stroke="none"/><circle cx="16.8" cy="15" r="1.3" fill="currentColor" stroke="none"/></svg>
+                Tesla
+            </h2>
+            <template x-if="tesla">
+                <div>
+                    <div class="spec-meta">
+                        <span class="odot" :class="{ off: !tesla.online }"></span><span x-text="presence(tesla)"></span>
+                        <span class="spec-mac"><span aria-hidden="true">·</span><span x-text="tesla.mac_address"></span></span>
+                        <template x-if="tesla.ip_address"><span><span aria-hidden="true">·</span> <span x-text="tesla.ip_address"></span></span></template>
                     </div>
-                    <div class="field-help">Drops events from the traffic monitor before insert (firewall rules unaffected). Enabling <strong>wipes</strong> existing history for this device.</div>
+                    <div class="spec-live">
+                        <span class="pd"></span>
+                        <span x-show="tesla.status !== 'open'"><b x-text="fmt(tesla.blocked_1h || 0)">0</b> blocked this hour</span>
+                        <span x-show="tesla.status === 'open'">Nothing blocked · everything passes</span>
+                    </div>
                 </div>
-            </div>
-            <div class="dialog-foot">
-                <button class="btn ghost" @click="closeEdit()">Cancel</button>
-                <button class="btn primary" @click="saveDevice()">Save</button>
-            </div>
+            </template>
+            <p class="spec-none" x-show="loaded && !tesla" x-cloak>No Tesla yet. It'll appear here when it joins the Airgapp Wi-Fi.</p>
         </div>
+        <div class="spec-r" x-show="tesla">
+            <div class="reg" role="radiogroup" aria-label="Gate policy for Tesla">
+                <label class="regseg s-blocked"><input type="radio" name="pol-tesla" value="blocked" :checked="teslaPolicy === 'blocked'" @change="setTesla('blocked', $event)"><span>Blocked</span></label>
+                <label class="regseg s-filtered"><input type="radio" name="pol-tesla" value="filtered" :checked="teslaPolicy === 'filtered'" @change="setTesla('filtered', $event)"><span>Filtered</span></label>
+                <label class="regseg s-open"><input type="radio" name="pol-tesla" value="open" :checked="teslaPolicy === 'open'" @change="setTesla('open', $event)"><span>Open</span></label>
+            </div>
+            <label class="polpill" :class="'s-' + teslaPolicy">
+                <span class="vh">Gate policy for Tesla</span>
+                <span class="pp-face"><span x-text="L[teslaPolicy]"></span><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.5l3 3 3-3"/></svg></span>
+                <select :value="teslaPolicy" @change="setTesla($event.target.value, $event)"><option value="blocked">Blocked</option><option value="filtered">Filtered</option><option value="open">Open</option></select>
+            </label>
+        </div>
+        <div class="d-confirm" role="group" aria-label="Confirm opening the Tesla" x-show="teslaConfirm" x-cloak>
+            <p>Open the Tesla? Everything it sends will pass the gate, and data that leaves can't be recalled.</p>
+            <div class="btns"><button class="btn" type="button" @click="teslaConfirm = false">Cancel</button><button class="btn danger" type="button" @click="openTesla()">Open the Tesla</button></div>
+        </div>
+    </section>
+
+    <div class="rhead" data-rise="2"><h2>Other devices</h2></div>
+    <ul class="legend" aria-label="Policies" data-rise="2">
+        <li class="s-blocked"><i></i><span><b>Blocked</b> no internet</span></li>
+        <li class="s-filtered"><i></i><span><b>Filtered</b> approved sites only</span></li>
+        <li class="s-open"><i></i><span><b>Open</b> full internet</span></li>
+    </ul>
+    <div class="rosterwrap" data-rise="2">
+        <ul class="roster" aria-label="Other devices">
+            <template x-for="d in rows" :key="d.mac_address">
+                <li class="drow" :class="rowClass(d)">
+                    <div class="d-id" @click="toggle(d)">
+                        <div class="dname"><span class="dname-t" x-text="nameOf(d)"></span><span class="newtag" x-show="isNew(d)">New</span></div>
+                        <div class="dhost"><span class="odot" :class="{ off: !d.online }"></span><span class="dpres" x-text="presence(d)"></span><span class="dsep" aria-hidden="true" x-show="subOf(d)">·</span><span class="dsub" x-text="subOf(d)" x-show="subOf(d)"></span></div>
+                    </div>
+                    <div class="d-pol">
+                        <div class="reg" role="radiogroup" :aria-label="'Gate policy for ' + nameOf(d)">
+                            <template x-for="k in POLICIES" :key="k">
+                                <label class="regseg" :class="'s-' + k"><input type="radio" :name="'pol-' + key(d)" :value="k" :checked="d.status === k" @change="setPolicy(d, k, $event)"><span x-text="L[k]"></span></label>
+                            </template>
+                        </div>
+                        <label class="polpill" :class="'s-' + d.status">
+                            <span class="vh" x-text="'Gate policy for ' + nameOf(d)"></span>
+                            <span class="pp-face"><span x-text="L[d.status]"></span><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.5l3 3 3-3"/></svg></span>
+                            <select :value="d.status" @change="setPolicy(d, $event.target.value, $event)"><option value="blocked">Blocked</option><option value="filtered">Filtered</option><option value="open">Open</option></select>
+                        </label>
+                    </div>
+                    <button class="d-chev" type="button" @click="toggle(d)" :aria-expanded="open === d.mac_address" :aria-label="'Details for ' + nameOf(d)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button>
+                    <div class="d-fold"><div class="d-fold-in"><div class="d-panel">
+                        <dl class="d-facts">
+                            <div><dt>MAC</dt><dd x-text="d.mac_address"></dd></div>
+                            <div><dt>IP</dt><dd x-text="d.ip_address || '—'"></dd></div>
+                            <div><dt>Host</dt><dd x-text="d.hostname || '—'"></dd></div>
+                            <div><dt>First seen</dt><dd x-text="rel(d.first_seen)"></dd></div>
+                            <div><dt>Last seen</dt><dd x-text="rel(d.last_seen)"></dd></div>
+                        </dl>
+                        <div class="d-ctl">
+                            <label class="logrow"><span class="flabel">Log traffic</span><span class="sw"><input type="checkbox" role="switch" :checked="!d.ignore_traffic_log" @change="toggleLog(d, $event)" :aria-label="'Log traffic from ' + nameOf(d)"><span class="track"><span class="k"></span></span></span></label>
+                            <label class="field"><span class="flabel">Name</span><input class="finput" type="text" maxlength="64" :value="d.alias" :placeholder="d.hostname || 'Unknown device'" @change="rename(d, $event.target.value)"></label>
+                            <button class="btn danger d-forget" type="button" @click="confirm = { mac: d.mac_address, kind: 'forget' }">Forget device</button>
+                        </div>
+                        <template x-if="confirm && confirm.mac === d.mac_address">
+                            <div class="d-confirm" role="group" :aria-label="confirm.kind === 'log' ? 'Stop and wipe' : 'Forget device'">
+                                <p x-text="confirmText(d)"></p>
+                                <div class="btns"><button class="btn" type="button" @click="confirm = null">Cancel</button><button class="btn danger" type="button" @click="runConfirm(d)" x-text="confirm.kind === 'log' ? 'Stop and wipe' : 'Forget device'"></button></div>
+                            </div>
+                        </template>
+                    </div></div></div>
+                </li>
+            </template>
+        </ul>
+        <p class="empty" x-show="loaded && rows.length === 0" x-cloak>No other devices yet. Connect something to the hotspot and it'll appear here as Blocked.</p>
     </div>
 </div>
 {{end}}
 
 {{define "scripts"}}
 <script>
+// The Gap devices page. A policy change applies at once and offers Undo; opening
+// the Tesla, turning logging off (it wipes history) and forgetting a device ask first.
 function devicesApp() {
+    const DAY = 864e5;
     return {
-        devices: [],
-        editing: false,
-        editForm: { mac: '', alias: '', ignore_traffic_log: false },
+        L: { blocked: 'Blocked', filtered: 'Filtered', open: 'Open' },
+        POLICIES: ['blocked', 'filtered', 'open'],
+        tesla: null, rows: [], loaded: false,
+        open: null, confirm: null, teslaConfirm: false,
+        active: {}, pending: {},
+        get teslaPolicy() { return this.tesla ? this.tesla.status : 'blocked'; },
+        get nOnline() { return this.rows.filter(d => d.online).length + (this.tesla && this.tesla.online ? 1 : 0); },
+        get nTotal() { return this.rows.length + (this.tesla ? 1 : 0); },
 
-        get onlineCount() { return this.devices.filter(d => d.online).length; },
-        get counts() {
-            return {
-                blocked:  this.devices.filter(d => d.status === 'blocked').length,
-                filtered: this.devices.filter(d => d.status === 'filtered').length,
-                open:     this.devices.filter(d => d.status === 'open').length,
-            };
+        init() {
+            this.q = location.search;   // lets the preview's ?scenario / ?fail switches reach its mocks
+            this.load();
+            this.onVis = () => { if (document.visibilityState === 'visible') { this.load(); this.start(); } else this.stop(); };
+            document.addEventListener('visibilitychange', this.onVis);
+            this.start();
         },
+        destroy() { this.stop(); document.removeEventListener('visibilitychange', this.onVis); },
+        start() {
+            this.stop();
+            this.listTimer = setInterval(() => this.load(), 10000);
+            this.actTimer = setInterval(() => this.pollActivity(), 3000);
+        },
+        stop() { clearInterval(this.listTimer); clearInterval(this.actTimer); },
 
-        isTesla(d) {
-            return /tesla/i.test(d.alias || '') || /tesla/i.test(d.hostname || '');
-        },
-        avatarLetter(d) {
-            if (this.isTesla(d)) return 'T';
-            const s = (d.alias || d.hostname || '?').trim();
-            return s ? s[0].toUpperCase() : '?';
-        },
-        statusLetter(s) { return s === 'blocked' ? 'B' : s === 'filtered' ? 'F' : s === 'open' ? 'O' : '?'; },
-        statusLabel(s)  { return s === 'blocked' ? 'Blocked' : s === 'filtered' ? 'Filtered' : s === 'open' ? 'Open' : 'Unknown'; },
-
+        // The order is set when the list first loads (new, then online, then offline);
+        // later loads update rows in place, so nothing moves under a finger.
         async load() {
-            this.devices = (await api.get('/api/devices')) || [];
-            // Pin Tesla(s) to the top.
-            this.devices.sort((a, b) => (this.isTesla(b) ? 1 : 0) - (this.isTesla(a) ? 1 : 0));
+            let list;
+            try { list = await api.get('/api/devices' + this.q); } catch (e) { return; }
+            list = list || [];
+            const t = list.find(d => d.tesla);
+            if (t && !this.pending[t.mac_address]) this.tesla = t; else if (!t) this.tesla = null;
+            const others = list.filter(d => !d.tesla);
+            const byMac = new Map(others.map(d => [d.mac_address, d]));
+            if (!this.loaded) {
+                this.rows = others.slice().sort((a, b) => this.rank(a) - this.rank(b) || this.nameOf(a).localeCompare(this.nameOf(b)));
+            } else {
+                const kept = this.rows.filter(d => byMac.has(d.mac_address)).map(d => this.pending[d.mac_address] ? d : Object.assign(d, byMac.get(d.mac_address)));
+                const known = new Set(this.rows.map(d => d.mac_address));
+                const fresh = others.filter(d => !known.has(d.mac_address)).sort((a, b) => this.nameOf(a).localeCompare(this.nameOf(b)));
+                this.rows = fresh.concat(kept);
+            }
+            this.loaded = true;
+        },
+        async pollActivity() {
+            if (document.visibilityState !== 'visible') return;
+            let r;
+            try { r = await api.get('/api/devices/activity' + this.q); } catch (e) { return; }
+            for (const mac of (r && r.active) || []) {
+                this.active = Object.assign({}, this.active, { [mac]: true });
+                setTimeout(() => { const a = Object.assign({}, this.active); delete a[mac]; this.active = a; }, 700);
+            }
         },
 
-        async setStatus(d, status) {
+        rank(d) { return this.isNew(d) ? 0 : (d.online ? 1 : 2); },
+        isNew(d) { const t = Date.parse(d.first_seen); return !isNaN(t) && t > 0 && Date.now() - t < DAY; },
+        key(d) { return d.mac_address.replace(/:/g, ''); },
+        nameOf(d) { return (d.alias || '').trim() || d.hostname || 'Unknown device'; },
+        subOf(d) {
+            if (this.isNew(d)) return 'joined ' + this.rel(d.first_seen);
+            if ((d.alias || '').trim() && d.hostname) return d.hostname;
+            if (!d.hostname) return 'unrecognised';
+            return '';
+        },
+        presence(d) { return d.online ? 'Online' : 'Offline · seen ' + this.rel(d.last_seen); },
+        rowClass(d) {
+            return 's-' + d.status + (this.active[d.mac_address] ? ' active' : '') + (this.open === d.mac_address ? ' open' : '') + (d.online ? '' : ' off');
+        },
+        rel(ts) {
+            const t = Date.parse(ts);
+            if (isNaN(t) || t <= 0) return '—';
+            const s = (Date.now() - t) / 1000;
+            if (s < 60) return 'just now';
+            if (s < 3600) return Math.floor(s / 60) + ' min ago';
+            if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+            return new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+        },
+        fmt(n) { return Number(n).toLocaleString('en-US'); },
+        toggle(d) { this.open = this.open === d.mac_address ? null : d.mac_address; this.confirm = null; },
+
+        // Put a radio group / select back on the device's current policy (after a cancelled or failed change).
+        resync(ev, value) {
+            if (!ev || !ev.target) return;
+            if (ev.target.tagName === 'SELECT') { ev.target.value = value; return; }
+            const group = this.$root.querySelectorAll('input[name="' + ev.target.name + '"]');
+            group.forEach(i => { i.checked = i.value === value; });
+        },
+        async putStatus(mac, k) {
+            await api.put('/api/devices/' + encodeURIComponent(mac) + '/status' + this.q, { status: k });
+        },
+        async setPolicy(d, k, ev) {
             const prev = d.status;
-            d.status = status;
+            if (prev === k) return;
+            d.status = k;
+            this.pending[d.mac_address] = true;
             try {
-                await api.put('/api/devices/' + encodeURIComponent(d.mac_address) + '/status', { status });
-                notify((d.alias || d.mac_address) + ' → ' + status, 'success');
-            } catch(e) { d.status = prev; }
+                await this.putStatus(d.mac_address, k);
+                notify(this.nameOf(d) + ' → ' + this.L[k], 'info', { undo: () => this.revert(d, prev) });
+            } catch (e) {
+                d.status = prev;   // api.put already showed the error
+                this.resync(ev, prev);
+            } finally { delete this.pending[d.mac_address]; }
+        },
+        async revert(d, prev) {
+            const cur = d.status;
+            d.status = prev;
+            try { await this.putStatus(d.mac_address, prev); } catch (e) { d.status = cur; }
+        },
+        // Opening the car is the exception: what leaves can't be recalled, so it asks first.
+        async setTesla(k, ev) {
+            const t = this.tesla, prev = t.status;
+            if (prev === k) return;
+            if (k === 'open') { this.teslaConfirm = true; this.resync(ev, prev); return; }
+            this.teslaConfirm = false;
+            await this.applyTesla(k, prev, ev);
+        },
+        async openTesla() { this.teslaConfirm = false; await this.applyTesla('open', this.tesla.status); },
+        async applyTesla(k, prev, ev) {
+            const t = this.tesla;
+            t.status = k;
+            this.pending[t.mac_address] = true;
+            try {
+                await this.putStatus(t.mac_address, k);
+                notify('Tesla → ' + this.L[k], 'info', { undo: () => this.revert(t, prev) });
+            } catch (e) {
+                t.status = prev;
+                this.resync(ev, prev);
+            } finally { delete this.pending[t.mac_address]; }
         },
 
-        async toggleLog(d) {
-            const turningOff = !d.ignore_traffic_log;
-            if (turningOff && !confirm(
-                'Stop logging traffic from "' + (d.alias || d.hostname || d.mac_address) + '" and wipe its existing history from the traffic monitor?\n\nFirewall rules will continue to apply unchanged.'
-            )) {
-                this.load(); return;
+        // Turning logging off wipes the device's history, so it asks first; turning it back on loses nothing.
+        async toggleLog(d, ev) {
+            if (!d.ignore_traffic_log) {
+                ev.target.checked = true;
+                this.open = d.mac_address;
+                this.confirm = { mac: d.mac_address, kind: 'log' };
+                return;
             }
-            d.ignore_traffic_log = !d.ignore_traffic_log;
             try {
-                await api.put('/api/devices/' + encodeURIComponent(d.mac_address), {
-                    alias: d.alias || '',
-                    ignore_traffic_log: !!d.ignore_traffic_log,
-                });
-                notify(d.ignore_traffic_log ? 'Traffic logging suppressed; history wiped' : 'Traffic logging resumed', 'success');
-            } catch(e) {
-                d.ignore_traffic_log = !d.ignore_traffic_log;
+                await api.put('/api/devices/' + encodeURIComponent(d.mac_address) + this.q, { ignore_traffic_log: false });
+                d.ignore_traffic_log = false;
+                notify('Traffic logging resumed');
+            } catch (e) { ev.target.checked = false; }
+        },
+        confirmText(d) {
+            const n = this.nameOf(d);
+            return this.confirm && this.confirm.kind === 'log'
+                ? 'Stop logging ' + n + ' and wipe its history from Traffic? Firewall rules keep applying.'
+                : 'Forget ' + n + '? Its traffic history is wiped. If it reconnects, it comes back as Blocked.';
+        },
+        async runConfirm(d) {
+            const kind = this.confirm && this.confirm.kind;
+            this.confirm = null;
+            const url = '/api/devices/' + encodeURIComponent(d.mac_address) + this.q;
+            if (kind === 'log') {
+                try {
+                    await api.put(url, { ignore_traffic_log: true });
+                    d.ignore_traffic_log = true;
+                    notify('Logging off, history wiped');
+                } catch (e) { /* api.put showed the error */ }
+                return;
             }
-        },
-
-        async deleteDevice(d) {
-            const label = d.alias || d.hostname || d.mac_address;
-            if (!confirm('Forget device "' + label + '"?\n\nIts traffic-log history is wiped. If it reconnects it lands as Blocked.')) return;
+            const name = this.nameOf(d);
             try {
-                await api.delete('/api/devices/' + encodeURIComponent(d.mac_address));
-                notify('Device forgotten', 'success');
-                this.load();
-            } catch(e) {}
+                await api.delete(url);
+                this.rows = this.rows.filter(x => x.mac_address !== d.mac_address);
+                this.open = null;
+                notify(name + ' forgotten');
+            } catch (e) { /* api.delete showed the error */ }
         },
-
-        editDevice(d) {
-            this.editForm = {
-                mac: d.mac_address,
-                alias: d.alias || '',
-                ignore_traffic_log: !!d.ignore_traffic_log,
-            };
-            this.editing = true;
-        },
-        closeEdit() { this.editing = false; },
-        async saveDevice() {
+        async rename(d, value) {
+            const alias = value.trim();
+            if (alias === (d.alias || '')) return;
             try {
-                await api.put('/api/devices/' + encodeURIComponent(this.editForm.mac), {
-                    alias: this.editForm.alias,
-                    ignore_traffic_log: this.editForm.ignore_traffic_log,
-                });
-                notify('Device updated', 'success');
-                this.closeEdit();
-                this.load();
-            } catch(e) {}
+                await api.put('/api/devices/' + encodeURIComponent(d.mac_address) + this.q, { alias });
+                d.alias = alias;
+            } catch (e) { /* api.put showed the error */ }
         },
     };
 }
