@@ -3,8 +3,10 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/iulianfsdro/rpi-network-filter/internal/models"
 	"github.com/iulianfsdro/rpi-network-filter/internal/services"
 )
 
@@ -27,6 +29,26 @@ func compactAge(d time.Duration) string {
 	default:
 		return strconv.Itoa(int(d.Hours()/24)) + "d"
 	}
+}
+
+// pickTesla returns the device the Dashboard is about: the one whose alias or
+// hostname mentions "tesla" (any case). Among several, an online one wins, then
+// the most recently seen. nil when there is none.
+func pickTesla(devs []models.Device) *models.Device {
+	var best *models.Device
+	for i := range devs {
+		d := devs[i]
+		if !strings.Contains(strings.ToLower(d.Alias+" "+d.Hostname), "tesla") {
+			continue
+		}
+		if best == nil ||
+			(d.Online && !best.Online) ||
+			(d.Online == best.Online && d.LastSeen.After(best.LastSeen)) {
+			c := d
+			best = &c
+		}
+	}
+	return best
 }
 
 type DashboardHandler struct {
