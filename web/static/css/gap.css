@@ -39,3 +39,26 @@ code,.mono,.tnum{font-family:'Martian Mono',ui-monospace,monospace}
 [data-rise="2"]{animation-delay:var(--rise-2)}
 [data-rise="3"]{animation-delay:var(--rise-3)}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:.01ms!important;transition-delay:0s!important}}
+
+/* Shell: the top bar. It never animates; from 520px up it sticks while the page scrolls. */
+.topbar{display:flex;align-items:center;gap:20px;padding:16px clamp(20px,3vw,44px);border-bottom:1px solid var(--line);flex-wrap:wrap;row-gap:12px;position:sticky;top:0;background:rgba(7,10,18,.82);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:10}
+.brand{display:flex;flex:none}
+.topbar .brand-logo{display:inline-block;width:78px;height:32px;background-color:var(--txt);-webkit-mask:url(/static/img/airgapp-logo.png) no-repeat left center/contain;mask:url(/static/img/airgapp-logo.png) no-repeat left center/contain}
+.topnav{display:flex;gap:clamp(12px,1.8vw,26px);flex-wrap:wrap;flex:1}
+.navlink{font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.1em;font-size:11px;color:var(--dim);text-decoration:none;padding:5px 0;border-bottom:1.5px solid transparent;transition:color var(--t-fast) var(--ease-std),border-color var(--t-fast) var(--ease-std)}
+.navlink:hover{color:var(--txt)}
+.navlink.active{color:var(--txt);border-color:var(--gate)}
+.content{padding:clamp(22px,3vw,40px) clamp(20px,3vw,44px) 60px}
+@media(pointer:coarse){.navlink{padding-top:14px;padding-bottom:12px}}
+/* Narrow: the links take their own row; all five fit down to 320px. */
+@media(max-width:519px){
+.topbar{position:static;padding:10px 20px 0;row-gap:0;backdrop-filter:none;-webkit-backdrop-filter:none;background:transparent}
+.topnav{order:3;flex:0 0 100%;flex-wrap:nowrap;justify-content:space-between;gap:4px;overflow-x:auto;scrollbar-width:none}
+.topnav::-webkit-scrollbar{display:none}
+.navlink{flex:none;white-space:nowrap;font-size:10px;letter-spacing:.06em;padding:16px 0 14px;border-bottom-width:2px}
+.content{padding-top:20px}
+}
+@media(max-width:379px){
+.topbar{padding:10px 16px 0}
+.navlink{font-size:9.5px;letter-spacing:.03em}
+}

@@ -10,138 +10,27 @@
     <link rel="stylesheet" href="/static/css/gap.css">
 </head>
 <body>
-    <div class="app" x-data="shellApp()" :class="{'nav-open': navOpen}">
-        <div class="nav-scrim" @click="navOpen = false"></div>
-        <aside class="rail">
-            <div class="rail-brand">
-                <a href="/" class="rail-brand-mark" aria-label="Airgapp">
-                    <span class="brand-logo" style="width:148px; height:62px;"></span>
-                </a>
-            </div>
+    <header class="topbar">
+        <a class="brand" href="/" aria-label="Airgapp dashboard"><span class="brand-logo" aria-hidden="true"></span></a>
+        <nav class="topnav" aria-label="Primary">
+            <a class="navlink{{if eq .page "dashboard"}} active{{end}}" href="/"{{if eq .page "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+            <a class="navlink{{if eq .page "devices"}} active{{end}}" href="/devices"{{if eq .page "devices"}} aria-current="page"{{end}}>Devices</a>
+            <a class="navlink{{if eq .page "traffic"}} active{{end}}" href="/traffic"{{if eq .page "traffic"}} aria-current="page"{{end}}>Traffic</a>
+            <a class="navlink{{if eq .page "filters"}} active{{end}}" href="/filters"{{if eq .page "filters"}} aria-current="page"{{end}}>Filters</a>
+            {{- /* Settings and Remote access merge into System in slice 6; until then System opens Settings. */}}
+            {{$system := or (eq .page "settings") (eq .page "remote-access") (eq .page "system")}}
+            <a class="navlink{{if $system}} active{{end}}" href="/settings"{{if $system}} aria-current="page"{{end}}>System</a>
+        </nav>
+    </header>
 
-            <div class="rail-status">
-                <div class="rail-status-row">
-                    <span>Guardian</span>
-                    <span class="rail-status-pill">ACTIVE</span>
-                </div>
-                <div class="rail-status-row">
-                    <span>Devices online</span>
-                    <strong><span x-text="shell.devicesOnline">0</span> / <span x-text="shell.devicesTotal">0</span></strong>
-                </div>
-                <div class="rail-status-row">
-                    <span>Filters enabled</span>
-                    <strong><span x-text="shell.filtersEnabled">0</span> / <span x-text="shell.filtersTotal">0</span></strong>
-                </div>
-            </div>
-
-            <nav class="rail-nav">
-                <div class="rail-section">Vehicle</div>
-                <a href="/" class="rail-item {{if eq .page "dashboard"}}active{{end}}">
-                    <span class="rail-item-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="6" rx="1"/><rect x="9" y="2" width="5" height="4" rx="1"/><rect x="2" y="10" width="5" height="4" rx="1"/><rect x="9" y="8" width="5" height="6" rx="1"/></svg></span>
-                    <span>Dashboard</span>
-                </a>
-                <a href="/devices" class="rail-item {{if eq .page "devices"}}active{{end}}">
-                    <span class="rail-item-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 11h12M3 11v2M13 11v2M3.5 7l1-3h7l1 3M2.5 11l1-4h9l1 4"/><circle cx="5" cy="11.5" r="1" fill="currentColor"/><circle cx="11" cy="11.5" r="1" fill="currentColor"/></svg></span>
-                    <span>Devices</span>
-                    <span class="rail-item-badge" x-text="shell.devicesTotal"></span>
-                </a>
-                <!-- V4.4 Phase 4: /garage moved to the client app. -->
-
-
-                <div class="rail-section">Surveillance</div>
-                <a href="/traffic" class="rail-item {{if eq .page "traffic"}}active{{end}}">
-                    <span class="rail-item-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4h12M2 8h12M2 12h12"/><circle cx="5" cy="4" r="1.2" fill="currentColor"/><circle cx="10" cy="8" r="1.2" fill="currentColor"/><circle cx="7" cy="12" r="1.2" fill="currentColor"/></svg></span>
-                    <span>Traffic</span>
-                </a>
-                <a href="/stats" class="rail-item {{if eq .page "stats"}}active{{end}}">
-                    <span class="rail-item-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13V8M6 13V4M10 13V9M14 13V6"/></svg></span>
-                    <span>Stats</span>
-                </a>
-
-                <div class="rail-section">Policy</div>
-                <a href="/filters" class="rail-item {{if eq .page "filters"}}active{{end}}">
-                    <span class="rail-item-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 3h12l-4.5 6V13L7 14V9L2 3z"/></svg></span>
-                    <span>Filters</span>
-                    <span class="rail-item-badge" x-text="shell.filtersEnabled + ' on'"></span>
-                </a>
-                <a href="/firewall" class="rail-item {{if eq .page "firewall"}}active{{end}}">
-                    <span class="rail-item-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="4" height="3"/><rect x="6" y="3" width="4" height="3"/><rect x="10" y="3" width="4" height="3"/><rect x="2" y="6" width="3" height="3"/><rect x="5" y="6" width="6" height="3"/><rect x="11" y="6" width="3" height="3"/><rect x="2" y="9" width="4" height="3"/><rect x="6" y="9" width="4" height="3"/><rect x="10" y="9" width="4" height="3"/></svg></span>
-                    <span>Firewall</span>
-                </a>
-                <a href="/bandwidth" class="rail-item {{if eq .page "bandwidth"}}active{{end}}">
-                    <span class="rail-item-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 11a6 6 0 1 1 12 0"/><path d="M8 11l3-4"/><circle cx="8" cy="11" r="1" fill="currentColor"/></svg></span>
-                    <span>Bandwidth</span>
-                </a>
-
-                <div class="rail-section">System</div>
-                <a href="/remote-access" class="rail-item {{if eq .page "remote-access"}}active{{end}}">
-                    <span class="rail-item-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2"/><path d="M3 8a5 5 0 0 1 10 0M1 8a7 7 0 0 1 14 0"/></svg></span>
-                    <span>Remote access</span>
-                </a>
-                <a href="/settings" class="rail-item {{if eq .page "settings"}}active{{end}}">
-                    <span class="rail-item-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/></svg></span>
-                    <span>Settings</span>
-                </a>
-            </nav>
-
-            <div class="rail-foot">
-                <div class="rail-user" @click="logout()" title="Sign out">
-                    <div class="rail-user-avatar">A</div>
-                    <div>
-                        <div class="rail-user-name">admin</div>
-                        <div class="rail-user-role">Operator · sign out</div>
-                    </div>
-                    <span class="rail-user-chev"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5 6l3 3 3-3"/></svg></span>
-                </div>
-            </div>
-        </aside>
-
-        <main class="main">
-            <div class="head-bar">
-                <button class="head-bar-burger" @click="navOpen = !navOpen" :aria-expanded="navOpen" aria-label="Toggle navigation">
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
-                </button>
-            </div>
-
-            <div class="content">
-                {{template "content" .}}
-            </div>
-        </main>
-    </div>
+    <main class="content">
+        {{template "content" .}}
+    </main>
 
     <div id="toast-container"></div>
 
     <script src="/static/js/alpine.min.js" defer></script>
     <script src="/static/js/app.js"></script>
-    <script>
-        function shellApp() {
-            return {
-                navOpen: false,
-                shell: {
-                    devicesOnline: 0,
-                    devicesTotal: 0,
-                    filtersEnabled: 0,
-                    filtersTotal: 0,
-                    wanReachable: true,
-                    protectedDeny: 15,
-                },
-                async init() {
-                    try {
-                        const d = await api.get('/api/dashboard');
-                        this.shell.devicesOnline  = d.devices_online  ?? 0;
-                        this.shell.devicesTotal   = d.devices_total   ?? 0;
-                        this.shell.filtersEnabled = d.filters_enabled ?? d.filters ?? 0;
-                        this.shell.filtersTotal   = d.filters_total   ?? d.filters ?? 0;
-                        this.shell.wanReachable   = d.wan_reachable !== false;
-                    } catch (e) { /* api wrapper handled the toast */ }
-                },
-                async logout() {
-                    try { await api.post('/api/logout'); } catch (e) {}
-                    window.location = '/login';
-                },
-            };
-        }
-    </script>
     {{template "scripts" .}}
 </body>
 </html>

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -64,6 +65,58 @@ func TestLayoutStylesheets(t *testing.T) {
 	}
 	if strings.Contains(body, "fonts.googleapis.com") {
 		t.Error("layout still requests Google Fonts")
+	}
+}
+
+// The Gap top bar: five links in a fixed order, the current one marked active
+// (System covers Settings and Remote access until they merge); pages outside
+// the nav mark nothing. The old sidebar is gone.
+func TestLayoutNav(t *testing.T) {
+	active := map[string]string{
+		"dashboard": "Dashboard", "devices": "Devices", "traffic": "Traffic", "filters": "Filters",
+		"settings": "System", "remote-access": "System",
+		"firewall": "", "stats": "", "bandwidth": "",
+	}
+	activeRe := regexp.MustCompile(`aria-current="page">([A-Za-z]+)<`)
+	r := NewRenderer(web.Content)
+	for _, p := range testPages {
+		body, _ := renderPage(r, p.file, p.key)
+		start, end := strings.Index(body, `<nav class="topnav"`), strings.Index(body, `</nav>`)
+		if start < 0 || end < start {
+			t.Errorf("%s: no top nav", p.key)
+			continue
+		}
+		nav := body[start:end]
+		if n := strings.Count(nav, `class="navlink`); n != 5 {
+			t.Errorf("%s: %d nav links, want 5", p.key, n)
+		}
+		last := -1
+		for _, label := range []string{">Dashboard<", ">Devices<", ">Traffic<", ">Filters<", ">System<"} {
+			i := strings.Index(nav, label)
+			if i < 0 || i < last {
+				t.Errorf("%s: %s missing or out of order", p.key, label)
+			}
+			last = i
+		}
+		for _, href := range []string{`href="/"`, `href="/devices"`, `href="/traffic"`, `href="/filters"`, `href="/settings"`} {
+			if !strings.Contains(nav, href) {
+				t.Errorf("%s: nav lacks %s", p.key, href)
+			}
+		}
+		got := ""
+		if m := activeRe.FindAllStringSubmatch(nav, -1); len(m) == 1 {
+			got = m[0][1]
+		} else if len(m) > 1 {
+			got = "several"
+		}
+		if got != active[p.key] {
+			t.Errorf("%s: active link %q, want %q", p.key, got, active[p.key])
+		}
+		for _, gone := range []string{"shellApp(", `class="rail`, "head-bar"} {
+			if strings.Contains(body, gone) {
+				t.Errorf("%s: old sidebar markup %q still present", p.key, gone)
+			}
+		}
 	}
 }
 
