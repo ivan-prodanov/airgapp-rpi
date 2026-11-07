@@ -268,9 +268,11 @@ These are outside the design. Each is fixed in the slice that owns the code.
 - **`pico.min.css` is vendored but never linked.**
 - **Admin password change** doesn't check the current password and doesn't end existing sessions.
 
-## Open decisions
-1. **Sign-out:** proposed as the last row of System → Access. Until slice 6 it is a button on the Settings page.
-2. ~~Dashboard regime control~~: decided. There is no switch; the headline follows the Tesla's policy. The old dashboard cards are dropped.
-3. **Disabled filter domains:** what happens to rows that are currently disabled when the per-domain flag goes away, enable them or delete them?
-4. **Firewall, Stats, Bandwidth:** keep them reachable by URL, or remove them.
-5. **Enrolment link:** a universal link, so it falls back when Airgapp isn't installed.
+## Decisions (2026-11-07, answered by the user)
+1. **Sign-out** is the last row of System → Access. Until slice 6 it is a button on the Settings page.
+2. **Dashboard:** there is no regime switch and no pause button, and the old cards are dropped. See the Dashboard section.
+3. **Disabled filter domains:** when the per-domain flag goes away, domains that are off today are **turned on**. Each then applies whenever its filter is on.
+4. **Firewall, Stats, Bandwidth:** the pages **and their API endpoints are removed**: `/api/firewall/rules*`, `/api/bandwidth/limits*` and `/api/system/stats/*`. The services, and any rules or limits already stored, are left alone.
+5. **Enrolment link:** it stays `airgapp://enrol`. A universal link needs hosting outside this repository.
+6. **Dashboard password:** a change ends every session, including the current one, as the mockup says ("sign in again").
+7. **Landing:** once all slices are built and reviewed, merge `feat/the-gap-port` into `main` and push to the remote. Nothing is deployed to the Pi.
