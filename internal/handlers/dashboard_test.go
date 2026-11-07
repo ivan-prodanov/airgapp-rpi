@@ -119,3 +119,29 @@ func TestDashboardAPI_Tesla(t *testing.T) {
 		}
 	}
 }
+
+// The gate follows the Tesla's policy, as in the design: Blocked → nothing
+// crosses, Open → everything does, Filtered → allow-listed hosts cross. Raw
+// event verdicts can't be used: a blocked car's DNS still logs "resolved", and
+// an open car's traffic bypasses the Pi and isn't logged at all.
+func TestDashboardAPI_CrossingFollowsPolicy(t *testing.T) {
+	for _, c := range []struct {
+		status string
+		want   bool // crossed, for a host that is not allow-listed and was "resolved"
+	}{{"blocked", false}, {"open", true}, {"filtered", false}} {
+		h, db := newDashboardHandler(t)
+		if _, err := db.Exec(`INSERT INTO devices (mac_address, ip_address, hostname, alias, status, last_seen)
+			VALUES ('AA:BB:CC:00:00:01', '192.168.4.42', 'tesla', '', ?, datetime('now'))`, c.status); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO query_log (timestamp, client_ip, domain, action, client_mac, source)
+			VALUES (datetime('now'), '192.168.4.42', 'x.example', 'resolved', '', 'dns')`); err != nil {
+			t.Fatal(err)
+		}
+		_, body, raw := getDashboard(t, h)
+		hosts, _ := body["hosts"].([]any)
+		if len(hosts) != 1 || hosts[0].(map[string]any)["crossed"] != c.want {
+			t.Errorf("%s: %s, want crossed=%v", c.status, raw, c.want)
+		}
+	}
+}

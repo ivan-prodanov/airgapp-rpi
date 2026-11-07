@@ -29,6 +29,18 @@ func pickTesla(devs []models.Device) *models.Device {
 	return best
 }
 
+// crossesGate is whether a host's lane crosses the gate under a policy.
+func crossesGate(status string, safe bool) bool {
+	switch status {
+	case "open":
+		return true
+	case "blocked":
+		return false
+	default:
+		return safe
+	}
+}
+
 type DashboardHandler struct {
 	svc      *services.Services
 	renderer *Renderer
@@ -59,6 +71,13 @@ func (h *DashboardHandler) API(w http.ResponseWriter, r *http.Request) {
 			hosts = []services.HostVerdict{} // best-effort: the headline still renders
 		}
 		blocked, allowed := h.svc.TrafficLog.ClassCountsSince(t.MACAddress, t.IPAddress, since)
+		// The gate follows the policy, as in the design: Blocked → nothing crosses,
+		// Open → everything does, Filtered → allow-listed hosts cross. The events'
+		// own verdicts can't decide it: a blocked car's DNS still logs "resolved",
+		// and an open car's traffic bypasses the Pi unlogged.
+		for i := range hosts {
+			hosts[i].Crossed = crossesGate(t.Status, hosts[i].Safe)
+		}
 		resp["tesla"] = map[string]any{"status": t.Status, "online": t.Online}
 		resp["hosts"] = hosts
 		resp["blocked_24h"] = blocked

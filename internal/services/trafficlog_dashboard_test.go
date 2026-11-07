@@ -3,6 +3,7 @@ package services
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -137,5 +138,28 @@ func TestActiveSince(t *testing.T) {
 	}
 	if !macs["aa:bb:cc:00:00:0a"] || !ips["192.168.4.11"] || macs["aa:bb:cc:00:00:0c"] || ips["192.168.4.12"] {
 		t.Errorf("macs=%v ips=%v; want A by MAC, B by IP, not C", macs, ips)
+	}
+}
+
+// RecentHosts must not walk the whole retention window: a parked car with no
+// rows in 24 h used to make SQLite read every row of each action across 30
+// days, on the daemon's only DB connection. The host scan is bounded to the
+// window by row id.
+func TestRecentHosts_BoundedScan(t *testing.T) {
+	db := memDB(t)
+	var plan []string
+	rows, err := db.Query("EXPLAIN QUERY PLAN "+recentHostsSQL("(client_ip = ?)"), int64(1), "192.168.4.42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		rows.Scan(&id, &parent, &notused, &detail)
+		plan = append(plan, detail)
+	}
+	if joined := fmt.Sprint(plan); !strings.Contains(joined, "rowid>?") {
+		t.Errorf("host scan is not bounded by row id: %v", plan)
 	}
 }

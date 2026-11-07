@@ -59,10 +59,17 @@ function dashApp() {
         tesla: null, loaded: false, key: null, shown: [],
         blockedShown: 0, allowedShown: 0, counted: false,
         crossedN: 0, drawnN: 0,
-        get head() { return (this.tesla && HEAD[this.tesla.status]) || ['No Tesla', 'yet', DIM, DIM]; },
+        // Nothing is claimed until a response has said so: no "No Tesla yet" while loading or failing.
+        get head() {
+            if (!this.loaded) return ['', '', DIM, DIM];
+            return (this.tesla && HEAD[this.tesla.status]) || ['No Tesla', 'yet', DIM, DIM];
+        },
         get note() {
             if (!this.tesla) return 'Connect the Tesla to the Airgapp Wi-Fi.';
-            return this.drawnN ? '' : 'Nothing from the Tesla in the last 24 hours.';
+            if (this.drawnN) return '';
+            return this.tesla.status === 'open'
+                ? 'While Open, the Tesla\'s traffic passes without inspection.'
+                : 'Nothing from the Tesla in the last 24 hours.';
         },
         fmt(n) { return n.toLocaleString('en-US'); },
 
@@ -78,18 +85,25 @@ function dashApp() {
         start() { this.stop(); this.timer = setInterval(() => this.poll(), 3200); },
         stop() { clearInterval(this.timer); this.timer = 0; },
 
+        // One poll at a time: on a slow Pi, ticks are skipped rather than stacked, so a
+        // late response can never overwrite a newer one.
         async poll() {
-            if (document.visibilityState !== 'visible') return;
+            if (document.visibilityState !== 'visible' || this.inflight) return;
+            this.inflight = true;
             let d;
-            try { d = await api.get('/api/dashboard' + location.search); } catch (e) { return; }
+            try { d = await api.get('/api/dashboard' + location.search); } catch (e) { return; } finally { this.inflight = false; }
             this.tesla = d.tesla;
             this.loaded = true;
             this.tween(d.blocked_24h || 0, d.allowed_24h || 0);
             const hosts = d.hosts || [];
-            // Redraw when the hosts change, or when a host's verdict or allow-list status does
-            // (turning a filter on can flip the same hosts from Danger to Safe).
-            const key = hosts.map(h => h.id + (h.crossed ? 'c' : 'x') + (h.safe ? 's' : 'd')).join(',');
-            if (key !== this.key) { this.key = key; this.sweep(hosts); }
+            // Sweep when the set of hosts changes, or a host's crossing or allow-list status does
+            // (turning a filter on flips hosts from Danger to Safe). Fresh events for the same
+            // hosts change only ids or order: repaint in place, no sweep.
+            const sig = h => h.domain + (h.crossed ? '|c' : '|x') + (h.safe ? 's' : 'd');
+            const key = hosts.map(sig).sort().join(',');
+            const order = hosts.map(sig).join(',');
+            if (key !== this.key) { this.key = key; this.order = order; this.sweep(hosts); }
+            else if (order !== this.order) { this.order = order; this.shown = hosts; this.paint(hosts, true); }
         },
 
         // Seven lane groups, built once: the lane, a red × where it is cut, a dot where it lands.

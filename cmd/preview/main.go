@@ -282,6 +282,13 @@ func main() {
 		}
 		state.mu.Unlock()
 		scenario := req.URL.Query().Get("scenario")
+		switch scenario {
+		case "slow": // a Pi under load: the page must not stack polls or show "No Tesla yet" while waiting
+			time.Sleep(5 * time.Second)
+		case "error":
+			writeStatusJSON(w, http.StatusInternalServerError, kv{"error": "database is locked"})
+			return
+		}
 		if tesla == nil || scenario == "none" {
 			writeJSON(w, kv{"tesla": nil, "hosts": []kv{}, "blocked_24h": 0, "allowed_24h": 0})
 			return
@@ -308,6 +315,10 @@ func main() {
 			n = 3
 		}
 		window := time.Now().UnixMilli() / 3200
+		churn := scenario == "churn" // the same hosts, with fresh event ids on every poll
+		if churn {
+			window = 0
+		}
 		status := fmt.Sprint(tesla["status"])
 		hosts := []kv{}
 		for i := 0; i < n; i++ {
@@ -319,7 +330,11 @@ func main() {
 			case "blocked":
 				crossed = false
 			}
-			hosts = append(hosts, kv{"id": window*10 + int64(n-i), "domain": h.name, "crossed": crossed, "safe": h.safe})
+			id := window*10 + int64(n-i)
+			if churn {
+				id = time.Now().UnixNano()/1000 + int64(n-i)
+			}
+			hosts = append(hosts, kv{"id": id, "domain": h.name, "crossed": crossed, "safe": h.safe})
 		}
 		grow := (time.Now().Unix() % 100000) / 3
 		if n == 0 {

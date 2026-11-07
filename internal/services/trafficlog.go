@@ -309,11 +309,6 @@ func (s *TrafficLogService) RemoveMuted(id int64) error {
 	return nil
 }
 
-// CountByActionSince returns the number of query_log rows with the given
-// action recorded since the cutoff. Used by the dashboard handler's
-// Guardian hero ("Outbound dropped · 24 h" / "Allow-listed · 24 h").
-// Errors are folded to 0 — the hero is glanceable, not authoritative,
-// and a failed count must not break the page render.
 // HostVerdict is one host a device contacted, with the verdict of its most
 // recent event: whether it crossed the gate (allowed/resolved) and whether the
 // host is on the allow-list at all ("safe").
@@ -347,6 +342,18 @@ func deviceMatch(mac, ip string) (string, []any) {
 	return "(" + strings.Join(parts, " OR ") + ")", args
 }
 
+// recentHostsSQL scans one device's newest classified events with a domain,
+// starting at a row id: the first id inside the time window. Bounding by id
+// (and keeping SQLite off the action index with +action) keeps the scan inside
+// the window — a parked car with no recent rows must not walk 30 days of log on
+// the daemon's only DB connection.
+func recentHostsSQL(match string) string {
+	return `SELECT id, domain, action FROM query_log
+		WHERE id >= ? AND ` + match + ` AND domain != ''
+		  AND +action IN ('allowed','resolved','blocked','sinkholed')
+		ORDER BY id DESC LIMIT 500`
+}
+
 // RecentHosts returns up to limit distinct hosts a device contacted since the
 // given time, newest first, each with the verdict of its most recent event.
 // Only allowed/resolved/blocked/sinkholed events with a domain count; at most
@@ -357,11 +364,17 @@ func (s *TrafficLogService) RecentHosts(mac, ip string, since time.Time, limit i
 	if match == "" || limit <= 0 {
 		return out, nil
 	}
-	rows, err := s.db.Query(`SELECT id, domain, action FROM query_log
-		WHERE `+match+` AND timestamp >= ? AND domain != ''
-		  AND action IN ('allowed','resolved','blocked','sinkholed')
-		ORDER BY id DESC LIMIT 500`,
-		append(args, since.UTC().Format("2006-01-02 15:04:05"))...)
+	// The window's first row id. MIN, not "ORDER BY timestamp LIMIT 1": rows in
+	// the same second tie on timestamp and come back in no particular order.
+	var firstID sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MIN(id) FROM query_log WHERE timestamp >= ?`,
+		since.UTC().Format("2006-01-02 15:04:05")).Scan(&firstID); err != nil {
+		return out, err
+	}
+	if !firstID.Valid {
+		return out, nil
+	}
+	rows, err := s.db.Query(recentHostsSQL(match), append([]any{firstID.Int64}, args...)...)
 	if err != nil {
 		return out, err
 	}
@@ -429,18 +442,6 @@ func (s *TrafficLogService) ActiveSince(since time.Time) (macs, ips map[string]b
 		}
 	}
 	return macs, ips, rows.Err()
-}
-
-func (s *TrafficLogService) CountByActionSince(action string, since time.Time) int {
-	var n int
-	err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM query_log WHERE action = ? AND timestamp >= ?`,
-		action, since.UTC().Format("2006-01-02 15:04:05"),
-	).Scan(&n)
-	if err != nil {
-		return 0
-	}
-	return n
 }
 
 // isIgnored returns true if a traffic event from this MAC or IP should be
