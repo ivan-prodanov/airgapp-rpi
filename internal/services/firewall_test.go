@@ -279,13 +279,13 @@ func TestVerifyRejectsEmptyMAC(t *testing.T) {
 	}
 }
 
-// TestGenerateConfig_CarAppsPorts verifies the v23 "Car Apps" filter opens its
-// non-HTTPS port-holes (QUIC/UDP 443, STUN/UDP 19302, FCM/TCP 5228,
-// Spotify-AP/TCP 4070) in the forward chain for the FILTERED car — keyed on
-// the device's status, never a hardcoded MAC — and for nobody when nothing is
-// filtered.
-func TestGenerateConfig_CarAppsPorts(t *testing.T) {
-	db := memDB(t) // runs every migration incl. v23 → Car Apps enabled with its ports
+// TestGenerateConfig_FilterPorts verifies the car's non-HTTPS port-holes —
+// QUIC/UDP 443, STUN/UDP 19302 and FCM/TCP 5228 (Connectivity since v29) and
+// the Spotify access point TCP 4070 (Spotify) — open in the forward chain for
+// the FILTERED car, keyed on the device's status, never a hardcoded MAC; for
+// nobody when nothing is filtered; and only while their filter is on.
+func TestGenerateConfig_FilterPorts(t *testing.T) {
+	db := memDB(t) // every migration: Connectivity and Spotify on, with their ports
 	s := &FirewallService{db: db, cfg: config.Config{
 		LANInterface: "wlan0",
 		WANInterface: "wlan1",
@@ -305,12 +305,23 @@ func TestGenerateConfig_CarAppsPorts(t *testing.T) {
 		"ether saddr " + mac + " tcp dport 4070 ct state new log prefix \"[NETFILTER-ACCEPT] \" accept",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("forward chain missing Car Apps port-hole:\n  %s", want)
+			t.Errorf("forward chain missing port-hole:\n  %s", want)
 		}
 	}
 
+	// A port opens exactly when its filter is on: Spotify off closes 4070,
+	// Connectivity's ports stay.
+	if _, err := db.Exec(`UPDATE filters SET enabled = 0 WHERE name = 'Spotify'`); err != nil {
+		t.Fatal(err)
+	}
+	off := s.generateConfig(nil, deviceSnapshot{filtered: []string{mac}})
+	if strings.Contains(off, "tcp dport 4070 ct state new") || !strings.Contains(off, "udp dport 443 ct state new") {
+		t.Errorf("with Spotify off: 4070 open=%v, 443 open=%v; want closed, open",
+			strings.Contains(off, "tcp dport 4070 ct state new"), strings.Contains(off, "udp dport 443 ct state new"))
+	}
+
 	// Car-agnostic + default-deny preserved: with no filtered device, none of
-	// the Car Apps port-holes render.
+	// the port-holes render.
 	none := s.generateConfig(nil, deviceSnapshot{})
 	for _, absent := range []string{
 		"udp dport 443 ct state new",

@@ -54,8 +54,8 @@ type TrafficLogService struct {
 	mutedExact  map[string]struct{}
 	mutedSuffix []string
 
-	// Allow-list suffix cache: the enabled filter domains (f.enabled &&
-	// filter is on), used to classify a DNS query as "resolved" vs "sinkholed"
+	// Allow-list suffix cache: the domains of every filter that is on
+	// (f.enabled), used to classify a DNS query as "resolved" vs "sinkholed"
 	// at INSERT time so the traffic filter can select sinkholes with a plain
 	// indexed action lookup instead of a per-row suffix scan over the whole
 	// log. Refreshed by RefreshAllowCache.

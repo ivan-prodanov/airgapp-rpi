@@ -8,7 +8,7 @@ import "time"
 // toggles a filter on or off for the whole network.
 //
 // System filters (IsSystem=true) ship with the binary and represent
-// curated, audited bundles for common services — Tesla AP/Nav, YouTube,
+// curated, audited bundles for common services — Navigation, YouTube,
 // Netflix, Disney+. They can still be edited or extended by the operator.
 // User filters (IsSystem=false) are created in the UI.
 type Filter struct {
@@ -25,7 +25,7 @@ type Filter struct {
 	// filtered device while it is enabled (filter_udp_ports /
 	// filter_tcp_ports), each with its own justification. Read-only in the
 	// API — seeded by migration and surfaced so the UI can list each as its
-	// own row (a ports-only filter like "Car Apps" has no domains, so without
+	// own row (a filter with ports and no domains would, without
 	// these it renders empty). dst-agnostic: the DNS allow-list still gates
 	// which IPs the device reaches on these ports.
 	Ports     []FilterPort `json:"ports"`

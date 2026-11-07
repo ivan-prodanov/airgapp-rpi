@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -128,10 +129,10 @@ func filterDomainSet(t *testing.T, db *sql.DB, filterName string) map[string]boo
 // catastrophic and must never appear). Maps & Time, YouTube, Netflix, and
 // Disney+ are system filters too.
 func TestMigrateSeedsSystemFilters(t *testing.T) {
+	// The v22-era seeds, as of v27: v28 merged Nav and Maps into Navigation
+	// (TestMigrateV28_NavigationMerge) and v29 split Car Apps.
 	db := openMemory(t)
-	if err := Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
+	migrateTo(t, db, 27)
 
 	// v22: "Tesla AP/Nav"->"Nav", "Maps & Time"->"Maps", plus new
 	// System-group filters Time / Grok / Connectivity.
@@ -384,10 +385,9 @@ func TestMigrateSeedsSystemFilters(t *testing.T) {
 // filter that owns the car's non-HTTPS port-holes via the (car-agnostic)
 // filter->port model.
 func TestMigrateV23SeedsLiveState(t *testing.T) {
+	// As of v27: v29 later split Car Apps (TestMigrateV29_CarAppsSplit).
 	db := openMemory(t)
-	if err := Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
+	migrateTo(t, db, 27)
 
 	// filter_tcp_ports table exists (TCP sibling of filter_udp_ports).
 	var tbl string
@@ -526,4 +526,109 @@ func TestMigrateV27_DomainsTurnOn(t *testing.T) {
 	if hasColumn(t, db, "filter_domains", "enabled") {
 		t.Error("filter_domains.enabled still exists")
 	}
+}
+
+func filterRow(t *testing.T, db *sql.DB, name string) (exists bool, isSys, enabled int, grp string) {
+	t.Helper()
+	err := db.QueryRow(`SELECT is_system, enabled, grp FROM filters WHERE name = ?`, name).Scan(&isSys, &enabled, &grp)
+	if err == sql.ErrNoRows {
+		return false, 0, 0, ""
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return true, isSys, enabled, grp
+}
+
+func ports(t *testing.T, db *sql.DB, table, filter string) []int {
+	t.Helper()
+	rows, err := db.Query(`SELECT port FROM `+table+` WHERE preset_id = (SELECT id FROM filters WHERE name = ?) ORDER BY port`, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []int
+	for rows.Next() {
+		var p int
+		rows.Scan(&p)
+		out = append(out, p)
+	}
+	return out
+}
+
+// v28: Nav and Maps become one "Navigation" filter with all 12 domains; it is
+// on when either was, so nothing that was reachable is cut off.
+func TestMigrateV28_NavigationMerge(t *testing.T) {
+	db := openMemory(t)
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ok, isSys, _, grp := filterRow(t, db, "Navigation")
+	if !ok || isSys != 1 || grp != "System" {
+		t.Fatalf("Navigation: exists=%v is_system=%d grp=%q", ok, isSys, grp)
+	}
+	var n int
+	db.QueryRow(`SELECT COUNT(*) FROM filter_domains WHERE preset_id = (SELECT id FROM filters WHERE name='Navigation')`).Scan(&n)
+	if n != 12 {
+		t.Errorf("Navigation has %d domains, want 12 (Nav + Maps)", n)
+	}
+	for _, gone := range []string{"Nav", "Maps"} {
+		if ok, _, _, _ := filterRow(t, db, gone); ok {
+			t.Errorf("%s still exists", gone)
+		}
+	}
+
+	t.Run("only Maps on", func(t *testing.T) {
+		db := openMemory(t)
+		migrateTo(t, db, 27)
+		db.Exec(`UPDATE filters SET enabled = 0 WHERE name = 'Nav'`)
+		db.Exec(`UPDATE filters SET enabled = 1 WHERE name = 'Maps'`)
+		if err := Migrate(db); err != nil {
+			t.Fatalf("Migrate: %v", err)
+		}
+		if _, _, enabled, _ := filterRow(t, db, "Navigation"); enabled != 1 {
+			t.Errorf("Navigation enabled=%d, want 1 (Maps was on)", enabled)
+		}
+	})
+}
+
+// v29: Car Apps' ports move to the filters they belong to — QUIC, STUN and
+// FCM push to Connectivity, the Spotify access point to Spotify — and Car Apps
+// goes. Spotify is a user filter that may have been deleted: it is recreated
+// (off) to carry its port.
+func TestMigrateV29_CarAppsSplit(t *testing.T) {
+	db := openMemory(t)
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if got := ports(t, db, "filter_udp_ports", "Connectivity"); fmt.Sprint(got) != "[443 19302]" {
+		t.Errorf("Connectivity UDP ports = %v, want [443 19302]", got)
+	}
+	if got := ports(t, db, "filter_tcp_ports", "Connectivity"); fmt.Sprint(got) != "[5228]" {
+		t.Errorf("Connectivity TCP ports = %v, want [5228]", got)
+	}
+	if got := ports(t, db, "filter_tcp_ports", "Spotify"); fmt.Sprint(got) != "[4070]" {
+		t.Errorf("Spotify TCP ports = %v, want [4070]", got)
+	}
+	if ok, _, _, _ := filterRow(t, db, "Car Apps"); ok {
+		t.Error("Car Apps still exists")
+	}
+
+	t.Run("spotify_deleted", func(t *testing.T) {
+		db := openMemory(t)
+		migrateTo(t, db, 28)
+		if _, err := db.Exec(`DELETE FROM filters WHERE name = 'Spotify'`); err != nil {
+			t.Fatal(err)
+		}
+		if err := Migrate(db); err != nil {
+			t.Fatalf("Migrate: %v", err)
+		}
+		ok, isSys, enabled, _ := filterRow(t, db, "Spotify")
+		if !ok || isSys != 0 || enabled != 0 {
+			t.Errorf("Spotify: exists=%v is_system=%d enabled=%d, want a user filter, off", ok, isSys, enabled)
+		}
+		if got := ports(t, db, "filter_tcp_ports", "Spotify"); fmt.Sprint(got) != "[4070]" {
+			t.Errorf("Spotify TCP ports = %v, want [4070]", got)
+		}
+	})
 }

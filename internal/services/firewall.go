@@ -170,7 +170,7 @@ func (s *FirewallService) filterUDPPorts() []int {
 }
 
 // filterTCPPorts is the TCP sibling of filterUDPPorts: the distinct TCP
-// destination ports opened by all currently-enabled filters (e.g. Car Apps'
+// destination ports opened by all currently-enabled filters (e.g. Connectivity's
 // FCM/5228 and Spotify-AP/4070). Each becomes a forward-chain accept for every
 // filtered device, in lockstep with that filter's enable flag — the same
 // per-device, dst-agnostic contract as the UDP ports (the default-deny
@@ -452,7 +452,7 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 			fmt.Fprintf(&b, "        ether saddr %s udp dport %d ct state new log prefix \"[NETFILTER-ACCEPT] \" accept\n", mac, port)
 		}
 	}
-	// System-preset TCP ports (Car Apps' FCM/5228, Spotify-AP/4070, …) — the
+	// Filter TCP ports (Connectivity's FCM/5228, Spotify's access point/4070, …) — the
 	// TCP counterpart of the UDP block above, same per-filtered-device,
 	// dst-agnostic contract. `ct state new` is the SYN, logged once per flow.
 	for _, port := range s.filterTCPPorts() {

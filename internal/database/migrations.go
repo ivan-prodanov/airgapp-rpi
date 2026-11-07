@@ -1130,6 +1130,68 @@ var migrations = []string{
 	// for The Gap redesign — so nothing they added is lost.
 	`UPDATE filter_domains SET enabled = 1;
 	ALTER TABLE filter_domains DROP COLUMN enabled;`,
+
+	// v28: Nav and Maps become one "Navigation" filter (The Gap redesign).
+	// Nav's row is kept and renamed so its id survives; Maps' domains and any
+	// ports move in, then Maps goes (child rows deleted explicitly, as in v19:
+	// cascades need PRAGMA foreign_keys, which a migration must not assume). Navigation is on when
+	// either was, so nothing that was reachable is cut off. A user filter that
+	// already took the name steps aside first: names are unique, and a failed
+	// migration would stop the daemon booting.
+	`UPDATE filters SET name = name || ' (yours)' WHERE name = 'Navigation' AND is_system = 0;
+	UPDATE filters SET name = 'Navigation', grp = 'System'
+		WHERE name = 'Maps' AND NOT EXISTS (SELECT 1 FROM filters WHERE name = 'Nav');
+	UPDATE filters SET name = 'Navigation', grp = 'System',
+		description = 'Tesla navigation and maps: Autopilot map data, the EU maps backend, and Google map tiles, places and geocoding.',
+		enabled = MAX(enabled, COALESCE((SELECT enabled FROM filters WHERE name = 'Maps'), 0))
+		WHERE name = 'Nav';
+	INSERT OR IGNORE INTO filter_domains (preset_id, domain, description, resolved_ips, last_resolved_at, hit_count, created_at)
+		SELECT (SELECT id FROM filters WHERE name = 'Navigation'), domain, description, resolved_ips, last_resolved_at, hit_count, created_at
+		FROM filter_domains WHERE preset_id = (SELECT id FROM filters WHERE name = 'Maps');
+	INSERT OR IGNORE INTO filter_udp_ports (preset_id, port, description)
+		SELECT (SELECT id FROM filters WHERE name = 'Navigation'), port, description
+		FROM filter_udp_ports WHERE preset_id = (SELECT id FROM filters WHERE name = 'Maps');
+	INSERT OR IGNORE INTO filter_tcp_ports (preset_id, port, description)
+		SELECT (SELECT id FROM filters WHERE name = 'Navigation'), port, description
+		FROM filter_tcp_ports WHERE preset_id = (SELECT id FROM filters WHERE name = 'Maps');
+	DELETE FROM filter_domains WHERE preset_id = (SELECT id FROM filters WHERE name = 'Maps');
+	DELETE FROM filter_udp_ports WHERE preset_id = (SELECT id FROM filters WHERE name = 'Maps');
+	DELETE FROM filter_tcp_ports WHERE preset_id = (SELECT id FROM filters WHERE name = 'Maps');
+	DELETE FROM filters WHERE name = 'Maps';`,
+
+	// v29: Car Apps is split by what each port is for. QUIC/UDP 443, STUN/UDP
+	// 19302 and FCM push/TCP 5228 are Google platform ports (Connectivity);
+	// TCP 4070 is Spotify's access point. Each target keeps its own on/off
+	// state, so a port now opens exactly when its filter is on. Spotify is a
+	// user filter an operator may have deleted: it is recreated (off, with its
+	// seed domain) to carry the port.
+	`INSERT INTO filters (name, description, is_system, enabled, grp)
+		SELECT 'Spotify', 'Music playback.', 0, 0, ''
+		WHERE NOT EXISTS (SELECT 1 FROM filters WHERE name = 'Spotify');
+	INSERT OR IGNORE INTO filter_domains (preset_id, domain, description)
+		SELECT id, 'spotify.com', 'spotify' FROM filters
+		WHERE name = 'Spotify' AND NOT EXISTS (SELECT 1 FROM filter_domains fd WHERE fd.preset_id = filters.id);
+	INSERT OR IGNORE INTO filter_udp_ports (preset_id, port, description)
+		SELECT (SELECT id FROM filters WHERE name = 'Connectivity'), port, description FROM filter_udp_ports
+		WHERE preset_id = (SELECT id FROM filters WHERE name = 'Car Apps') AND port IN (443, 19302);
+	INSERT OR IGNORE INTO filter_tcp_ports (preset_id, port, description)
+		SELECT (SELECT id FROM filters WHERE name = 'Connectivity'), port, description FROM filter_tcp_ports
+		WHERE preset_id = (SELECT id FROM filters WHERE name = 'Car Apps') AND port = 5228;
+	INSERT OR IGNORE INTO filter_tcp_ports (preset_id, port, description)
+		SELECT (SELECT id FROM filters WHERE name = 'Spotify'), port, description FROM filter_tcp_ports
+		WHERE preset_id = (SELECT id FROM filters WHERE name = 'Car Apps') AND port = 4070;
+	UPDATE filter_udp_ports SET description = 'QUIC (HTTP/3) for Google, YouTube, Maps and other apps'
+		WHERE port = 443 AND preset_id = (SELECT id FROM filters WHERE name = 'Connectivity');
+	UPDATE filter_udp_ports SET description = 'Google STUN for WebRTC calls'
+		WHERE port = 19302 AND preset_id = (SELECT id FROM filters WHERE name = 'Connectivity');
+	UPDATE filter_tcp_ports SET description = 'Google push notifications (FCM)'
+		WHERE port = 5228 AND preset_id = (SELECT id FROM filters WHERE name = 'Connectivity');
+	UPDATE filter_tcp_ports SET description = 'Spotify access point'
+		WHERE port = 4070 AND preset_id = (SELECT id FROM filters WHERE name = 'Spotify');
+	DELETE FROM filter_domains WHERE preset_id = (SELECT id FROM filters WHERE name = 'Car Apps');
+	DELETE FROM filter_udp_ports WHERE preset_id = (SELECT id FROM filters WHERE name = 'Car Apps');
+	DELETE FROM filter_tcp_ports WHERE preset_id = (SELECT id FROM filters WHERE name = 'Car Apps');
+	DELETE FROM filters WHERE name = 'Car Apps';`,
 }
 
 // localSeeds holds operator-private seed statements that must NOT be
