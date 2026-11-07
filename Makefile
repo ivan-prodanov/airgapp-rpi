@@ -1,4 +1,4 @@
-.PHONY: build build-arm deps assets clean install
+.PHONY: build build-arm deps assets fonts clean install
 
 BINARY=netfilterd
 BUILD_DIR=./cmd/netfilterd
@@ -18,8 +18,12 @@ build-arm: assets
 deps:
 	go mod tidy
 
+# Self-hosted Gap theme fonts (only fetched when missing; see the script).
+fonts:
+	@sh scripts/fetch-fonts.sh
+
 # Download frontend assets
-assets:
+assets: fonts
 	@mkdir -p web/static/css web/static/js
 	@if [ ! -s web/static/css/pico.min.css ] || [ $$(wc -c < web/static/css/pico.min.css) -lt 1000 ]; then \
 		echo "Downloading Pico CSS..."; \

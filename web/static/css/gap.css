@@ -1,0 +1,8 @@
+/* The Gap — Airgapp console theme.
+   Spec: docs/superpowers/specs/2026-11-07-the-gap-redesign.md
+   Loaded after app.css. Until every page is ported it also bridges app.css's
+   tokens onto the Gap palette (removed in slice 6 together with app.css). */
+
+/* Fonts: self-hosted variable woff2, latin subset (make fonts). */
+@font-face{font-family:'Saira';font-style:normal;font-weight:300 700;font-display:swap;src:url(/static/fonts/saira.woff2) format('woff2')}
+@font-face{font-family:'Martian Mono';font-style:normal;font-weight:400 600;font-display:swap;src:url(/static/fonts/martian-mono.woff2) format('woff2')}
