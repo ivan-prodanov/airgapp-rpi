@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -110,6 +111,22 @@ func main() {
 		}
 	}()
 	svc.TrafficLog.StartTailing()
+
+	// Re-assert the tailnet-only Serve mapping that fronts the admin UI with
+	// Tailscale's real *.ts.net cert, if the node is already authenticated.
+	// `up` sets this too, but a reinstall / daemon restart / tailscale state
+	// reset can drop it, so we re-apply on every boot. Best-effort and
+	// idempotent; backgrounded so a slow or absent tailscaled never delays
+	// startup, and gated on Authenticated so it stays quiet before first login.
+	go func() {
+		st, err := svc.Remote.Status(context.Background())
+		if err != nil || !st.Authenticated {
+			return
+		}
+		if err := svc.Remote.EnsureAdminServe(context.Background()); err != nil {
+			log.Printf("[REMOTE] admin serve setup on boot failed (non-fatal): %v", err)
+		}
+	}()
 
 	// V4.4 Phase 4: the Tesla background poller is gone. The Pi no
 	// longer holds a signing key, so it can't poll the car for

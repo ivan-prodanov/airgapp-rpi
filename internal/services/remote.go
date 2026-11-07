@@ -33,6 +33,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"sync"
@@ -90,6 +91,21 @@ type RemoteStatus struct {
 // is what gets selectively published. Centralised here so the enable /
 // disable / detect paths stay in sync.
 const bleFunnelPath = "/api/ble"
+
+// adminServePort is the dedicated HTTPS port on which the admin UI is
+// published over Tailscale Serve (tailnet-only, never Funnel), so the
+// dashboard is reached at the node's real *.ts.net Let's Encrypt cert
+// instead of netfilterd's self-signed listener.
+//
+// It MUST NOT be :443: that port carries the /api/ble Funnel, and
+// Tailscale's Funnel flag is per-port, not per-path — a serve handler on
+// :443 flips the whole port to tailnet-only and silently disables the
+// funnel (observed 2026-11-07). A separate port keeps the two completely
+// independent: :443 stays "Funnel on" for /api/ble, this port stays
+// tailnet-only for the admin UI. It also must be a port netfilterd does
+// not itself bind (it owns 80/443/8443/8444), or tailscaled can't claim
+// it on the node's tailnet IP. 10000 satisfies both.
+const adminServePort = "10000"
 
 // RemoteService manages the tailscaled lifecycle.
 //
@@ -255,6 +271,47 @@ func (s *RemoteService) DisableBLEFunnel(ctx context.Context) error {
 	return nil
 }
 
+// EnsureAdminServe publishes the admin UI to the tailnet over Tailscale's
+// own Let's Encrypt cert, so remote access stops hitting netfilterd's
+// self-signed listener. It serves the node's :<adminServePort> root to the
+// local (self-signed) :8443 via `https+insecure` — the same inward hop the
+// BLE Funnel uses — but as Serve, NOT Funnel, so it is tailnet-only and the
+// admin UI never becomes public. A browser reaching
+// https://<node>.<tailnet>.ts.net:<adminServePort>/ then gets a genuine,
+// auto-renewed cert with no warning and no CA to install.
+//
+// It deliberately runs on its OWN port, never :443. Tailscale's Funnel flag
+// is per-port, so a serve handler on :443 would flip that whole port to
+// tailnet-only and disable the /api/ble Funnel (we hit exactly this on
+// 2026-11-07). On a separate port the two are fully independent: :443 keeps
+// "Funnel on" for /api/ble, this port stays tailnet-only for the admin UI.
+// parseServeStatus keys on the /api/ble handler on the :443 host entry, so
+// this separate-port handler never perturbs funnel detection.
+//
+// Idempotent — re-running the same mapping is a no-op — so it is safe to
+// call on every daemon start and after every `up`. The node must be
+// authenticated first; callers gate on Status().Authenticated.
+func (s *RemoteService) EnsureAdminServe(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ensureAdminServeLocked(ctx)
+}
+
+// ensureAdminServeLocked is the lock-free body, so a caller that already
+// holds s.mu (e.g. Up) can re-assert the serve mapping without re-locking.
+func (s *RemoteService) ensureAdminServeLocked(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx,
+		"tailscale", "serve",
+		"--bg",
+		"--https="+adminServePort,
+		"https+insecure://localhost:8443",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("enable admin serve: %w\n%s", err, string(out))
+	}
+	return nil
+}
+
 // Install runs Tailscale's official install script. ~30s, idempotent
 // — re-running is a no-op if the apt source + package are already in
 // place. Caller is expected to enforce auth before letting any operator
@@ -315,6 +372,15 @@ func (s *RemoteService) Up(ctx context.Context, authKey string) error {
 	cmd := exec.CommandContext(ctx, "tailscale", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tailscale up: %w\n%s", err, redactOutput(string(out)))
+	}
+
+	// Now that we're authenticated, front the admin UI with Tailscale's real
+	// cert (tailnet-only Serve). Best-effort: a failure here must not undo a
+	// successful login — the operator can still reach :8443 directly — so we
+	// log and carry on rather than failing Up. We already hold s.mu, so call
+	// the lock-free body.
+	if err := s.ensureAdminServeLocked(ctx); err != nil {
+		log.Printf("[REMOTE] admin serve setup after up failed (non-fatal): %v", err)
 	}
 	return nil
 }

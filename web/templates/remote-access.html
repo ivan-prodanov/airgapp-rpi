@@ -107,8 +107,8 @@
                     <strong class="mono" x-text="status.tailnet_ipv4 || '—'"></strong>
                 </div>
                 <div class="stat-row">
-                    <span>From your phone (after installing Tailscale)</span>
-                    <strong class="mono">https://<span x-text="status.tailnet_hostname || 'pi.tailXXXX.ts.net'"></span>:8443</strong>
+                    <span>Admin UI (after installing Tailscale) — real cert, no warning</span>
+                    <strong class="mono">https://<span x-text="status.tailnet_hostname || 'pi.tailXXXX.ts.net'"></span>:10000/</strong>
                 </div>
                 <div class="form-row" style="margin-top:16px;">
                     <button class="btn ghost" @click="logout()" :disabled="busy">
@@ -290,10 +290,10 @@
                 <li>Install the Tailscale app from the App Store or Play Store.</li>
                 <li>Sign in with the same account that owns the tailnet (where you generated the key).</li>
                 <li>
-                    Open <span class="mono">https://<span x-text="status.tailnet_hostname || 'pi.tailXXXX.ts.net'"></span>:8443</span> in Safari/Chrome.
-                    First visit warns about the self-signed certificate — accept it once,
-                    or download <a href="/netfilter-ca.crt" target="_blank">netfilter-ca.crt</a> and install it
-                    on your phone as a trusted root.
+                    Open <span class="mono">https://<span x-text="status.tailnet_hostname || 'pi.tailXXXX.ts.net'"></span>:10000/</span> in Safari/Chrome.
+                    Tailscale serves the admin UI there with a real Let's Encrypt certificate, so there's
+                    no warning and no CA to install — the self-signed <span class="mono">:8443</span> URL
+                    is only for local access over the Pi's own Wi-Fi.
                 </li>
             </ol>
         </div>
