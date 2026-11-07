@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -31,20 +32,24 @@ func extractMAC(r *http.Request) (string, error) {
 }
 
 type FiltersHandler struct {
-	filter   *services.FilterService
-	firewall *services.FirewallService
-	dns      *services.DNSService
-	audit    *services.AuditService
-	renderer *Renderer
+	filter     *services.FilterService
+	firewall   *services.FirewallService
+	dns        *services.DNSService
+	audit      *services.AuditService
+	trafficLog *services.TrafficLogService
+	sni        *services.SNIProxyService
+	renderer   *Renderer
 }
 
 func NewFiltersHandler(svc *services.Services, renderer *Renderer) *FiltersHandler {
 	return &FiltersHandler{
-		filter:   svc.Filter,
-		firewall: svc.Firewall,
-		dns:      svc.DNS,
-		audit:    svc.Audit,
-		renderer: renderer,
+		filter:     svc.Filter,
+		firewall:   svc.Firewall,
+		dns:        svc.DNS,
+		audit:      svc.Audit,
+		trafficLog: svc.TrafficLog,
+		sni:        svc.SNIProxy,
+		renderer:   renderer,
 	}
 }
 
@@ -118,6 +123,26 @@ func (h *FiltersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// applyChange makes a change to what Filtered devices can reach take effect
+// now, everywhere it is enforced: DNS (server= lines), the firewall (a filter's
+// ports open with it), and the allow caches the SNI proxy and the traffic
+// classifier would otherwise only refresh on their 30 s ticker.
+func (h *FiltersHandler) applyChange() error {
+	if err := h.dns.Apply(); err != nil {
+		return fmt.Errorf("DNS: %w", err)
+	}
+	if err := h.firewall.Apply(); err != nil {
+		return fmt.Errorf("firewall: %w", err)
+	}
+	if h.trafficLog != nil {
+		h.trafficLog.RefreshAllowCache()
+	}
+	if h.sni != nil {
+		h.sni.RefreshCache()
+	}
+	return nil
+}
+
 // SetEnabled flips the global enable flag for a filter. Because filters
 // are global, this changes the allow-list for every filtered device in
 // one shot — re-apply DNS to pick up the new server= lines.
@@ -143,16 +168,11 @@ func (h *FiltersHandler) SetEnabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit.Log("filter.set_enabled", strconv.FormatInt(id, 10)+"="+strconv.FormatBool(req.Enabled))
-	if err := h.dns.Apply(); err != nil {
-		JSONError(w, http.StatusInternalServerError, "saved but failed to apply DNS: "+err.Error())
-		return
-	}
-	// A filter may also carry UDP/TCP ports (filter_udp_ports,
-	// filter_tcp_ports) that open in lockstep with its enable flag — re-apply
-	// the firewall so a toggle adds/removes those forward-chain accepts
-	// (Grok's udp/18113, Time's udp/123, Connectivity's tcp/5228, Spotify's tcp/4070, …).
-	if err := h.firewall.Apply(); err != nil {
-		JSONError(w, http.StatusInternalServerError, "saved but failed to apply firewall: "+err.Error())
+	// A filter may also carry UDP/TCP ports that open in lockstep with its
+	// enable flag (Grok's udp/18113, Time's udp/123, Connectivity's tcp/5228,
+	// Spotify's tcp/4070, …): applyChange re-applies the firewall too.
+	if err := h.applyChange(); err != nil {
+		JSONError(w, http.StatusInternalServerError, "saved but failed to apply: "+err.Error())
 		return
 	}
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -176,8 +196,10 @@ func (h *FiltersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit.Log("filter.delete", strconv.FormatInt(id, 10))
-	if err := h.dns.Apply(); err != nil {
-		JSONError(w, http.StatusInternalServerError, "deleted but failed to apply DNS: "+err.Error())
+	// A user filter can own ports (Spotify's tcp/4070 since v29): the firewall
+	// must close them now, not on the next unrelated apply.
+	if err := h.applyChange(); err != nil {
+		JSONError(w, http.StatusInternalServerError, "deleted but failed to apply: "+err.Error())
 		return
 	}
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -220,8 +242,8 @@ func (h *FiltersHandler) CreateDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit.Log("filter.domain.create", d.Domain)
-	if err := h.dns.Apply(); err != nil {
-		JSONError(w, http.StatusInternalServerError, "saved but failed to apply DNS: "+err.Error())
+	if err := h.applyChange(); err != nil {
+		JSONError(w, http.StatusInternalServerError, "saved but failed to apply: "+err.Error())
 		return
 	}
 	JSON(w, http.StatusCreated, map[string]any{"id": id})
@@ -263,8 +285,8 @@ func (h *FiltersHandler) DeleteDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit.Log("filter.domain.delete", strconv.FormatInt(id, 10))
-	if err := h.dns.Apply(); err != nil {
-		JSONError(w, http.StatusInternalServerError, "deleted but failed to apply DNS: "+err.Error())
+	if err := h.applyChange(); err != nil {
+		JSONError(w, http.StatusInternalServerError, "deleted but failed to apply: "+err.Error())
 		return
 	}
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
