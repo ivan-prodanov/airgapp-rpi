@@ -256,44 +256,65 @@ func main() {
 		writeJSON(w, kv{"username": "admin"})
 	})
 
+	// Dashboard: the Tesla (first mock device named like one) and the hosts it
+	// contacted. The pick rotates every 3.2 s so the page's sweep can be seen.
+	// ?scenario=none|quiet|few drive the empty states for the browser checks.
 	mux.HandleFunc("/api/dashboard", func(w http.ResponseWriter, req *http.Request) {
 		state.mu.Lock()
-		defer state.mu.Unlock()
-		online := 0
+		var tesla kv
 		for _, d := range state.devices {
-			if d["online"].(bool) {
-				online++
+			name := strings.ToLower(fmt.Sprint(d["alias"], " ", d["hostname"]))
+			if strings.Contains(name, "tesla") {
+				tesla = kv{"status": d["status"], "online": d["online"]}
+				break
 			}
 		}
-		fEn := 0
-		for _, f := range state.filters {
-			if f["enabled"].(bool) {
-				fEn++
-			}
+		state.mu.Unlock()
+		scenario := req.URL.Query().Get("scenario")
+		if tesla == nil || scenario == "none" {
+			writeJSON(w, kv{"tesla": nil, "hosts": []kv{}, "blocked_24h": 0, "allowed_24h": 0})
+			return
 		}
-		writeJSON(w, kv{
-			"devices_online":  online,
-			"devices_total":   len(state.devices),
-			"firewall_rules":  countEnabled(state.firewall),
-			"filters_total":   len(state.filters),
-			"filters_enabled": fEn,
-			"protected_deny":  15,
-			"blocked_24h":     1422,
-			"allowed_24h":     24108,
-			"wan_reachable":   true,
-			"system": kv{
-				"uptime":         float64(14*86400 + 6*3600 + 42*60 + 18),
-				"load_avg":       "0.18 0.22 0.20",
-				"wan_interface":  "usb0",
-				"wan_ip":         "100.64.18.42",
-				"wan_rx_bytes":   uint64(8_420_000_000),
-				"wan_tx_bytes":   uint64(930_000_000),
-				"lan_interface":  "wlan0",
-				"lan_ip":         "192.168.4.1",
-				"mem_total":      "1.9 GB",
-				"mem_free":       "1.2 GB",
-			},
-		})
+		type host struct {
+			name string
+			safe bool
+		}
+		pool := []host{
+			{"maps-eu-prd.go.tesla.services", true}, {"hermes-prd.ap.tesla.services", false},
+			{"apmv3.go.tesla.services", true}, {"telemetry-prd.ap.tesla.services", false},
+			{"daws.tesla.services", true}, {"ota.vn.tesla.services", false},
+			{"maps.googleapis.com", true}, {"logupload-prod.vn.tesla.services", false},
+			{"fake.hypnos.vn.tesla.services", false}, {"connman.vn.tesla.services", false},
+			{"a-very-long-diagnostic-upload-endpoint.prd.vn.tesla.services", false},
+			{"events.vn.tesla.services", false}, {"metrics.vn.tesla.services", false},
+			{"weather-prd.tesla.services", true},
+		}
+		n := 7
+		switch scenario {
+		case "quiet":
+			n = 0
+		case "few":
+			n = 3
+		}
+		window := time.Now().UnixMilli() / 3200
+		status := fmt.Sprint(tesla["status"])
+		hosts := []kv{}
+		for i := 0; i < n; i++ {
+			h := pool[(int(window)*5+i*3)%len(pool)] // step 3 is coprime with 14: 7 distinct, mixed safe and danger
+			crossed := h.safe
+			switch status {
+			case "open":
+				crossed = true
+			case "blocked":
+				crossed = false
+			}
+			hosts = append(hosts, kv{"id": window*10 + int64(n-i), "domain": h.name, "crossed": crossed, "safe": h.safe})
+		}
+		grow := (time.Now().Unix() % 100000) / 3
+		if n == 0 {
+			grow = 0
+		}
+		writeJSON(w, kv{"tesla": tesla, "hosts": hosts, "blocked_24h": 48280 + grow*5, "allowed_24h": 9044 + grow*2})
 	})
 
 	mux.HandleFunc("/api/devices", func(w http.ResponseWriter, req *http.Request) {
