@@ -302,12 +302,29 @@ function settingsApp() {
             try {
                 const r = await api.post('/api/tesla/tokens', { name });
                 this.issuedPlain = r.plain || '';
-                // Bundle into a single URL for one-paste enrolment on
-                // the client side. The api URL is derived from the
-                // current location (operator is reaching us over
-                // Tailscale, LAN, or Funnel — whichever it is, that's
-                // the URL the client should use).
-                const apiBase = window.location.origin + '/api/ble';
+
+                // The api URL must be the PUBLIC Tailscale Funnel URL for
+                // /api/ble — NOT window.location.origin. The operator views this
+                // dashboard over the LAN (e.g. https://192.168.4.1:8443, whose
+                // self-signed cert the phone can neither route to nor trust), but
+                // the phone reaches the relay over the public internet via Funnel
+                // (valid cert). Pull it from the remote status.
+                let apiBase = '';
+                try {
+                    const st = await api.get('/api/remote/status');
+                    if (st && st.ble_funnel && st.ble_funnel_url) apiBase = st.ble_funnel_url;
+                } catch (e) { /* handled below */ }
+
+                await this.loadTokens();
+
+                if (!apiBase) {
+                    this.enrolUrl = '';
+                    this.qrSvg = '';
+                    notify('Relay not reachable by the phone yet — enable Tailscale Funnel for /api/ble on Remote access, then re-issue the token. (The token above is still valid.)', 'error');
+                    return;
+                }
+
+                // ble_funnel_url already includes the /api/ble path.
                 const params = new URLSearchParams({
                     api: apiBase,
                     token: this.issuedPlain,
@@ -315,7 +332,6 @@ function settingsApp() {
                 });
                 this.enrolUrl = 'airgapp://enrol?' + params.toString();
                 this.renderEnrolQr();
-                await this.loadTokens();
             } catch (e) { /* api wrapper toasted */ }
         },
         async revokeToken(t) {
