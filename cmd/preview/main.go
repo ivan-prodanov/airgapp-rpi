@@ -21,6 +21,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -59,8 +60,8 @@ func newMockState() *mockState {
 		nextID: 100,
 		devices: []kv{
 			{"id": 1, "first_seen": ago("2400h"), "last_seen": ago("0s"), "mac_address": "F4:F5:D8:1A:22:C7", "alias": "Tesla M3 — Garage", "hostname": "TeslaModel3-DC22", "ip_address": "192.168.4.42", "status": "filtered", "online": true, "ignore_traffic_log": false},
-			{"id": 2, "first_seen": ago("5000h"), "last_seen": ago("0s"), "mac_address": "AC:DE:48:00:11:22", "alias": "iPhone (Pavel)", "hostname": "Pavel-iPhone", "ip_address": "192.168.4.31", "status": "open", "online": true, "ignore_traffic_log": false},
-			{"id": 3, "first_seen": ago("5000h"), "last_seen": ago("0s"), "mac_address": "98:01:A7:9B:0C:14", "alias": "MBP — work", "hostname": "pavel-mbp", "ip_address": "192.168.4.22", "status": "open", "online": true, "ignore_traffic_log": false},
+			{"id": 2, "first_seen": ago("5000h"), "last_seen": ago("0s"), "mac_address": "AC:DE:48:00:11:22", "alias": "iPhone", "hostname": "iPhone", "ip_address": "192.168.4.31", "status": "open", "online": true, "ignore_traffic_log": false},
+			{"id": 3, "first_seen": ago("5000h"), "last_seen": ago("0s"), "mac_address": "98:01:A7:9B:0C:14", "alias": "Work laptop", "hostname": "work-laptop", "ip_address": "192.168.4.22", "status": "open", "online": true, "ignore_traffic_log": false},
 			{"id": 4, "first_seen": ago("3000h"), "last_seen": ago("0s"), "mac_address": "5C:CF:7F:8E:A4:11", "alias": "Sonos Beam", "hostname": "Sonos-BEAM", "ip_address": "192.168.4.51", "status": "blocked", "online": true, "ignore_traffic_log": true},
 			{"id": 5, "first_seen": ago("1200h"), "last_seen": ago("0s"), "mac_address": "B8:27:EB:33:9D:18", "alias": "", "hostname": "raspberrypi-cam", "ip_address": "192.168.4.61", "status": "blocked", "online": true, "ignore_traffic_log": false},
 			{"id": 6, "first_seen": ago("1200h"), "last_seen": ago("3h"), "mac_address": "DC:A6:32:71:5B:0E", "alias": "Roomba j7", "hostname": "iRobot-J7", "ip_address": "192.168.4.55", "status": "blocked", "online": false, "ignore_traffic_log": true},
@@ -80,8 +81,8 @@ func newMockState() *mockState {
 			{"id": 9, "timestamp": t(23 * time.Second), "src_ip": "192.168.4.51", "src_mac": "5C:CF:7F:8E:A4:11", "dst_ip": "184.169.218.45", "dst_port": "443", "protocol": "TLS", "action": "blocked", "domain": "sonos.com", "source": "forward"},
 		},
 		muted: []kv{
-			{"id": 901, "pattern": "captive.apple.com", "match_type": "suffix"},
-			{"id": 902, "pattern": "msftconnecttest.com", "match_type": "suffix"},
+			{"id": 901, "pattern": "captive.apple.com", "match_type": "suffix", "enabled": true, "created_at": "2026-03-12T09:00:00Z", "since_id": int64(0)},
+			{"id": 902, "pattern": "msftconnecttest.com", "match_type": "suffix", "enabled": true, "created_at": "2026-04-02T09:00:00Z", "since_id": int64(0)},
 		},
 		firewall: []kv{
 			{"id": 1, "description": "Forward chain default-drop floor", "direction": "forward", "protocol": "all", "dest_ip": "", "dest_port": "", "action": "drop", "device_mac": "", "enabled": true, "priority": 1000},
@@ -93,7 +94,7 @@ func newMockState() *mockState {
 			{"id": 2, "device_mac": "5C:CF:7F:8E:A4:11", "download_kbps": 2000, "upload_kbps": 512, "enabled": false},
 		},
 		settings: kv{
-			"ap_ssid":      "ivanchokara",
+			"ap_ssid":      "Airgapp",
 			"ap_password":  "•••••••••••",
 			"ap_channel":   "6",
 			"dns_upstream": "1.1.1.1,8.8.8.8",
@@ -151,6 +152,177 @@ func seedFilters() []kv {
 		mk("Prime", "", false, true, []d{{"primevideo.com", "", 3}}, nil),
 		mk("F1", "", false, true, []d{{"formula1.com", "", 30}}, nil),
 	}
+}
+
+// ── Traffic feed mock ─────────────────────────────────────
+
+// feedSeed events exist when the preview starts; more arrive with time.
+const feedSeed = 60
+
+// feedTotal is how many events the log holds now, and how many arrive per
+// second, for a scenario.
+func feedTotal(scenario string) (total int64, perSec float64) {
+	perSec = 1
+	switch scenario {
+	case "quiet":
+		perSec = 0
+	case "burst":
+		perSec = 50
+	}
+	return feedSeed + int64(time.Since(startedAt).Seconds()*perSec), perSec
+}
+
+// mix is splitmix64: a well-spread number from n, so event n is the same on
+// every request.
+func mix(n uint64) uint64 {
+	n += 0x9e3779b97f4a7c15
+	n = (n ^ (n >> 30)) * 0xbf58476d1ce4e5b9
+	n = (n ^ (n >> 27)) * 0x94d049bb133111eb
+	return n ^ (n >> 31)
+}
+
+var (
+	feedTeslaDanger = []string{"hermes-prd.ap.tesla.services", "ota.vn.tesla.services", "telemetry-prd.ap.tesla.services",
+		"logupload.vn.tesla.services", "api.mp.tesla.services", "storage.googleapis.com", "i.scdn.co", "audio-ak-spotify-com.akamaized.net"}
+	feedTeslaSafe  = []string{"maps-eu-prd.go.tesla.services", "tile.googleapis.com", "pool.ntp.org", "www.google.com"}
+	feedHomeDanger = []string{"doubleclick.net", "app-measurement.com", "ads.example.net"}
+	feedHomeSafe   = []string{"icloud.com", "github.com", "apple.com", "push.apple.com", "spotify.com", "api.sonos.com"}
+)
+
+// mockEvent is event n as the real feed would describe it, given the
+// preview's filters now; muted reports a mute that drops it at ingest.
+func mockEvent(n int64, perSec float64) (e kv, muted bool) {
+	r := mix(uint64(n))
+	pick := func(a []string, k uint64) string { return a[k%uint64(len(a))] }
+	// Half the events are the Tesla's; the rest are spread over the others.
+	others := []int{1, 2, 3, 4, 7}
+	dev := state.devices[0]
+	if r%2 == 1 {
+		dev = state.devices[others[(r>>8)%uint64(len(others))]]
+	}
+	tesla := dev["id"] == 1
+	danger := (r>>16)%100 < 22
+	if tesla {
+		danger = (r>>16)%100 < 70
+	}
+	var domain string
+	switch {
+	case tesla && danger:
+		domain = pick(feedTeslaDanger, r>>24)
+	case tesla:
+		domain = pick(feedTeslaSafe, r>>24)
+	case danger:
+		domain = pick(feedHomeDanger, r>>24)
+	default:
+		domain = pick(feedHomeSafe, r>>24)
+	}
+	dst := fmt.Sprintf("203.0.113.%d", 1+(r>>32)%250)
+	port, proto, action := "443", "TLS", "allowed"
+	switch {
+	case (r>>40)%100 < 26:
+		dst, port, proto, action = "", "53", "DNS", "resolved"
+		if danger {
+			action = "sinkholed"
+		}
+	case danger && (r>>40)%100 < 40: // a QUIC drop by address: no domain
+		domain, proto, action = "", "UDP", "blocked"
+	case danger:
+		action = "blocked"
+	case (r>>48)%100 < 12:
+		proto = "TCP"
+	}
+	locked := domain != "" && services.IsAlwaysBlocked(domain)
+	cover := mockCover(domain)
+	// Once a filter that's on lists a domain, its new events pass.
+	if danger && !locked && cover != nil && cover["enabled"] == true {
+		action = map[string]string{"sinkholed": "resolved", "blocked": "allowed"}[action]
+	}
+	mutedBy := ""
+	for _, m := range state.muted {
+		p := m["pattern"].(string)
+		if domain != "" && (domain == p || strings.HasSuffix(domain, "."+p)) {
+			mutedBy = p
+			if since, ok := m["since_id"].(int64); ok && n > since {
+				return nil, true
+			}
+		}
+	}
+	class := "allowed"
+	if action == "blocked" || action == "sinkholed" {
+		class = "blocked"
+	}
+	// Event feedSeed arrives as the preview starts; earlier ones before it.
+	at := startedAt.Add(time.Duration(float64(n-feedSeed) / max(perSec, 1) * float64(time.Second)))
+	name := dev["alias"].(string)
+	if name == "" {
+		name = dev["hostname"].(string)
+	}
+	if name == "" {
+		name = "Unknown device"
+	}
+	var cv any
+	if !locked && cover != nil {
+		cv = cover
+	}
+	return kv{"id": n, "time": at.UTC().Format("2006-01-02 15:04:05"), "client": name, "client_ip": dev["ip_address"],
+		"domain": domain, "dst_ip": dst, "port": port, "proto": proto, "action": action, "class": class,
+		"locked": locked && class == "blocked", "cover": cv, "muted_by": mutedBy}, false
+}
+
+// mockCover is the preview filter listing domain, an enabled one first.
+func mockCover(domain string) kv {
+	if domain == "" {
+		return nil
+	}
+	var off kv
+	for _, f := range state.filters {
+		for _, d := range f["domains"].([]kv) {
+			x := d["domain"].(string)
+			if domain == x || strings.HasSuffix(domain, "."+x) {
+				c := kv{"id": f["id"], "name": f["name"], "enabled": f["enabled"]}
+				if f["enabled"] == true {
+					return c
+				}
+				if off == nil {
+					off = c
+				}
+			}
+		}
+	}
+	return off
+}
+
+// mockFeed answers a feed request the way the real handler does.
+func mockFeed(q url.Values) kv {
+	total, perSec := feedTotal(q.Get("scenario"))
+	after, _ := strconv.ParseInt(q.Get("after"), 10, 64)
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit <= 0 {
+		limit = 80
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	outcome, proto := q.Get("outcome"), strings.ToUpper(q.Get("proto"))
+	needle := strings.ToLower(strings.TrimSpace(q.Get("q")))
+	out := []kv{}
+	for n := total; n > after && n > 0 && len(out) < limit; n-- {
+		e, muted := mockEvent(n, perSec)
+		if muted {
+			continue
+		}
+		if (outcome == "allowed" || outcome == "blocked") && e["class"] != outcome {
+			continue
+		}
+		if proto != "" && proto != "ALL" && e["proto"] != proto {
+			continue
+		}
+		if needle != "" && !strings.Contains(strings.ToLower(fmt.Sprint(e["domain"], " ", e["client_ip"], " ", e["dst_ip"], " ", e["port"])), needle) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return kv{"entries": out, "last_id": total, "muted": len(state.muted)}
 }
 
 // startedAt anchors the mock's growing counters.
@@ -642,13 +814,45 @@ func main() {
 		if req.Method == http.MethodPost {
 			var body struct{ Domain string }
 			_ = json.NewDecoder(req.Body).Decode(&body)
+			pattern := services.NormalizeDomain(body.Domain)
+			if pattern == "" {
+				writeStatusJSON(w, http.StatusBadRequest, kv{"error": services.ErrBadMuteDomain.Error()})
+				return
+			}
+			for _, m := range state.muted { // the real AddMuted is idempotent
+				if m["pattern"] == pattern {
+					writeJSON(w, kv{"id": m["id"]})
+					return
+				}
+			}
 			id := state.nextID
 			state.nextID++
-			state.muted = append(state.muted, kv{"id": id, "pattern": strings.ToLower(strings.TrimSpace(body.Domain)), "match_type": "suffix"})
+			total, _ := feedTotal("")
+			state.muted = append(state.muted, kv{"id": id, "pattern": pattern, "match_type": "suffix", "enabled": true,
+				"created_at": time.Now().UTC().Format(time.RFC3339), "since_id": total})
 			writeJSON(w, kv{"id": id})
 			return
 		}
-		writeJSON(w, state.muted)
+		out := append([]kv{}, state.muted...)
+		sort.Slice(out, func(i, j int) bool { return out[i]["pattern"].(string) < out[j]["pattern"].(string) })
+		writeJSON(w, out)
+	})
+
+	// GET /api/traffic/feed, generated: event n depends on n alone and the
+	// log grows with time, so a poll after an id sees only newer events.
+	// ?scenario=quiet (no new events), burst (about 100 per poll), slow, error.
+	mux.HandleFunc("/api/traffic/feed", func(w http.ResponseWriter, req *http.Request) {
+		q := req.URL.Query()
+		switch q.Get("scenario") {
+		case "error":
+			writeStatusJSON(w, http.StatusInternalServerError, kv{"error": "feed unavailable"})
+			return
+		case "slow":
+			time.Sleep(1500 * time.Millisecond)
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		writeJSON(w, mockFeed(q))
 	})
 	mux.HandleFunc("/api/system/traffic/muted/", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodDelete {
