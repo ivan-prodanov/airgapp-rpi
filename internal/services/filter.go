@@ -205,24 +205,36 @@ func (s *FilterService) ListDomains(filterID int64) ([]models.FilterDomain, erro
 // ErrBadDomain is the answer to anything that isn't a hostname.
 var ErrBadDomain = errors.New("Enter a domain like cdn.example.com.")
 
+// CheckAllowable normalises a typed or pasted domain and says whether it may
+// be allow-listed at all: it must be a hostname, not on the always-blocked
+// floor, and not a parent broad enough to re-admit an always-blocked Tesla
+// endpoint. The errors are written for people (the Filters page shows them).
+func CheckAllowable(raw string) (string, error) {
+	domain := NormalizeDomain(raw)
+	if domain == "" {
+		return "", ErrBadDomain
+	}
+	if isProtectedDenied(domain) {
+		return domain, fmt.Errorf("%s is always blocked. It can't be allowed.", domain)
+	}
+	if isProtectedAncestor(domain) {
+		return domain, fmt.Errorf("%s is too broad: it would also allow always-blocked Tesla domains. Add the exact subdomain instead.", domain)
+	}
+	return domain, nil
+}
+
 // CreateDomain adds a domain to a filter; it applies whenever the filter is
 // on. The note is optional. A pasted URL is accepted as its host. The
 // always-blocked floor rejects known Tesla endpoints and parents broad enough
 // to re-admit one, and a domain already in the filter is refused. The errors
 // are written for the Filters page, which shows them as they are.
 func (s *FilterService) CreateDomain(filterID int64, d models.FilterDomain) (int64, error) {
-	domain := NormalizeDomain(d.Domain)
-	if domain == "" {
-		return 0, ErrBadDomain
-	}
-	if isProtectedDenied(domain) {
-		return 0, fmt.Errorf("%s is always blocked. It can't be allowed.", domain)
-	}
-	if isProtectedAncestor(domain) {
-		return 0, fmt.Errorf("%s is too broad: it would also allow always-blocked Tesla domains. Add the exact subdomain instead.", domain)
+	domain, err := CheckAllowable(d.Domain)
+	if err != nil {
+		return 0, err
 	}
 	var id int64
-	err := s.db.QueryRow(`
+	err = s.db.QueryRow(`
 		INSERT INTO filter_domains (preset_id, domain, description)
 		VALUES (?, ?, ?)
 		ON CONFLICT(preset_id, domain) DO NOTHING

@@ -22,11 +22,14 @@ import (
 	"math/rand"
 	"net/http"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/iulianfsdro/rpi-network-filter/internal/services"
 	web "github.com/iulianfsdro/rpi-network-filter/web"
 )
 
@@ -39,7 +42,6 @@ type mockState struct {
 	teslaLogTouched bool             // ?scenario=teslalogoff: logging was turned back on
 	devices         []kv
 	filters         []kv
-	domains         map[int64][]kv // filter id -> domains
 	traffic         []kv
 	muted           []kv
 	firewall        []kv
@@ -65,45 +67,7 @@ func newMockState() *mockState {
 			{"id": 7, "first_seen": ago("900h"), "last_seen": ago("0s"), "mac_address": "00:17:88:7E:12:6A", "alias": "Hue bridge", "hostname": "Philips-hue", "ip_address": "192.168.4.71", "status": "blocked", "online": true, "ignore_traffic_log": true},
 			{"id": 8, "first_seen": ago("10m"), "last_seen": ago("0s"), "mac_address": "02:00:00:00:00:08", "alias": "", "hostname": "", "ip_address": "192.168.4.77", "status": "blocked", "online": true, "ignore_traffic_log": false},
 		},
-		filters: []kv{
-			{"id": 1, "name": "Tesla AP/Nav", "description": "Autopilot map tiles + nav backend. Excludes auth, OTA, telemetry.", "is_system": true, "enabled": true},
-			{"id": 2, "name": "YouTube", "description": "Theater mode playback. Audio + video CDN + thumbnails.", "is_system": true, "enabled": false},
-			{"id": 3, "name": "Netflix", "description": "Streaming playback + UI.", "is_system": true, "enabled": false},
-			{"id": 4, "name": "Disney+", "description": "Streaming playback + UI.", "is_system": true, "enabled": false},
-			{"id": 5, "name": "Spotify", "description": "Music playback.", "is_system": false, "enabled": false},
-		},
-		domains: map[int64][]kv{
-			1: {
-				{"id": 11, "domain": "daws.tesla.services", "description": "Map tile authoritative DNS for AP nav stack.", "enabled": true},
-				{"id": 12, "domain": "apmv3.go.tesla.services", "description": "Autopilot maps v3 tile fetch.", "enabled": true},
-				{"id": 13, "domain": "maps-eu-prd.go.tesla.services", "description": "EU production map tile CDN.", "enabled": true},
-				{"id": 14, "domain": "maps.googleapis.com", "description": "Geocoding + place search used by nav.", "enabled": true},
-			},
-			2: {
-				{"id": 21, "domain": "youtube.com", "description": "Page shell + login state.", "enabled": true},
-				{"id": 22, "domain": "googlevideo.com", "description": "Video segment CDN (DASH).", "enabled": true},
-				{"id": 23, "domain": "ytimg.com", "description": "Thumbnail CDN.", "enabled": true},
-				{"id": 24, "domain": "ggpht.com", "description": "Avatar / profile image CDN.", "enabled": false},
-				{"id": 25, "domain": "youtu.be", "description": "Short-link redirector.", "enabled": true},
-			},
-			3: {
-				{"id": 31, "domain": "netflix.com", "description": "App shell + auth.", "enabled": true},
-				{"id": 32, "domain": "nflxvideo.net", "description": "Video segment CDN.", "enabled": true},
-				{"id": 33, "domain": "nflximg.com", "description": "Cover art CDN.", "enabled": true},
-				{"id": 34, "domain": "nflxext.com", "description": "Static assets.", "enabled": false},
-				{"id": 35, "domain": "nflxso.net", "description": "Suspect: pulls extra telemetry. Review.", "enabled": false},
-			},
-			4: {
-				{"id": 41, "domain": "disneyplus.com", "description": "App shell.", "enabled": true},
-				{"id": 42, "domain": "disney-plus.net", "description": "Edge endpoints.", "enabled": true},
-				{"id": 43, "domain": "dssott.com", "description": "Video CDN.", "enabled": true},
-				{"id": 44, "domain": "bamgrid.com", "description": "Account / entitlements.", "enabled": true},
-			},
-			5: {
-				{"id": 51, "domain": "spotify.com", "description": "App shell + auth.", "enabled": true},
-				{"id": 52, "domain": "scdn.co", "description": "Album art + audio segment CDN.", "enabled": true},
-			},
-		},
+		filters: seedFilters(),
 		traffic: []kv{
 			{"id": 1, "timestamp": t(2 * time.Second), "src_ip": "192.168.4.42", "src_mac": "F4:F5:D8:1A:22:C7", "dst_ip": "23.45.221.18", "dst_port": "443", "protocol": "TLS", "action": "allowed", "domain": "apmv3.go.tesla.services", "source": "forward"},
 			{"id": 2, "timestamp": t(3 * time.Second), "src_ip": "192.168.4.42", "src_mac": "F4:F5:D8:1A:22:C7", "dst_ip": "", "dst_port": "53", "protocol": "DNS", "action": "query", "domain": "maps-eu-prd.go.tesla.services", "source": "dns"},
@@ -146,6 +110,48 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func okJSON(w http.ResponseWriter) { writeJSON(w, kv{"status": "ok"}) }
+
+// seedFilters is the filter set after the redesign's migrations: the Car
+// system group (with its ports) and the apps. Domains are the public service
+// hosts the migrations seed; notes are short and hit counts are invented.
+func seedFilters() []kv {
+	id := int64(1000)
+	next := func() int64 { id++; return id }
+	type d struct {
+		host, note string
+		hits       int
+	}
+	type p struct {
+		proto string
+		port  int
+		desc  string
+	}
+	mk := func(name, grp string, builtin, on bool, ds []d, ps []p) kv {
+		doms, ports := []kv{}, []kv{}
+		for _, x := range ds {
+			doms = append(doms, kv{"id": next(), "domain": x.host, "description": x.note, "hits": x.hits})
+		}
+		for _, x := range ps {
+			ports = append(ports, kv{"proto": x.proto, "port": x.port, "description": x.desc})
+		}
+		return kv{"id": next(), "name": name, "description": "", "is_system": builtin, "enabled": on, "group": grp, "ports": ports, "domains": doms}
+	}
+	return []kv{
+		mk("Navigation", "System", true, true, []d{{"tile.googleapis.com", "Map tiles", 2042}, {"apmv3.go.tesla.services", "Autopilot map data", 1714}, {"daws.tesla.services", "Navigation data", 603}, {"places.googleapis.com", "Search in Maps", 597}, {"maps-eu-prd.go.tesla.services", "EU maps backend", 592}, {"mt0.google.com", "Map tiles", 264}, {"maps.googleapis.com", "Maps", 233}, {"mt.l.google.com", "Map tiles", 19}, {"www.googleapis.com", "Terrain", 7}, {"mt1.google.com", "Map tiles", 0}, {"mt2.google.com", "Map tiles", 0}, {"mt3.google.com", "Map tiles", 0}}, nil),
+		mk("Time", "System", true, true, []d{{"pool.ntp.org", "Public NTP pool", 1045}}, []p{{"UDP", 123, "NTP time sync — public pool.ntp.org"}}),
+		mk("Grok", "System", true, true, []d{{"assistant-api.prd.na.vn.cloud.tesla.com", "Voice assistant — NA", 197}, {"speechcontainerpipeline.blob.core.windows.net", "Speech", 66}, {"assistant-api.prd.euw1.vn.cloud.tesla.com", "Voice assistant — EU", 2}}, []p{{"UDP", 18113, "Grok voice assistant — QUIC"}}),
+		mk("Connectivity", "System", true, true, []d{{"google.com", "Online check", 5193}, {"www.google.com", "Online check", 1793}, {"gstatic.com", "Chrome", 17}}, []p{{"UDP", 443, "QUIC (HTTP/3) for Google, YouTube, Maps and other apps"}, {"TCP", 5228, "Google push notifications (FCM)"}, {"UDP", 19302, "Google STUN for WebRTC calls"}}),
+		mk("YouTube", "", true, true, []d{{"youtube.com", "Web app and API", 1068}, {"ytimg.com", "Thumbnails", 662}, {"googlevideo.com", "Video", 572}, {"ggpht.com", "Channel avatars", 302}, {"youtu.be", "Short links", 0}}, nil),
+		mk("Netflix", "", true, true, []d{{"netflix.com", "App and API", 480}, {"nflxvideo.net", "Video", 289}, {"nflxso.net", "Static", 188}, {"nflxext.com", "Assets", 90}, {"nflximg.com", "Images", 0}}, nil),
+		mk("Twitch", "", true, true, []d{{"twitch.tv", "Twitch", 0}, {"ttvnw.net", "Streams", 0}, {"live-video.net", "Video", 0}}, nil),
+		mk("TikTok", "", false, true, []d{{"tiktok.com", "", 68}, {"tiktokcdn.com", "Video", 2}}, nil),
+		mk("Max", "", false, true, []d{{"max.com", "", 152}, {"hbomax.com", "", 290}}, nil),
+		mk("Spotify", "", false, true, []d{{"spotify.com", "", 298}}, []p{{"TCP", 4070, "Spotify access point"}}),
+		mk("Hulu", "", false, true, []d{{"hulu.com", "", 3}, {"disneyplus.com", "", 3}}, nil),
+		mk("Prime", "", false, true, []d{{"primevideo.com", "", 3}}, nil),
+		mk("F1", "", false, true, []d{{"formula1.com", "", 30}}, nil),
+	}
+}
 
 // startedAt anchors the mock's growing counters.
 var startedAt = time.Now()
@@ -465,115 +471,135 @@ func main() {
 		writeJSON(w, state.devicePuts)
 	})
 
+	// Filters, with the real API's shape and rules (services.CheckAllowable,
+	// the name rule, duplicates, built-ins can't be deleted).
+	filterView := func(f kv, withDomains bool) kv {
+		v := kv{}
+		for k, x := range f {
+			if k != "domains" {
+				v[k] = x
+			}
+		}
+		if withDomains {
+			ds := append([]kv{}, f["domains"].([]kv)...)
+			sort.SliceStable(ds, func(i, j int) bool {
+				if ds[i]["hits"].(int) != ds[j]["hits"].(int) {
+					return ds[i]["hits"].(int) > ds[j]["hits"].(int)
+				}
+				return ds[i]["domain"].(string) < ds[j]["domain"].(string)
+			})
+			v["domains"] = ds
+		}
+		return v
+	}
+	findFilter := func(id int64) kv {
+		for _, f := range state.filters {
+			if f["id"].(int64) == id {
+				return f
+			}
+		}
+		return nil
+	}
+	nameRe := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 _\-+'/]{0,63}$`)
+	listFilters := func(w http.ResponseWriter, req *http.Request) {
+		with := req.URL.Query().Get("domains") == "1"
+		out := []kv{}
+		for _, f := range state.filters {
+			out = append(out, filterView(f, with))
+		}
+		writeJSON(w, out)
+	}
 	mux.HandleFunc("/api/filters", func(w http.ResponseWriter, req *http.Request) {
 		state.mu.Lock()
 		defer state.mu.Unlock()
-		if req.Method == http.MethodPost {
-			var body struct{ Name, Description string }
-			_ = json.NewDecoder(req.Body).Decode(&body)
-			id := state.nextID
-			state.nextID++
-			f := kv{"id": id, "name": body.Name, "description": body.Description, "is_system": false, "enabled": false}
-			state.filters = append(state.filters, f)
-			state.domains[id] = []kv{}
-			writeJSON(w, kv{"id": id})
+		if req.Method != http.MethodPost {
+			listFilters(w, req)
 			return
 		}
-		writeJSON(w, state.filters)
+		var body struct{ Name string }
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		name := strings.TrimSpace(body.Name)
+		if !nameRe.MatchString(name) {
+			writeStatusJSON(w, http.StatusBadRequest, kv{"error": "invalid filter name"})
+			return
+		}
+		for _, f := range state.filters {
+			if strings.EqualFold(f["name"].(string), name) {
+				writeStatusJSON(w, http.StatusBadRequest, kv{"error": "a filter named " + name + " already exists"})
+				return
+			}
+		}
+		id := state.nextID
+		state.nextID++
+		state.filters = append(state.filters, kv{"id": id, "name": name, "description": "", "is_system": false, "enabled": false, "group": "", "ports": []kv{}, "domains": []kv{}})
+		w.WriteHeader(http.StatusCreated)
+		writeJSON(w, kv{"id": id})
 	})
 	mux.HandleFunc("/api/filters/", func(w http.ResponseWriter, req *http.Request) {
 		path := strings.TrimPrefix(req.URL.Path, "/api/filters/")
 		segs := strings.Split(path, "/")
 		state.mu.Lock()
 		defer state.mu.Unlock()
-
-		// /api/filters/domains/{id} -- update domain enabled/desc / delete domain
-		if segs[0] == "domains" && len(segs) == 2 {
+		if path == "" {
+			listFilters(w, req)
+			return
+		}
+		// DELETE /api/filters/domains/{id}
+		if segs[0] == "domains" && len(segs) == 2 && req.Method == http.MethodDelete {
 			id, _ := strconv.ParseInt(segs[1], 10, 64)
-			switch req.Method {
-			case http.MethodPut:
-				var body struct {
-					Description string `json:"description"`
-					Enabled     bool   `json:"enabled"`
-				}
-				_ = json.NewDecoder(req.Body).Decode(&body)
-				for fid := range state.domains {
-					for _, d := range state.domains[fid] {
-						if int64(toInt(d["id"])) == id {
-							d["description"] = body.Description
-							d["enabled"] = body.Enabled
-						}
-					}
-				}
-				okJSON(w)
-			case http.MethodDelete:
-				for fid := range state.domains {
-					state.domains[fid] = filterOutInt(state.domains[fid], "id", id)
-				}
-				okJSON(w)
-			}
-			return
-		}
-
-		fid, _ := strconv.ParseInt(segs[0], 10, 64)
-		// /api/filters/{id} -- get/update/delete
-		if len(segs) == 1 {
-			switch req.Method {
-			case http.MethodDelete:
-				state.filters = filterOutInt(state.filters, "id", fid)
-				delete(state.domains, fid)
-				okJSON(w)
-			case http.MethodPut:
-				var body kv
-				_ = json.NewDecoder(req.Body).Decode(&body)
-				for _, f := range state.filters {
-					if int64(toInt(f["id"])) == fid {
-						if v, ok := body["name"]; ok {
-							f["name"] = v
-						}
-						if v, ok := body["description"]; ok {
-							f["description"] = v
-						}
-					}
-				}
-				okJSON(w)
-			}
-			return
-		}
-
-		// /api/filters/{id}/enabled
-		if len(segs) == 2 && segs[1] == "enabled" {
-			var body struct{ Enabled bool }
-			_ = json.NewDecoder(req.Body).Decode(&body)
 			for _, f := range state.filters {
-				if int64(toInt(f["id"])) == fid {
-					f["enabled"] = body.Enabled
-				}
+				f["domains"] = filterOutInt(f["domains"].([]kv), "id", id)
 			}
 			okJSON(w)
 			return
 		}
-
-		// /api/filters/{id}/domains
-		if len(segs) == 2 && segs[1] == "domains" {
-			if req.Method == http.MethodPost {
-				var body struct{ Domain, Description string }
-				_ = json.NewDecoder(req.Body).Decode(&body)
-				if strings.HasSuffix(body.Domain, "tesla.services") && strings.Contains(body.Domain, "hermes") {
-					http.Error(w, `"`+body.Domain+`" is a protected Tesla endpoint and cannot be allow-listed`, http.StatusBadRequest)
-					return
-				}
-				id := state.nextID
-				state.nextID++
-				d := kv{"id": id, "filter_id": fid, "domain": strings.ToLower(strings.TrimSpace(body.Domain)), "description": body.Description, "enabled": false}
-				state.domains[fid] = append(state.domains[fid], d)
-				writeJSON(w, kv{"id": id})
-				return
-			}
-			writeJSON(w, state.domains[fid])
+		id, _ := strconv.ParseInt(segs[0], 10, 64)
+		f := findFilter(id)
+		if f == nil {
+			writeStatusJSON(w, http.StatusNotFound, kv{"error": "filter not found"})
 			return
 		}
-		http.NotFound(w, req)
+		switch {
+		case len(segs) == 2 && segs[1] == "enabled" && req.Method == http.MethodPut:
+			var body struct{ Enabled bool }
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			f["enabled"] = body.Enabled
+			okJSON(w)
+		case len(segs) == 1 && req.Method == http.MethodDelete:
+			if f["is_system"] == true {
+				writeStatusJSON(w, http.StatusConflict, kv{"error": "system filters cannot be deleted"})
+				return
+			}
+			state.filters = filterOutInt(state.filters, "id", id)
+			okJSON(w)
+		case len(segs) == 2 && segs[1] == "domains" && req.Method == http.MethodPost:
+			var body struct{ Domain, Description string }
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			d, err := services.CheckAllowable(body.Domain)
+			if err != nil {
+				writeStatusJSON(w, http.StatusBadRequest, kv{"error": err.Error()})
+				return
+			}
+			for _, x := range f["domains"].([]kv) {
+				if x["domain"] == d {
+					writeStatusJSON(w, http.StatusBadRequest, kv{"error": d + " is already in " + f["name"].(string) + "."})
+					return
+				}
+			}
+			nid := state.nextID
+			state.nextID++
+			f["domains"] = append(f["domains"].([]kv), kv{"id": nid, "domain": d, "description": strings.TrimSpace(body.Description), "hits": 0})
+			w.WriteHeader(http.StatusCreated)
+			writeJSON(w, kv{"id": nid})
+		case len(segs) == 2 && segs[1] == "domains":
+			out := []kv{}
+			for _, x := range f["domains"].([]kv) {
+				out = append(out, kv{"id": x["id"], "preset_id": id, "domain": x["domain"], "description": x["description"]})
+			}
+			writeJSON(w, out)
+		default:
+			writeJSON(w, filterView(f, false))
+		}
 	})
 
 	mux.HandleFunc("/api/system/traffic", func(w http.ResponseWriter, req *http.Request) {
