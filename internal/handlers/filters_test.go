@@ -166,7 +166,7 @@ func TestCheckDomain(t *testing.T) {
 	ft := newFiltersTest(t)
 	ft.r.Get("/api/filters/check", NewFiltersHandler(&services.Services{}, nil).Check)
 	for q, want := range map[string]string{
-		"hermes-prd.ap.tesla.services":   `{"allowable":false,"domain":"hermes-prd.ap.tesla.services","reason":"hermes-prd.ap.tesla.services is always blocked. It can't be allowed."}`,
+		"hermes-prd.ap.tesla.services":  `{"allowable":false,"domain":"hermes-prd.ap.tesla.services","reason":"hermes-prd.ap.tesla.services is always blocked. It can't be allowed."}`,
 		"https://cdn.example.com/a.mp4": `{"allowable":true,"domain":"cdn.example.com","reason":""}`,
 	} {
 		rec := ft.do(t, "GET", "/api/filters/check?domain="+url.QueryEscape(q), "")
