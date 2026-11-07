@@ -161,7 +161,9 @@ function filtersApp() {
         },
 
         fmt(n) { return Number(n).toLocaleString('en-US'); },
-        isOpen(x) { return !!this.open[x.f.id] || (!!this.q && x.filtered); },
+        // Not x.filtered: when the query changes, the row's bindings can run before x-for hands
+        // the row its new item, and Alpine drops the second run, so x would still be the old one.
+        isOpen(x) { return !!this.open[x.f.id] || (!!this.q && !x.f.name.toLowerCase().includes(this.q)); },
         toggleOpen(x) { this.open = Object.assign({}, this.open, { [x.f.id]: !this.isOpen(x) }); this.confirmDel = null; },
         rowClass(x, i, n) {
             return [x.f.enabled ? 'on' : '', this.isOpen(x) ? 'open' : '', i === 0 ? 'first' : '', i === n - 1 ? 'last' : '',
