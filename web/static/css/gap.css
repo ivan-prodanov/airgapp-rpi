@@ -274,3 +274,8 @@ background-size:44px 44px;
 .spec-live{letter-spacing:.03em}
 }
 .spec-none{margin:6px 0 0;font-size:13.5px;color:var(--dim)}
+.s-none{--c:var(--faint);--t:rgba(122,135,156,.07);--cb:var(--line2)}
+.spec-log{margin:10px 0 0;font-size:13px;color:var(--dim)}
+.wrap .linkbtn{background:none;border:0;padding:0 2px;margin:0;color:var(--gate);font:inherit;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.wrap .linkbtn:hover{color:var(--txt)}
+@media(pointer:coarse){.wrap .linkbtn{display:inline-flex;align-items:center;min-height:44px}}

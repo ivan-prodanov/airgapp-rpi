@@ -25,6 +25,7 @@
                         <span x-show="tesla.status !== 'open'"><b x-text="fmt(tesla.blocked_1h || 0)">0</b> blocked this hour</span>
                         <span x-show="tesla.status === 'open'">Nothing blocked · everything passes</span>
                     </div>
+                    <p class="spec-log" x-show="tesla.ignore_traffic_log">Traffic logging is off. <button class="linkbtn" type="button" @click="teslaLogOn()">Turn on</button></p>
                 </div>
             </template>
             <p class="spec-none" x-show="loaded && !tesla" x-cloak>No Tesla yet. It'll appear here when it joins the Airgapp Wi-Fi.</p>
@@ -113,8 +114,8 @@ function devicesApp() {
         POLICIES: ['blocked', 'filtered', 'open'],
         tesla: null, rows: [], loaded: false,
         open: null, confirm: null, teslaConfirm: false,
-        active: {}, pending: {},
-        get teslaPolicy() { return this.tesla ? this.tesla.status : 'blocked'; },
+        active: {}, gen: {},   // gen: a counter per MAC, bumped by every change this page makes
+        get teslaPolicy() { return this.tesla ? this.tesla.status : 'none'; },   // neutral while loading or with no Tesla
         get nOnline() { return this.rows.filter(d => d.online).length + (this.tesla && this.tesla.online ? 1 : 0); },
         get nTotal() { return this.rows.length + (this.tesla ? 1 : 0); },
 
@@ -135,21 +136,30 @@ function devicesApp() {
 
         // The order is set when the list first loads (new, then online, then offline);
         // later loads update rows in place, so nothing moves under a finger.
+        // A device changed here after the request left keeps its local state: the
+        // response predates the change.
         async load() {
+            const sent = Object.assign({}, this.gen);
+            const fresh = mac => (this.gen[mac] || 0) === (sent[mac] || 0);
             let list;
             try { list = await api.get('/api/devices' + this.q); } catch (e) { return; }
             list = list || [];
             const t = list.find(d => d.tesla);
-            if (t && !this.pending[t.mac_address]) this.tesla = t; else if (!t) this.tesla = null;
+            if (!t || !this.tesla || this.tesla.mac_address !== t.mac_address) {
+                this.tesla = t || null;          // a different car, or none: drop a pending Open confirm
+                this.teslaConfirm = false;
+            } else if (fresh(t.mac_address)) {
+                Object.assign(this.tesla, t);    // same object, so an open Undo still points at it
+            }
             const others = list.filter(d => !d.tesla);
             const byMac = new Map(others.map(d => [d.mac_address, d]));
             if (!this.loaded) {
                 this.rows = others.slice().sort((a, b) => this.rank(a) - this.rank(b) || this.nameOf(a).localeCompare(this.nameOf(b)));
             } else {
-                const kept = this.rows.filter(d => byMac.has(d.mac_address)).map(d => this.pending[d.mac_address] ? d : Object.assign(d, byMac.get(d.mac_address)));
+                const kept = this.rows.filter(d => byMac.has(d.mac_address)).map(d => fresh(d.mac_address) ? Object.assign(d, byMac.get(d.mac_address)) : d);
                 const known = new Set(this.rows.map(d => d.mac_address));
-                const fresh = others.filter(d => !known.has(d.mac_address)).sort((a, b) => this.nameOf(a).localeCompare(this.nameOf(b)));
-                this.rows = fresh.concat(kept);
+                const newcomers = others.filter(d => !known.has(d.mac_address)).sort((a, b) => this.nameOf(a).localeCompare(this.nameOf(b)));
+                this.rows = newcomers.concat(kept);
             }
             this.loaded = true;
         },
@@ -199,23 +209,28 @@ function devicesApp() {
         async putStatus(mac, k) {
             await api.put('/api/devices/' + encodeURIComponent(mac) + '/status' + this.q, { status: k });
         },
+        touch(mac) { this.gen[mac] = (this.gen[mac] || 0) + 1; },
         async setPolicy(d, k, ev) {
             const prev = d.status;
             if (prev === k) return;
             d.status = k;
-            this.pending[d.mac_address] = true;
+            this.touch(d.mac_address);
             try {
                 await this.putStatus(d.mac_address, k);
                 notify(this.nameOf(d) + ' → ' + this.L[k], 'info', { undo: () => this.revert(d, prev) });
             } catch (e) {
-                d.status = prev;   // api.put already showed the error
+                // api.put showed the error. The server may still have saved the change
+                // (it fails after writing when applying the firewall fails), so show what it has.
+                d.status = prev;
                 this.resync(ev, prev);
-            } finally { delete this.pending[d.mac_address]; }
+                this.load();
+            }
         },
         async revert(d, prev) {
             const cur = d.status;
             d.status = prev;
-            try { await this.putStatus(d.mac_address, prev); } catch (e) { d.status = cur; }
+            this.touch(d.mac_address);
+            try { await this.putStatus(d.mac_address, prev); } catch (e) { d.status = cur; this.load(); }
         },
         // Opening the car is the exception: what leaves can't be recalled, so it asks first.
         async setTesla(k, ev) {
@@ -225,18 +240,31 @@ function devicesApp() {
             this.teslaConfirm = false;
             await this.applyTesla(k, prev, ev);
         },
-        async openTesla() { this.teslaConfirm = false; await this.applyTesla('open', this.tesla.status); },
+        async openTesla() {
+            this.teslaConfirm = false;
+            if (this.tesla) await this.applyTesla('open', this.tesla.status);
+        },
         async applyTesla(k, prev, ev) {
             const t = this.tesla;
             t.status = k;
-            this.pending[t.mac_address] = true;
+            this.touch(t.mac_address);
             try {
                 await this.putStatus(t.mac_address, k);
                 notify('Tesla → ' + this.L[k], 'info', { undo: () => this.revert(t, prev) });
             } catch (e) {
                 t.status = prev;
                 this.resync(ev, prev);
-            } finally { delete this.pending[t.mac_address]; }
+                this.load();
+            }
+        },
+        async teslaLogOn() {
+            const t = this.tesla;
+            this.touch(t.mac_address);
+            try {
+                await api.put('/api/devices/' + encodeURIComponent(t.mac_address) + this.q, { ignore_traffic_log: false });
+                t.ignore_traffic_log = false;
+                notify('Traffic logging resumed');
+            } catch (e) { /* api.put showed the error */ }
         },
 
         // Turning logging off wipes the device's history, so it asks first; turning it back on loses nothing.
@@ -247,6 +275,7 @@ function devicesApp() {
                 this.confirm = { mac: d.mac_address, kind: 'log' };
                 return;
             }
+            this.touch(d.mac_address);
             try {
                 await api.put('/api/devices/' + encodeURIComponent(d.mac_address) + this.q, { ignore_traffic_log: false });
                 d.ignore_traffic_log = false;
@@ -263,6 +292,7 @@ function devicesApp() {
             const kind = this.confirm && this.confirm.kind;
             this.confirm = null;
             const url = '/api/devices/' + encodeURIComponent(d.mac_address) + this.q;
+            this.touch(d.mac_address);
             if (kind === 'log') {
                 try {
                     await api.put(url, { ignore_traffic_log: true });
@@ -282,6 +312,7 @@ function devicesApp() {
         async rename(d, value) {
             const alias = value.trim();
             if (alias === (d.alias || '')) return;
+            this.touch(d.mac_address);
             try {
                 await api.put('/api/devices/' + encodeURIComponent(d.mac_address) + this.q, { alias });
                 d.alias = alias;

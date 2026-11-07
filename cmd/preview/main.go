@@ -34,17 +34,18 @@ import (
 
 type kv map[string]any
 type mockState struct {
-	mu         sync.Mutex
-	devicePuts []map[string]any // PUT /api/devices/{mac} bodies, for the browser checks
-	devices    []kv
-	filters    []kv
-	domains    map[int64][]kv // filter id -> domains
-	traffic    []kv
-	muted      []kv
-	firewall   []kv
-	bandwidth  []kv
-	settings   kv
-	nextID     int64
+	mu              sync.Mutex
+	devicePuts      []map[string]any // PUT /api/devices/{mac} bodies, for the browser checks
+	teslaLogTouched bool             // ?scenario=teslalogoff: logging was turned back on
+	devices         []kv
+	filters         []kv
+	domains         map[int64][]kv // filter id -> domains
+	traffic         []kv
+	muted           []kv
+	firewall        []kv
+	bandwidth       []kv
+	settings        kv
+	nextID          int64
 }
 
 var state = newMockState()
@@ -62,7 +63,7 @@ func newMockState() *mockState {
 			{"id": 5, "first_seen": ago("1200h"), "last_seen": ago("0s"), "mac_address": "B8:27:EB:33:9D:18", "alias": "", "hostname": "raspberrypi-cam", "ip_address": "192.168.4.61", "status": "blocked", "online": true, "ignore_traffic_log": false},
 			{"id": 6, "first_seen": ago("1200h"), "last_seen": ago("3h"), "mac_address": "DC:A6:32:71:5B:0E", "alias": "Roomba j7", "hostname": "iRobot-J7", "ip_address": "192.168.4.55", "status": "blocked", "online": false, "ignore_traffic_log": true},
 			{"id": 7, "first_seen": ago("900h"), "last_seen": ago("0s"), "mac_address": "00:17:88:7E:12:6A", "alias": "Hue bridge", "hostname": "Philips-hue", "ip_address": "192.168.4.71", "status": "blocked", "online": true, "ignore_traffic_log": true},
-			{"id": 8, "first_seen": ago("10m"), "last_seen": ago("0s"), "mac_address": "3A:7F:02:C9:11:5E", "alias": "", "hostname": "", "ip_address": "192.168.4.77", "status": "blocked", "online": true, "ignore_traffic_log": false},
+			{"id": 8, "first_seen": ago("10m"), "last_seen": ago("0s"), "mac_address": "02:00:00:00:00:08", "alias": "", "hostname": "", "ip_address": "192.168.4.77", "status": "blocked", "online": true, "ignore_traffic_log": false},
 		},
 		filters: []kv{
 			{"id": 1, "name": "Tesla AP/Nav", "description": "Autopilot map tiles + nav backend. Excludes auth, OTA, telemetry.", "is_system": true, "enabled": true},
@@ -367,8 +368,18 @@ func main() {
 					blocked = 0
 				}
 				v["tesla"], v["blocked_1h"] = true, blocked
+				if req.URL.Query().Get("scenario") == "teslalogoff" && !state.teslaLogTouched {
+					v["ignore_traffic_log"] = true
+				}
 			}
 			out = append(out, v)
+		}
+		if req.URL.Query().Get("scenario") == "slowlist" {
+			// A poll still in flight when the user changes something: like the real
+			// server, the answer reflects the database when the request arrived.
+			state.mu.Unlock()
+			time.Sleep(1500 * time.Millisecond)
+			state.mu.Lock()
 		}
 		writeJSON(w, out)
 	}
@@ -411,6 +422,11 @@ func main() {
 						d["status"] = body.Status
 					}
 				}
+				// Like the real API: the status is saved, then applying the firewall fails.
+				if req.URL.Query().Get("fail") == "status-after-save" {
+					writeStatusJSON(w, http.StatusInternalServerError, kv{"error": "status set but failed to apply firewall: nft exited 1"})
+					return
+				}
 				okJSON(w)
 				return
 			}
@@ -424,6 +440,9 @@ func main() {
 				return
 			}
 			state.devicePuts = append(state.devicePuts, body)
+			if hasLog && req.URL.Query().Get("scenario") == "teslalogoff" {
+				state.teslaLogTouched = true
+			}
 			for _, d := range state.devices {
 				if strings.EqualFold(d["mac_address"].(string), mac) {
 					if hasAlias {
