@@ -120,6 +120,17 @@ func TestLayoutNav(t *testing.T) {
 	}
 }
 
+// The sidebar footer (sign out) and its Remote access link are gone; until the
+// System page lands, Settings carries both.
+func TestSettingsInterimLinks(t *testing.T) {
+	body, _ := renderPage(NewRenderer(web.Content), "settings.html", "settings")
+	for _, want := range []string{`href="/remote-access"`, `onclick="logout()"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("settings page lacks %s", want)
+		}
+	}
+}
+
 func TestRenderEveryPage(t *testing.T) {
 	r := NewRenderer(web.Content)
 	for _, p := range testPages {

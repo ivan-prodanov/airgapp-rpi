@@ -144,6 +144,12 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 func okJSON(w http.ResponseWriter) { writeJSON(w, kv{"status": "ok"}) }
 
+func writeStatusJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
 func extractIDFromTail(path string) int64 {
 	parts := strings.Split(path, "/")
 	last := parts[len(parts)-1]
@@ -208,7 +214,7 @@ func main() {
 		}
 		r.renderPage(w, "dashboard.html", map[string]string{"page": "dashboard"})
 	})
-	for _, page := range []string{"devices", "traffic", "stats", "filters", "firewall", "bandwidth", "settings"} {
+	for _, page := range []string{"devices", "traffic", "stats", "filters", "firewall", "bandwidth", "settings", "remote-access"} {
 		p := page
 		mux.HandleFunc("/"+p, func(w http.ResponseWriter, req *http.Request) {
 			r.renderPage(w, p+".html", map[string]string{"page": p})
@@ -216,9 +222,31 @@ func main() {
 	}
 
 	// ── API stubs ─────────────────────────────────────
+	// Login: password "wrong" and "locked" exercise the login page's error paths.
 	mux.HandleFunc("/api/login", func(w http.ResponseWriter, req *http.Request) {
-		w.Header().Set("Set-Cookie", "netfilter_session=preview; Path=/; SameSite=Lax")
-		okJSON(w)
+		var body struct {
+			Password string `json:"password"`
+		}
+		json.NewDecoder(req.Body).Decode(&body)
+		switch body.Password {
+		case "wrong":
+			writeStatusJSON(w, http.StatusUnauthorized, kv{"error": "invalid credentials"})
+		case "locked":
+			w.Header().Set("Retry-After", "119")
+			writeStatusJSON(w, http.StatusTooManyRequests, kv{"error": "too many failed attempts; try again in 1m59s"})
+		default:
+			w.Header().Set("Set-Cookie", "netfilter_session=preview; Path=/; SameSite=Lax")
+			okJSON(w)
+		}
+	})
+	// Remote access (example data only: this repository is public).
+	mux.HandleFunc("/api/remote/status", func(w http.ResponseWriter, req *http.Request) {
+		writeJSON(w, kv{"installed": true, "daemon_active": true, "authenticated": true, "backend_state": "Running",
+			"tailnet_hostname": "airgapp-preview", "tailnet_ipv4": "100.64.0.1",
+			"ble_funnel": true, "ble_funnel_url": "https://airgapp-preview.example.ts.net/api/ble"})
+	})
+	mux.HandleFunc("/api/tesla/tokens", func(w http.ResponseWriter, req *http.Request) {
+		writeJSON(w, kv{"tokens": []kv{}})
 	})
 	mux.HandleFunc("/api/logout", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Set-Cookie", "netfilter_session=; Path=/; Max-Age=0")
