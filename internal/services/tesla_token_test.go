@@ -139,7 +139,7 @@ func TestTeslaToken_RevokeIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestTeslaToken_ListShowsActiveAndRevoked(t *testing.T) {
+func TestTeslaToken_ListShowsOnlyActive(t *testing.T) {
 	db := memDB(t)
 	s := NewTeslaTokenService(db)
 
@@ -158,15 +158,48 @@ func TestTeslaToken_ListShowsActiveAndRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("list len = %d, want 2", len(rows))
+	// The admin UI shows live users only — a revoked (self-destructed) token is
+	// gone from the list, so "if it's there, it's active".
+	if len(rows) != 1 {
+		t.Fatalf("list len = %d, want 1 (active only)", len(rows))
 	}
-	// Order: active first, revoked after.
 	if rows[0].Name != "alpha" || rows[0].RevokedAt != nil {
 		t.Errorf("row 0 = %+v, want active alpha", rows[0])
 	}
-	if rows[1].Name != "bravo" || rows[1].RevokedAt == nil {
-		t.Errorf("row 1 = %+v, want revoked bravo", rows[1])
+}
+
+func TestTeslaToken_DeleteRemovesRow(t *testing.T) {
+	db := memDB(t)
+	s := NewTeslaTokenService(db)
+
+	issued, err := s.Issue("to-delete")
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if err := s.Delete(issued.Token.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	// Hard delete — the row is gone from the table entirely (not just revoked).
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM tesla_client_tokens WHERE id = ?", issued.Token.ID).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("row count after delete = %d, want 0", n)
+	}
+	// And the bearer stops validating.
+	if _, err := s.Validate(issued.Plain); !errors.Is(err, ErrTeslaTokenInvalid) {
+		t.Errorf("validate deleted token err = %v, want ErrTeslaTokenInvalid", err)
+	}
+}
+
+func TestTeslaToken_DeleteUnknownReturnsNotFound(t *testing.T) {
+	db := memDB(t)
+	s := NewTeslaTokenService(db)
+
+	if err := s.Delete(999); !errors.Is(err, ErrTeslaTokenNotFound) {
+		t.Errorf("delete 999 err = %v, want ErrTeslaTokenNotFound", err)
 	}
 }
 
@@ -184,8 +217,8 @@ func TestTeslaToken_IssuedTokensAreUnique(t *testing.T) {
 }
 
 // TestTeslaToken_ListExposesPlaintextForReview verifies v25's re-viewable QR:
-// List returns the stored plaintext for ACTIVE tokens (so the operator can
-// re-show a user's enrolment QR) but never for revoked ones.
+// List returns the stored plaintext for ACTIVE tokens so the operator can
+// re-show a user's enrolment QR. Revoked tokens drop out of the list entirely.
 func TestTeslaToken_ListExposesPlaintextForReview(t *testing.T) {
 	db := memDB(t)
 	s := NewTeslaTokenService(db)
@@ -216,8 +249,8 @@ func TestTeslaToken_ListExposesPlaintextForReview(t *testing.T) {
 	if got := byName["phone-a"].Plain; got != a.Plain {
 		t.Errorf("active token Plain = %q, want the issued plaintext %q", got, a.Plain)
 	}
-	// Revoked token: plaintext must be withheld.
-	if got := byName["phone-b"].Plain; got != "" {
-		t.Errorf("revoked token Plain = %q, want empty (never ship a revoked token's plaintext)", got)
+	// Revoked token: absent from the list, so its plaintext never ships.
+	if _, present := byName["phone-b"]; present {
+		t.Errorf("revoked token appeared in List — want active-only")
 	}
 }

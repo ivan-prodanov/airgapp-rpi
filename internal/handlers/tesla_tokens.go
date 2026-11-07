@@ -19,9 +19,9 @@ import (
 	"github.com/iulianfsdro/rpi-network-filter/internal/services"
 )
 
-// ListTokens returns every issued token (active + revoked) with audit
-// columns. The plaintext is never on this surface — it was only
-// returned at issuance.
+// ListTokens returns the active tokens with their audit columns and
+// re-viewable plaintext (v25), so the operator can re-show any user's
+// enrolment QR. Removed/self-revoked tokens are not listed.
 func (h *TeslaHandler) ListTokens(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.tokens.List()
 	if err != nil {
@@ -102,9 +102,10 @@ func (h *TeslaHandler) RevokeMyToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// RevokeToken flips revoked_at on the given token id. The path param
-// is the numeric id from the list endpoint, not the token plaintext —
-// we never round-trip plaintext.
+// RevokeToken is the admin "Remove" action: it HARD-deletes the token row by
+// its numeric id (from the list endpoint, never the plaintext). The user drops
+// off the list and loses relay access immediately — there is no revoked state
+// to display. (The DELETE route keeps its name for continuity.)
 func (h *TeslaHandler) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -112,7 +113,7 @@ func (h *TeslaHandler) RevokeToken(w http.ResponseWriter, r *http.Request) {
 		JSONError(w, http.StatusBadRequest, "invalid token id")
 		return
 	}
-	if err := h.tokens.Revoke(id); err != nil {
+	if err := h.tokens.Delete(id); err != nil {
 		if errors.Is(err, services.ErrTeslaTokenNotFound) {
 			JSONError(w, http.StatusNotFound, err.Error())
 			return
@@ -121,8 +122,8 @@ func (h *TeslaHandler) RevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user := GetUser(r); user != nil && h.audit != nil {
-		h.audit.Log("tesla.token_revoke",
-			user.Username+" revoked BLE client token id="+idStr)
+		h.audit.Log("tesla.token_delete",
+			user.Username+" deleted BLE client token id="+idStr)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

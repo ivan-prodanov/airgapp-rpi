@@ -201,7 +201,6 @@
                             <th>Name</th>
                             <th style="width:150px;">Added</th>
                             <th style="width:150px;">Last used</th>
-                            <th style="width:90px;">Status</th>
                             <th style="width:170px;" class="right">&nbsp;</th>
                         </tr>
                     </thead>
@@ -211,15 +210,14 @@
                                 <td class="cell-primary" x-text="t.name"></td>
                                 <td class="cell-mac" x-text="new Date(t.created_at).toLocaleString()"></td>
                                 <td class="cell-mac" x-text="t.last_used_at ? new Date(t.last_used_at).toLocaleString() : '—'"></td>
-                                <td><span class="badge dot" :class="t.revoked_at ? 'muted' : 'success'" x-text="t.revoked_at ? 'revoked' : 'active'"></span></td>
                                 <td class="actions">
-                                    <button class="btn sm" x-show="!t.revoked_at" @click="showQr(t)">Show QR</button>
-                                    <button class="btn sm danger" x-show="!t.revoked_at" @click="revokeToken(t)">Remove</button>
+                                    <button class="btn sm" @click="showQr(t)">Show QR</button>
+                                    <button class="btn sm danger" @click="revokeToken(t)">Remove</button>
                                 </td>
                             </tr>
                         </template>
                         <template x-if="bleTokens.length === 0">
-                            <tr><td colspan="5" style="text-align:center; color:var(--fg-mute); padding:22px;">No users yet. Add one to enrol a phone.</td></tr>
+                            <tr><td colspan="4" style="text-align:center; color:var(--fg-mute); padding:22px;">No users yet. Add one to enrol a phone.</td></tr>
                         </template>
                     </tbody>
                 </table>

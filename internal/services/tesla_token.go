@@ -35,9 +35,9 @@ type TeslaClientToken struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
-	// Plain is the re-viewable bearer, populated by List for ACTIVE tokens so
-	// the operator can re-display a user's enrolment QR without re-issuing
-	// (v25). Empty for revoked tokens and never set on Validate/get.
+	// Plain is the re-viewable bearer, populated by List so the operator can
+	// re-display a user's enrolment QR without re-issuing (v25). List returns
+	// active tokens only, so this is always set there; never set on Validate/get.
 	Plain string `json:"plain,omitempty"`
 }
 
@@ -103,13 +103,17 @@ func (s *TeslaTokenService) Issue(name string) (*TeslaTokenIssue, error) {
 	return &TeslaTokenIssue{Token: *row, Plain: plain}, nil
 }
 
-// List returns every token (active + revoked). The operator UI uses it
-// to display the active set + revoke individual entries.
+// List returns the active tokens, newest first, each with its re-viewable
+// plaintext. The operator UI renders them as the "Users" table; a removed
+// (hard-deleted) or self-revoked token never appears.
 func (s *TeslaTokenService) List() ([]TeslaClientToken, error) {
+	// Active tokens only — "Remove" hard-deletes, and a self-revoked token is
+	// dead, so the admin UI shows a flat list of live users (no status column).
 	rows, err := s.db.Query(`
 		SELECT id, name, created_at, last_used_at, revoked_at, token_plain
 		FROM tesla_client_tokens
-		ORDER BY revoked_at IS NULL DESC, created_at DESC`)
+		WHERE revoked_at IS NULL
+		ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list tokens: %w", err)
 	}
@@ -120,11 +124,6 @@ func (s *TeslaTokenService) List() ([]TeslaClientToken, error) {
 		var t TeslaClientToken
 		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt, &t.Plain); err != nil {
 			return nil, fmt.Errorf("scan token: %w", err)
-		}
-		// Only an active token's QR can be re-shown — never hand a revoked
-		// token's plaintext back to the client.
-		if t.RevokedAt != nil {
-			t.Plain = ""
 		}
 		out = append(out, t)
 	}
@@ -153,6 +152,24 @@ func (s *TeslaTokenService) Revoke(id int64) error {
 		if exists == 0 {
 			return ErrTeslaTokenNotFound
 		}
+	}
+	return nil
+}
+
+// Delete permanently removes a token row — the admin "Remove" action. This is
+// a HARD delete (not the soft Revoke): the row is gone from the list and the
+// client loses access immediately. Returns ErrTeslaTokenNotFound if no such id.
+func (s *TeslaTokenService) Delete(id int64) error {
+	res, err := s.db.Exec("DELETE FROM tesla_client_tokens WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete token: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrTeslaTokenNotFound
 	}
 	return nil
 }

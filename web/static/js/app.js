@@ -11,10 +11,18 @@ const api = {
             window.location = '/login';
             throw new Error('unauthorized');
         }
-        const data = await res.json();
+        // Tolerate an empty body (204 No Content, e.g. DELETE/logout/reboot):
+        // calling res.json() on it throws "Unexpected end of JSON input", which
+        // used to blow up the caller — a successful DELETE then looked like a
+        // no-op because loadTokens() never ran. Parse only when there's a body.
+        const text = await res.text();
+        let data = null;
+        if (text) {
+            try { data = JSON.parse(text); } catch { data = null; }
+        }
         if (!res.ok) {
-            notify(data.error || 'Request failed', 'error');
-            throw new Error(data.error || 'Request failed');
+            notify((data && data.error) || 'Request failed', 'error');
+            throw new Error((data && data.error) || 'Request failed');
         }
         return data;
     },
