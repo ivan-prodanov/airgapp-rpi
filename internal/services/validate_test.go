@@ -45,9 +45,9 @@ func TestValidDomain(t *testing.T) {
 		{"x.io", true},
 		{"", false},
 		{"localhost", true},
-		{"ex ample.com", false},                       // space
+		{"ex ample.com", false},                      // space
 		{"evil.com\nnftset=/bad/inet#filter", false}, // newline injection
-		{"foo/bar", false},                            // slash breaks dnsmasq address=
+		{"foo/bar", false},                           // slash breaks dnsmasq address=
 		{"has#hash.com", false},
 		{".leading-dot", false},
 		{"trailing-dot.", false},
@@ -89,13 +89,13 @@ func TestValidMAC(t *testing.T) {
 		want bool
 	}{
 		{"aa:bb:cc:dd:ee:ff", true},
-		{"AA:BB:CC:DD:EE:FF", true},  // lowercased internally
+		{"AA:BB:CC:DD:EE:FF", true}, // lowercased internally
 		{"4c:fc:aa:17:37:75", true},
-		{"aa:bb:cc:dd:ee:gg", false},                     // non-hex
-		{"aa%3abb%3acc%3add%3aee%3aff", false},            // URL-encoded (v8 bug regression guard)
-		{"aa-bb-cc-dd-ee-ff", false},                      // wrong separator
-		{"aabbccddeeff", false},                           // missing separators
-		{"aa:bb:cc:dd:ee", false},                         // too short
+		{"aa:bb:cc:dd:ee:gg", false},           // non-hex
+		{"aa%3abb%3acc%3add%3aee%3aff", false}, // URL-encoded (v8 bug regression guard)
+		{"aa-bb-cc-dd-ee-ff", false},           // wrong separator
+		{"aabbccddeeff", false},                // missing separators
+		{"aa:bb:cc:dd:ee", false},              // too short
 		{"", false},
 	}
 	for _, c := range cases {

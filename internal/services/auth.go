@@ -113,6 +113,12 @@ func (s *AuthService) Logout(token string) error {
 	return err
 }
 
+// EndAllSessions signs every browser out (a password change does this).
+func (s *AuthService) EndAllSessions() error {
+	_, err := s.db.Exec("DELETE FROM sessions")
+	return err
+}
+
 func (s *AuthService) CleanExpiredSessions() {
 	s.db.Exec("DELETE FROM sessions WHERE expires_at < ?", time.Now())
 }

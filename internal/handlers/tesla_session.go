@@ -3,13 +3,13 @@
 // V4.4 Phase 3b + Phase 1 (WS events). Four endpoints, mounted under
 // /api/ble:
 //
-//   POST   /api/ble/sessions             — open, returns {session_id, vin}
-//   POST   /api/ble/sessions/{id}/exchange — body {payload_b64, timeout_ms}
-//                                            returns {response_b64}
-//   DELETE /api/ble/sessions/{id}        — close
-//   GET    /api/ble/sessions/{id}/events?token=<bearer> — WebSocket
-//                                            upgrade; streams unsolicited
-//                                            frames as they arrive.
+//	POST   /api/ble/sessions             — open, returns {session_id, vin}
+//	POST   /api/ble/sessions/{id}/exchange — body {payload_b64, timeout_ms}
+//	                                         returns {response_b64}
+//	DELETE /api/ble/sessions/{id}        — close
+//	GET    /api/ble/sessions/{id}/events?token=<bearer> — WebSocket
+//	                                         upgrade; streams unsolicited
+//	                                         frames as they arrive.
 //
 // Payloads are RoutableMessage protobuf bytes. The handlers don't
 // parse or inspect them — they just shuttle base64-encoded bytes to
@@ -68,7 +68,7 @@ func (h *TeslaHandler) OpenBLESession(w http.ResponseWriter, r *http.Request) {
 	}
 	if user := GetUser(r); user != nil && h.audit != nil {
 		h.audit.Log("tesla.ble_session_open",
-			user.Username+" opened BLE session "+sess.ID+" (vin="+sess.VIN+")")
+			user.Username+" opened BLE session "+sess.ID) // never the VIN
 	}
 	JSON(w, http.StatusOK, sess)
 }

@@ -130,6 +130,10 @@ func main() {
 		if err := svc.Remote.EnsureAdminServe(context.Background()); err != nil {
 			log.Printf("[REMOTE] admin serve setup on boot failed (non-fatal): %v", err)
 		}
+		// Airgapp access is always on: re-assert the /api/ble Funnel too.
+		if err := svc.Remote.EnableBLEFunnel(context.Background()); err != nil {
+			log.Printf("[REMOTE] BLE funnel on boot failed (non-fatal): %v", err)
+		}
 	}()
 
 	// V4.4 Phase 4: the Tesla background poller is gone. The Pi no

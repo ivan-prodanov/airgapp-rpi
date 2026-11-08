@@ -1192,6 +1192,14 @@ var migrations = []string{
 	DELETE FROM filter_udp_ports WHERE preset_id = (SELECT id FROM filters WHERE name = 'Car Apps');
 	DELETE FROM filter_tcp_ports WHERE preset_id = (SELECT id FROM filters WHERE name = 'Car Apps');
 	DELETE FROM filters WHERE name = 'Car Apps';`,
+
+	// v30: the audit log stops holding VINs. tesla.set_vin and
+	// tesla.ble_session_open used to write them into details; rewrite those
+	// rows the way the handlers now write them.
+	`UPDATE audit_log SET details = substr(details, 1, instr(details, ' set VIN to ') - 1) || ' set the VIN'
+		WHERE action = 'tesla.set_vin' AND instr(details, ' set VIN to ') > 0;
+	UPDATE audit_log SET details = substr(details, 1, instr(details, ' (vin=') - 1)
+		WHERE action = 'tesla.ble_session_open' AND instr(details, ' (vin=') > 0;`,
 }
 
 // localSeeds holds operator-private seed statements that must NOT be

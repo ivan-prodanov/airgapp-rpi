@@ -1,14 +1,15 @@
 // handlers/remote.go — /remote-access page + Tailscale management API.
 //
 // Three endpoints power the page:
-//   GET  /api/remote/status   → flat snapshot of {installed, daemon,
-//                                  authenticated, hostname, ipv4}
-//   POST /api/remote/install  → fire-and-forget install of the
-//                                  tailscale package. Idempotent; the
-//                                  UI polls Status afterwards.
-//   POST /api/remote/up       → { "auth_key": "tskey-..." } — logs the
-//                                  Pi into the tailnet.
-//   POST /api/remote/logout   → disconnects.
+//
+//	GET  /api/remote/status   → flat snapshot of {installed, daemon,
+//	                               authenticated, hostname, ipv4}
+//	POST /api/remote/install  → fire-and-forget install of the
+//	                               tailscale package. Idempotent; the
+//	                               UI polls Status afterwards.
+//	POST /api/remote/up       → { "auth_key": "tskey-..." } — logs the
+//	                               Pi into the tailnet.
+//	POST /api/remote/logout   → disconnects.
 //
 // All four are behind APIAuthRequired — the same netfilterd web session
 // that gates every other admin action. There is no public surface for
@@ -57,7 +58,8 @@ func (h *RemoteHandler) Status(w http.ResponseWriter, r *http.Request) {
 // HTTP request open for the duration — at this scale (single operator,
 // one click) that's simpler than backgrounding it.
 func (h *RemoteHandler) Install(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	// Exempt from the 30 s request timeout (see requestTimeout): installing takes longer.
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 	if err := h.remote.Install(ctx); err != nil {
 		JSONError(w, http.StatusInternalServerError, err.Error())
@@ -103,23 +105,6 @@ func (h *RemoteHandler) EnableBLEFunnel(w http.ResponseWriter, r *http.Request) 
 	if u := GetUser(r); u != nil {
 		h.audit.Log("remote.funnel.ble.enable",
 			u.Username+" exposed /api/ble via Tailscale Funnel")
-	}
-	st, _ := h.remote.Status(ctx)
-	JSON(w, http.StatusOK, st)
-}
-
-// DisableBLEFunnel removes the public Funnel handler for /api/ble. The
-// local listener stays up; only the public exposure goes away.
-func (h *RemoteHandler) DisableBLEFunnel(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	if err := h.remote.DisableBLEFunnel(ctx); err != nil {
-		JSONError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	if u := GetUser(r); u != nil {
-		h.audit.Log("remote.funnel.ble.disable",
-			u.Username+" hid /api/ble from the public internet")
 	}
 	st, _ := h.remote.Status(ctx)
 	JSON(w, http.StatusOK, st)

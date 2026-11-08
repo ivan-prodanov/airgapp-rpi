@@ -137,7 +137,7 @@ func (h *TeslaHandler) SetVIN(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user := GetUser(r); user != nil && h.audit != nil {
-		h.audit.Log("tesla.set_vin", user.Username+" set VIN to "+body.VIN)
+		h.audit.Log("tesla.set_vin", user.Username+" set the VIN") // never the VIN itself
 	}
 	JSON(w, http.StatusOK, map[string]string{"vin": body.VIN})
 }

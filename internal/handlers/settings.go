@@ -142,7 +142,7 @@ func (h *SettingsHandler) ChangePassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if len(req.Password) < 8 {
-		JSONError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		JSONError(w, http.StatusBadRequest, "Use at least 8 characters.")
 		return
 	}
 
@@ -150,8 +150,14 @@ func (h *SettingsHandler) ChangePassword(w http.ResponseWriter, r *http.Request)
 		JSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// A new password signs every browser out, this one included.
+	if err := h.svc.Auth.EndAllSessions(); err != nil {
+		JSONError(w, http.StatusInternalServerError, "Password changed, but other sessions are still signed in: "+err.Error())
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode})
 
 	h.svc.Audit.Log("auth.password_change", "user="+user.Username)
 
-	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	JSON(w, http.StatusOK, map[string]bool{"signed_out": true})
 }

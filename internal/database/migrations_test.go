@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -651,5 +652,38 @@ func TestMigrate_LocalSeedFailureIsNotFatal(t *testing.T) {
 	}
 	if !filterDomainSet(t, db, "Connectivity")["later.example"] {
 		t.Fatal("a good seed after a failing one was not applied")
+	}
+}
+
+// v30 rewrites the audit rows that held a VIN.
+func TestMigrateV30_ScrubsVINs(t *testing.T) {
+	db := openMemory(t)
+	migrateTo(t, db, 29)
+	for _, q := range []string{
+		`INSERT INTO audit_log (action, details) VALUES ('tesla.set_vin', 'owner set VIN to 5YJ3E1EA7KF000001')`,
+		`INSERT INTO audit_log (action, details) VALUES ('tesla.ble_session_open', 'owner opened BLE session abc123 (vin=LRW3E7EK1NC000002)')`,
+		`INSERT INTO audit_log (action, details) VALUES ('tesla.ble_session_close', 'owner closed BLE session abc123')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(`SELECT details FROM audit_log ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var d string
+		rows.Scan(&d)
+		got = append(got, d)
+	}
+	want := []string{"owner set the VIN", "owner opened BLE session abc123", "owner closed BLE session abc123"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("details %q, want %q", got, want)
 	}
 }

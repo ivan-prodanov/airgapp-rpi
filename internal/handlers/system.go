@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/iulianfsdro/rpi-network-filter/internal/models"
 	"github.com/iulianfsdro/rpi-network-filter/internal/services"
 )
 
@@ -167,10 +168,18 @@ func (h *SystemHandler) StatsTimeSeries(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *SystemHandler) AuditLog(w http.ResponseWriter, r *http.Request) {
-	logs, err := h.audit.Recent(50)
+	logs, err := h.audit.Recent(14)
 	if err != nil {
 		JSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	JSON(w, http.StatusOK, logs)
+	total, since, err := h.audit.Summary()
+	if err != nil {
+		JSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if logs == nil {
+		logs = []models.AuditLog{}
+	}
+	JSON(w, http.StatusOK, map[string]any{"entries": logs, "total": total, "since": since})
 }

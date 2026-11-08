@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/iulianfsdro/rpi-network-filter/internal/models"
 	"github.com/iulianfsdro/rpi-network-filter/internal/services"
 )
@@ -160,4 +162,23 @@ func BLECORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// requestTimeout is chi's Timeout for every route except the exempt paths
+// (installing Tailscale takes longer; that handler sets its own deadline).
+func requestTimeout(d time.Duration, exempt ...string) func(http.Handler) http.Handler {
+	skip := map[string]bool{}
+	for _, p := range exempt {
+		skip[p] = true
+	}
+	return func(next http.Handler) http.Handler {
+		timed := middleware.Timeout(d)(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if skip[r.URL.Path] {
+				next.ServeHTTP(w, r)
+				return
+			}
+			timed.ServeHTTP(w, r)
+		})
+	}
 }

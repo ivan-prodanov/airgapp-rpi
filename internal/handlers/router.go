@@ -32,7 +32,7 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 	// route is covered.
 	r.Use(middleware.RequestLogger(NewRedactingLogFormatter()))
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
+	r.Use(requestTimeout(30*time.Second, "/api/remote/install"))
 
 	// Subfilesystems
 	staticFS, _ := fs.Sub(webFS, "static")
@@ -244,7 +244,6 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 				r.Post("/up", remoteH.Up)
 				r.Post("/logout", remoteH.Logout)
 				r.Post("/funnel/ble/enable", remoteH.EnableBLEFunnel)
-				r.Post("/funnel/ble/disable", remoteH.DisableBLEFunnel)
 			})
 		})
 	})

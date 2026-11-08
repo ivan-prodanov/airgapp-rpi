@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -111,5 +112,39 @@ func TestGetSettings_HidesPassword(t *testing.T) {
 	}
 	if out["ap_password_set"] != "true" {
 		t.Fatalf("ap_password_set = %v", out["ap_password_set"])
+	}
+}
+
+// A new dashboard password signs out every browser, this one included.
+func TestChangePassword_EndsAllSessions(t *testing.T) {
+	st := newSettingsTest(t)
+	auth := services.NewAuthService(st.db)
+	st.h.svc.Auth = auth
+	if err := auth.CreateUser("owner", "old-password"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := auth.Login("owner", "old-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := auth.Login("owner", "old-password")
+	user, _ := auth.ValidateSession(a)
+	req := httptest.NewRequest("PUT", "/api/settings/password", strings.NewReader(`{"password":"new-password"}`))
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, user))
+	rec := httptest.NewRecorder()
+	st.h.ChangePassword(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"signed_out":true`) {
+		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	}
+	for _, tok := range []string{a, b} {
+		if _, err := auth.ValidateSession(tok); err == nil {
+			t.Errorf("session %s… still valid", tok[:6])
+		}
+	}
+	if c := rec.Result().Cookies(); len(c) != 1 || c[0].Name != "session" || c[0].MaxAge >= 0 {
+		t.Errorf("cookie not cleared: %+v", c)
+	}
+	if _, err := auth.Login("owner", "new-password"); err != nil {
+		t.Errorf("new password doesn't sign in: %v", err)
 	}
 }

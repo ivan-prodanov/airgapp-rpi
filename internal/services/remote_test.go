@@ -1,6 +1,12 @@
 package services
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // Tests for parseServeStatus — the JSON-shape detector for Tailscale
 // Funnel-on-/api/ble. The CLI output here mirrors what `tailscale serve
@@ -94,5 +100,31 @@ func TestParseServeStatus_GarbageJSON(t *testing.T) {
 	on, _ := parseServeStatus([]byte("not json"), "pi.tail1234.ts.net")
 	if on {
 		t.Errorf("garbage JSON should default to off (silent)")
+	}
+}
+
+// fakeTailscale puts a `tailscale` on PATH that records its arguments.
+func fakeTailscale(t *testing.T) (logPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	logPath = filepath.Join(dir, "calls")
+	script := "#!/bin/sh\necho \"$*\" >> " + logPath + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "tailscale"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logPath
+}
+
+// Airgapp access (the /api/ble Funnel) is always on: signing in turns it on.
+func TestRemoteUp_EnablesFunnel(t *testing.T) {
+	logPath := fakeTailscale(t)
+	s := NewRemoteService()
+	if err := s.Up(context.Background(), "tskey-auth-example"); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	b, _ := os.ReadFile(logPath)
+	if !strings.Contains(string(b), "funnel --bg --set-path=/api/ble https+insecure://localhost:8443") {
+		t.Fatalf("Up didn't enable the Funnel; calls:\n%s", b)
 	}
 }

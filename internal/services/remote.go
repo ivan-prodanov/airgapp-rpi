@@ -14,19 +14,19 @@
 //
 // Three opinions baked in:
 //
-//   1. We don't store the auth key. `tailscale up --authkey=...` hands
-//      it to tailscaled which keeps its own state in /var/lib/tailscale;
-//      we never need to remember it. The /remote-access page is the
-//      one-shot input, then forget.
+//  1. We don't store the auth key. `tailscale up --authkey=...` hands
+//     it to tailscaled which keeps its own state in /var/lib/tailscale;
+//     we never need to remember it. The /remote-access page is the
+//     one-shot input, then forget.
 //
-//   2. We auto-install on first use. apt-get install tailscale (with
-//      the apt source from packagecloud) is one HTTP fetch + one apt
-//      install. Doing this from the UI on click instead of forcing the
-//      operator into ssh is the whole point of being non-tech friendly.
+//  2. We auto-install on first use. apt-get install tailscale (with
+//     the apt source from packagecloud) is one HTTP fetch + one apt
+//     install. Doing this from the UI on click instead of forcing the
+//     operator into ssh is the whole point of being non-tech friendly.
 //
-//   3. Hostname is the Pi's hostname (rasperrypi by default → user
-//      can change in /etc/hostname). Tailscale takes it as-is. Good
-//      enough — the user gets pi.<tailnet>.ts.net.
+//  3. Hostname is the Pi's hostname (rasperrypi by default → user
+//     can change in /etc/hostname). Tailscale takes it as-is. Good
+//     enough — the user gets pi.<tailnet>.ts.net.
 package services
 
 import (
@@ -156,7 +156,7 @@ func (s *RemoteService) Status(ctx context.Context) (RemoteStatus, error) {
 	var raw struct {
 		BackendState string `json:"BackendState"`
 		Self         struct {
-			DNSName string   `json:"DNSName"`
+			DNSName      string   `json:"DNSName"`
 			TailscaleIPs []string `json:"TailscaleIPs"`
 		} `json:"Self"`
 	}
@@ -195,7 +195,7 @@ func (s *RemoteService) Status(ctx context.Context) (RemoteStatus, error) {
 // shelling out.
 func parseServeStatus(jsonBytes []byte, hostname string) (bool, string) {
 	var st struct {
-		Web         map[string]struct {
+		Web map[string]struct {
 			Handlers map[string]any `json:"Handlers"`
 		} `json:"Web"`
 		AllowFunnel map[string]bool `json:"AllowFunnel"`
@@ -241,6 +241,10 @@ func parseServeStatus(jsonBytes []byte, hostname string) (bool, string) {
 func (s *RemoteService) EnableBLEFunnel(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.enableBLEFunnelLocked(ctx)
+}
+
+func (s *RemoteService) enableBLEFunnelLocked(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx,
 		"tailscale", "funnel",
 		"--bg",
@@ -249,24 +253,6 @@ func (s *RemoteService) EnableBLEFunnel(ctx context.Context) error {
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("enable BLE funnel: %w\n%s", err, string(out))
-	}
-	return nil
-}
-
-// DisableBLEFunnel removes the /api/ble Funnel handler. The Pi's
-// local :8443 listener is untouched; only the public-edge exposure
-// goes away. Other serve handlers (if the operator has set any) are
-// preserved — we target only our path.
-func (s *RemoteService) DisableBLEFunnel(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cmd := exec.CommandContext(ctx,
-		"tailscale", "funnel",
-		"--set-path="+bleFunnelPath,
-		"off",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("disable BLE funnel: %w\n%s", err, string(out))
 	}
 	return nil
 }
@@ -382,6 +368,10 @@ func (s *RemoteService) Up(ctx context.Context, authKey string) error {
 	if err := s.ensureAdminServeLocked(ctx); err != nil {
 		log.Printf("[REMOTE] admin serve setup after up failed (non-fatal): %v", err)
 	}
+	// Airgapp access (the /api/ble Funnel) is always on once signed in.
+	if err := s.enableBLEFunnelLocked(ctx); err != nil {
+		log.Printf("[REMOTE] BLE funnel after up failed (non-fatal): %v", err)
+	}
 	return nil
 }
 
@@ -435,4 +425,3 @@ func redactOutput(s string) string {
 func isSpace(b byte) bool {
 	return b == ' ' || b == '\n' || b == '\r' || b == '\t'
 }
-
