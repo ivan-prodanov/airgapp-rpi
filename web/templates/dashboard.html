@@ -47,16 +47,24 @@
 // The Gap dashboard. The gate draws one lane per host the Tesla contacted most
 // recently: green hosts are on the allow-list, red ones aren't; a lane crosses
 // the gate when the request was allowed and is cut when it was blocked.
+//
+// It runs on a fixed beat, like the mockup: every 3.2 s the gate sweeps, whatever
+// the data did. The beat is the one moment the page changes (headline, counters
+// and lanes together); the fetch for it goes out 0.7 s earlier, and a slow Pi only
+// means the beat sweeps the last answer again. Every sweep reshuffles the hosts so
+// that none keeps the slot it held on the previous one.
 function dashApp() {
     const GREEN = '#4ADE80', RED = '#FF5A3C', DIM = '#93A1B5', SLOTS = 7, SVG = 'http://www.w3.org/2000/svg';
+    const BEAT = 3200, LEAD = 700;
     const HEAD = {
         blocked:  ['Tesla is', 'Blocked', DIM, RED],
         filtered: ['Elon is', 'Gated', DIM, GREEN],
         open:     ['Elon is', 'In', RED, RED],
     };
     const el = (tag, attrs) => { const e = document.createElementNS(SVG, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+    const shuffle = list => { const a = list.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
     return {
-        tesla: null, loaded: false, key: null, shown: [],
+        tesla: null, loaded: false, next: null, shown: [],
         blockedShown: 0, allowedShown: 0, counted: false,
         crossedN: 0, drawnN: 0,
         // Nothing is claimed until a response has said so: no "No Tesla yet" while loading or failing.
@@ -76,34 +84,57 @@ function dashApp() {
         init() {
             this.buildLanes();
             this.rows = [...this.$refs.hostlist.querySelectorAll('.hostrow')];
+            this.paint([], false); // lanes start hidden: with no hosts there is never a sweep to hide them
             this.onVis = () => { if (document.visibilityState === 'visible') { this.poll(); this.start(); } else this.stop(); };
             document.addEventListener('visibilitychange', this.onVis);
             this.poll();
             this.start();
         },
         destroy() { this.stop(); this.clearSweep(); clearInterval(this.tw); document.removeEventListener('visibilitychange', this.onVis); },
-        start() { this.stop(); this.timer = setInterval(() => this.poll(), 3200); },
-        stop() { clearInterval(this.timer); this.timer = 0; },
+        start() { this.stop(); this.timer = setInterval(() => this.beat(), BEAT); },
+        stop() { clearInterval(this.timer); clearTimeout(this.pre); this.timer = 0; },
 
-        // One poll at a time: on a slow Pi, ticks are skipped rather than stacked, so a
-        // late response can never overwrite a newer one.
+        // The beat: show the newest answer, then ask for the next one just before the next beat.
+        beat() {
+            this.apply();
+            clearTimeout(this.pre);
+            this.pre = setTimeout(() => this.poll(), BEAT - LEAD);
+        },
+
+        // One poll at a time: on a slow Pi a poll is skipped rather than stacked, so a
+        // late response can never overwrite a newer one. The first answer shows at once;
+        // later ones wait for the beat.
         async poll() {
             if (document.visibilityState !== 'visible' || this.inflight) return;
             this.inflight = true;
             let d;
             try { d = await api.get('/api/dashboard' + location.search); } catch (e) { return; } finally { this.inflight = false; }
+            this.next = d;
+            if (!this.loaded) this.apply();
+        },
+
+        apply() {
+            const d = this.next;
+            if (!d) return;
             this.tesla = d.tesla;
             this.loaded = true;
             this.tween(d.blocked_24h || 0, d.allowed_24h || 0);
-            const hosts = d.hosts || [];
-            // Sweep when the set of hosts changes, or a host's crossing or allow-list status does
-            // (turning a filter on flips hosts from Danger to Safe). Fresh events for the same
-            // hosts change only ids or order: repaint in place, no sweep.
-            const sig = h => h.domain + (h.crossed ? '|c' : '|x') + (h.safe ? 's' : 'd');
-            const key = hosts.map(sig).sort().join(',');
-            const order = hosts.map(sig).join(',');
-            if (key !== this.key) { this.key = key; this.order = order; this.sweep(hosts); }
-            else if (order !== this.order) { this.order = order; this.shown = hosts; this.paint(hosts, true); }
+            const hosts = (d.hosts || []).slice(0, SLOTS);
+            if (hosts.length || this.shown.length) this.sweep(this.arrange(hosts));
+        },
+
+        // A new order in which no host keeps the slot it holds now. With two or more hosts
+        // one always exists (each host rules out at most one slot, and never the same one as
+        // another host); a lone host can only redraw where it is.
+        arrange(hosts) {
+            const was = new Map(this.shown.map((h, i) => [h.domain, i]));
+            let best = hosts, worst = Infinity;
+            for (let t = 0; t < 200 && worst; t++) {
+                const a = shuffle(hosts);
+                const stuck = a.filter((h, i) => was.get(h.domain) === i).length;
+                if (stuck < worst) { best = a; worst = stuck; }
+            }
+            return best;
         },
 
         // Seven lane groups, built once: the lane, a red × where it is cut, a dot where it lands.
