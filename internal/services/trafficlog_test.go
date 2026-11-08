@@ -144,3 +144,16 @@ func TestAddMuted_BadDomain(t *testing.T) {
 		t.Fatalf("copy %q", ErrBadMuteDomain.Error())
 	}
 }
+
+// The enrol host is answered by the Pi itself; its lookups are logged as
+// resolved, not sinkholed.
+func TestEnrolHostLoggedResolved(t *testing.T) {
+	svc := NewTrafficLogService(migratedDB(t))
+	if svc.dnsResolvable("airgapp.me") {
+		t.Fatal("resolvable before it's a local name")
+	}
+	svc.SetLocalNames([]string{"airgapp.me"})
+	if !svc.dnsResolvable("airgapp.me") || svc.dnsResolvable("other.example") {
+		t.Fatal("local name not treated as resolved")
+	}
+}

@@ -62,6 +62,7 @@ type TrafficLogService struct {
 	// log. Refreshed by RefreshAllowCache.
 	allowMu     sync.RWMutex
 	allowSuffix []string
+	localNames  map[string]bool // answered by the Pi's dnsmasq itself (the enrol host)
 }
 
 func NewTrafficLogService(db *sql.DB) *TrafficLogService {
@@ -238,6 +239,20 @@ func (s *TrafficLogService) RefreshAllowCache() {
 	s.allowMu.Unlock()
 }
 
+// SetLocalNames lists names the Pi's dnsmasq answers itself (the enrol host),
+// so their lookups are logged as resolved, not sinkholed.
+func (s *TrafficLogService) SetLocalNames(names []string) {
+	m := map[string]bool{}
+	for _, n := range names {
+		if n = strings.ToLower(strings.TrimSpace(n)); n != "" {
+			m[n] = true
+		}
+	}
+	s.allowMu.Lock()
+	s.localNames = m
+	s.allowMu.Unlock()
+}
+
 // dnsResolvable reports whether a DNS query for this domain would resolve
 // under the current allow-list — it matches an enabled filter suffix and is
 // not on the protected-deny floor. The negation is "sinkholed". Mirrors the
@@ -250,6 +265,9 @@ func (s *TrafficLogService) dnsResolvable(domain string) bool {
 	}
 	s.allowMu.RLock()
 	defer s.allowMu.RUnlock()
+	if s.localNames[d] {
+		return true // answered by the Pi itself (the enrol host)
+	}
 	for _, p := range s.allowSuffix {
 		if d == p || strings.HasSuffix(d, "."+p) {
 			return true

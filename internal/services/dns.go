@@ -224,12 +224,18 @@ func (s *DNSService) config() (string, error) {
 	}
 	conf := buildDNSConfig(upstreamsFrom(s.db, s.cfg.DNSUpstream), domains, openMACs)
 
-	// Self-service enrol page: a made-up LAN-only host → the Pi. More specific
-	// than address=/#/0.0.0.0, so it wins; never a real TLD and never published
-	// off-LAN, so it only resolves for devices using the Pi's resolver.
+	// Self-service enrol page: the enrol host → the intercepted enrol address
+	// (the firewall DNATs its web traffic to the Pi; the car's browser won't
+	// connect to a private address). More specific than address=/#/0.0.0.0,
+	// so it wins. local= answers every other type (AAAA, HTTPS) with an empty
+	// NODATA instead of REFUSED.
 	if s.cfg.EnrolHost != "" {
-		conf += fmt.Sprintf("\n# Self-service enrol QR page (LAN-only vanity host)\naddress=/%s/%s\n",
-			s.cfg.EnrolHost, s.cfg.LANGateway)
+		addr := s.cfg.EnrolAddr
+		if !ValidIPv4(addr) {
+			addr = s.cfg.LANGateway
+		}
+		conf += fmt.Sprintf("\n# Self-service enrol QR page\naddress=/%s/%s\nlocal=/%s/\n",
+			s.cfg.EnrolHost, addr, s.cfg.EnrolHost)
 	}
 	return conf, nil
 }

@@ -114,3 +114,22 @@ func TestDNSUpstreamFallsBack(t *testing.T) {
 		t.Fatalf("upstreams %v, want the last-resort default", got)
 	}
 }
+
+// The enrol host resolves to the intercepted public address, and every other
+// record type for it gets an empty answer (NODATA) instead of REFUSED.
+func TestEnrolHostDNS(t *testing.T) {
+	db := memDB(t)
+	s := NewDNSService(db, executor.New(true), config.Config{DNSUpstream: "1.1.1.1", LANGateway: "192.168.4.1", EnrolHost: "airgapp.me", EnrolAddr: "203.0.113.80"})
+	conf, err := s.config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"address=/airgapp.me/203.0.113.80", "local=/airgapp.me/"} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("config lacks %q", want)
+		}
+	}
+	if strings.Contains(conf, "address=/airgapp.me/192.168.4.1") {
+		t.Error("enrol host still answers the private address")
+	}
+}
