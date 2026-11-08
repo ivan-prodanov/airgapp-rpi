@@ -21,8 +21,8 @@
         </nav>
     </header>
 
-    {{- /* The dashboard runs edge to edge; every other page keeps the content padding. */}}
-    <main class="content{{if eq .page "dashboard"}} content-bleed{{end}}">
+    {{- /* The dashboard runs edge to edge; Traffic's log fills the height; every other page keeps the content padding. */}}
+    <main class="content{{if eq .page "dashboard"}} content-bleed{{end}}{{if eq .page "traffic"}} content-fill{{end}}">
         {{template "content" .}}
     </main>
 

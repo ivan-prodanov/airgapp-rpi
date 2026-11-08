@@ -106,6 +106,10 @@ main.content:focus{outline:none}
 .login-btn:hover{filter:brightness(.9)}
 .login-btn:disabled{opacity:.6;cursor:default}
 .login-btn:focus-visible{outline:2px solid var(--gate);outline-offset:2px}
+/* A sheet is a container, not a control. It takes focus itself when its content isn't drawn
+   yet (System's Set up sheet), and the ring then outlined the whole sheet — a light border on
+   iPhone. Its buttons and fields keep their rings. */
+dialog:focus-visible{outline:none}
 
 /* Page frame: the top bar, then the page filling the rest of the viewport (the dashboard needs the height). */
 body{display:flex;flex-direction:column}
@@ -180,8 +184,6 @@ background-size:44px 44px;
 .s-open{--c:var(--safe);--t:rgba(74,222,128,.12);--cb:rgba(74,222,128,.42)}
 @keyframes foldin{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 @keyframes ping{0%{box-shadow:0 0 0 0 rgba(74,222,128,.5)}70%{box-shadow:0 0 0 6px rgba(74,222,128,0)}100%{box-shadow:0 0 0 0 rgba(74,222,128,0)}}
-.wrap{max-width:1080px}
-.wrap.pg-traffic{max-width:none} /* the log is a wide table: it takes the frame's full width */
 /* Devices. Lifted from the mockup (Devices.dc.html). */
 .phead{margin-bottom:24px;}
 .eyebrow{font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.18em;font-size:11px;color:var(--dim);margin:0 0 12px}
@@ -430,10 +432,15 @@ background-size:44px 44px;
 
 /* Traffic. Lifted from the mockup (Traffic.dc.html), scoped under .pg-traffic. */
 @keyframes pillin{from{opacity:0;transform:translate(-50%,-8px)}to{opacity:1;transform:translate(-50%,0)}}
-.pg-traffic{--cols:86px 150px minmax(170px,1fr) 48px 54px 158px 104px}
+.pg-traffic{--cols:92px 172px minmax(140px,1fr) 56px 60px 190px 112px}
 .pg-traffic .phead{margin-bottom:22px}
-.pg-traffic .sub{margin:14px 0 0;font-size:14px;line-height:1.55;color:var(--dim);max-width:70ch}
-.pg-traffic .sub b{color:var(--txt);font-weight:600}
+/* The log takes the rest of the screen's height, down to its bottom edge: the page is a
+   column, and the log's scroller has no height of its own (height:0) but grows into
+   what is left, never below 360 px. (Phones scroll the page instead.) */
+.content-fill{display:flex;flex-direction:column;padding-bottom:0}
+.content-fill>.pg-traffic{flex:1 0 auto;display:flex;flex-direction:column}
+.pg-traffic .ledger{flex:1 0 auto;display:flex;flex-direction:column}
+.content-fill .pg-traffic .ledger{border-bottom:0;border-bottom-left-radius:0;border-bottom-right-radius:0}
 .pg-traffic .toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;border:1px solid var(--line);border-bottom:0;border-radius:13px 13px 0 0;background:rgba(12,17,27,.6)}
 .pg-traffic .live{display:inline-flex;align-items:center;gap:8px;font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.08em;font-size:11px;font-weight:600;color:var(--safe);border:1px solid var(--safe);border-radius:100px;background:rgba(74,222,128,.07);padding:6px 13px;cursor:pointer}
 .pg-traffic .live .d{width:7px;height:7px;border-radius:50%;background:var(--safe);animation:ping var(--t-live) var(--ease-enter) infinite}
@@ -449,12 +456,17 @@ background-size:44px 44px;
 .pg-traffic .chip .cd{width:6px;height:6px;border-radius:50%;flex:none}
 .pg-traffic .cd.allowed{background:var(--safe)}
 .pg-traffic .cd.blocked{background:var(--danger)}
+.pg-traffic .cd.unreachable{background:var(--watch)}
 .pg-traffic .psel{position:relative;display:flex;align-items:center;cursor:pointer}
-.pg-traffic .psel-face{display:flex;align-items:center;gap:8px;height:32px;padding:0 11px 0 13px;border:1px solid var(--line2);border-radius:100px;background:rgba(7,10,18,.5);font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.06em;font-size:10.5px;color:var(--dim);white-space:nowrap}
+.pg-traffic .psel-face{display:flex;align-items:center;gap:8px;height:32px;padding:0 11px 0 13px;border:1px solid var(--line2);border-radius:100px;background:rgba(7,10,18,.5);font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.06em;font-size:10.5px;color:var(--dim);white-space:nowrap;cursor:pointer}
+.pg-traffic .psel.open .psel-face svg{transform:rotate(180deg)}
+/* The Protocol list, drawn in the page (the car's browser never opens a native select's popup). */
+.pg-traffic .pmenu{position:absolute;top:calc(100% + 6px);left:0;z-index:30;display:flex;flex-direction:column;min-width:200px;padding:6px;background:#0C111B;border:1px solid var(--line2);border-radius:14px;box-shadow:0 18px 40px rgba(0,0,0,.55)}
+.pg-traffic .pmenu-i{display:flex;align-items:center;min-height:44px;padding:0 14px;border:0;border-radius:9px;background:transparent;color:var(--dim);font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.06em;font-size:11.5px;text-align:left;cursor:pointer}
+.pg-traffic .pmenu-i:hover{background:rgba(132,164,205,.08);color:var(--txt)}
+.pg-traffic .pmenu-i[aria-selected="true"]{background:rgba(132,164,205,.12);color:var(--txt)}
 .pg-traffic .psel.on .psel-face{color:var(--txt);border-color:var(--txt)}
 .pg-traffic .psel-face svg{width:10px;height:10px;flex:none}
-.pg-traffic .psel select{position:absolute;inset:0;width:100%;height:100%;opacity:0;font-size:16px;margin:0;cursor:pointer}
-.pg-traffic .psel:focus-within .psel-face{outline:2px solid var(--gate);outline-offset:2px}
 .pg-traffic .search{flex:1;min-width:150px;height:auto;margin:0;border-radius:8px;padding:8px 12px;gap:8px}
 .pg-traffic .search input{font-size:12px;height:auto}
 .pg-traffic .search input::-webkit-search-cancel-button{display:none}
@@ -463,7 +475,7 @@ background-size:44px 44px;
 .pg-traffic .mutebtn svg{width:14px;height:14px;flex:none}
 .pg-traffic .mutebtn .mb-n{color:var(--txt);font-weight:600}
 .pg-traffic .ledger{position:relative;border:1px solid var(--line);border-radius:0 0 13px 13px;background:var(--panel);overflow:hidden}
-.pg-traffic .led-scroll{height:clamp(360px,56vh,560px);overflow:auto;overflow-anchor:none;overscroll-behavior-x:contain}
+.pg-traffic .led-scroll{flex:1 1 auto;height:0;min-height:360px;overflow:auto;overflow-anchor:none;overscroll-behavior-x:contain}
 .pg-traffic .led-scroll::-webkit-scrollbar{width:11px;height:11px}
 .pg-traffic .led-scroll::-webkit-scrollbar-track,.pg-traffic .led-scroll::-webkit-scrollbar-corner{background:transparent}
 .pg-traffic .led-scroll::-webkit-scrollbar-thumb{background:rgba(147,161,181,.34);border:3px solid transparent;border-radius:11px;background-clip:padding-box}
@@ -471,29 +483,31 @@ background-size:44px 44px;
 @supports not selector(::-webkit-scrollbar){.pg-traffic .led-scroll{scrollbar-width:thin;scrollbar-color:rgba(147,161,181,.4) transparent}}
 .pg-traffic .newpill{position:absolute;left:50%;top:50px;transform:translateX(-50%);z-index:3;display:inline-flex;align-items:center;gap:8px;font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.08em;font-size:11px;font-weight:600;white-space:nowrap;color:#0A0E16;background:var(--txt);border:0;border-radius:100px;padding:9px 15px;box-shadow:0 10px 28px rgba(0,0,0,.5);cursor:pointer;animation:pillin var(--t-panel) var(--ease-enter) both}
 .pg-traffic .newpill:hover{background:#fff}
-.pg-traffic .led-inner{min-width:760px}
+.pg-traffic .led-inner{min-width:822px}
 .pg-traffic .led-head{display:grid;grid-template-columns:var(--cols);font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.1em;font-size:10px;font-weight:500;color:var(--dim);border-bottom:1px solid var(--line);background:#090D15;position:sticky;top:0;z-index:2}
 .pg-traffic .led-head div{padding:12px 16px;white-space:nowrap}
-.pg-traffic .led-row{display:grid;grid-template-columns:var(--cols);align-items:center;border-bottom:1px solid var(--line);overflow:hidden}
+.pg-traffic .led-row{display:grid;grid-template-columns:var(--cols);align-items:center;border-bottom:1px solid var(--line);overflow:hidden;box-shadow:inset 3px 0 0 var(--accent,transparent)}
 .pg-traffic .led-row.muted .led-cell:not(.rev){opacity:.55}
 .pg-traffic .led-edge{position:absolute;top:24px;left:0;width:1px;height:1px;pointer-events:none}
 .pg-traffic .led-empty{margin:0;padding:40px 20px;text-align:center;color:var(--dim);font-size:13.5px}
 .pg-traffic .c-chev,.pg-traffic .c-fold{display:none}
-.pg-traffic .led-cell{padding:11px 16px;min-width:0}
-.pg-traffic .led-cell.acc{box-shadow:inset 3px 0 0 var(--accent,transparent)}
-.pg-traffic .tmono{font-family:'Martian Mono',monospace;font-size:11px;color:var(--dim);white-space:nowrap}
-.pg-traffic .cli{font-size:12.5px;color:var(--txt);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pg-traffic .cliip{font-family:'Martian Mono',monospace;font-size:10px;color:var(--faint);margin-top:2px}
-.pg-traffic .dom{display:flex;min-width:0;font-family:'Martian Mono',monospace;font-size:12px;color:var(--txt);white-space:nowrap}
+.pg-traffic .led-cell{padding:13px 16px;min-width:0}
+.pg-traffic .tmono{font-family:'Martian Mono',monospace;font-size:11.5px;color:var(--dim);white-space:nowrap}
+.pg-traffic .cli{font-size:14px;color:var(--txt);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pg-traffic .cliip{font-family:'Martian Mono',monospace;font-size:11.5px;color:var(--faint);margin-top:3px}
+.pg-traffic .dom{display:flex;min-width:0;font-family:'Martian Mono',monospace;font-size:14px;color:var(--txt);white-space:nowrap}
 .pg-traffic .dom-h{flex:0 1 auto;min-width:2ch;overflow:hidden;text-overflow:ellipsis}
 .pg-traffic .dom-t{flex:none}
-.pg-traffic .domip{font-family:'Martian Mono',monospace;font-size:10px;color:var(--faint);margin-top:2px}
-.pg-traffic .vd{display:inline-flex;align-items:center;gap:7px;font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.09em;font-size:10.5px;font-weight:600;white-space:nowrap;color:var(--dim)}
+.pg-traffic .domip{font-family:'Martian Mono',monospace;font-size:11.5px;color:var(--faint);margin-top:3px}
+.pg-traffic .vd{display:inline-flex;align-items:center;gap:7px;font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.09em;font-size:11.5px;font-weight:600;white-space:nowrap;color:var(--dim)}
 .pg-traffic .vd .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
 .pg-traffic .vd.allowed{color:var(--safe)}
 .pg-traffic .vd.blocked{color:var(--danger)}
+.pg-traffic .vd.unreachable{color:var(--watch)} /* let through; the site never answered */
+/* Under a blocked verdict: a filter that's on lists the domain now, so it passes from here on. */
+.pg-traffic .vd-now{margin-top:4px;font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.09em;font-size:10.5px;color:var(--safe)}
 .pg-traffic .rev{display:flex;gap:6px;justify-content:flex-end}
-.pg-traffic .rbtn{font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.05em;font-size:10px;padding:5px 10px;border:1px solid var(--line2);border-radius:6px;background:transparent;color:var(--dim);cursor:pointer}
+.pg-traffic .rbtn{font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.05em;font-size:10.5px;padding:5px 10px;border:1px solid var(--line2);border-radius:6px;background:transparent;color:var(--dim);cursor:pointer}
 .pg-traffic .rbtn:hover{border-color:var(--txt);color:var(--txt)}
 .pg-traffic .rbtn.allow{border-color:var(--safe);color:var(--safe)}
 .pg-traffic .rbtn.locked{display:inline-flex;align-items:center;justify-content:center;gap:6px;border-style:dashed;border-color:var(--line2);color:var(--dim);cursor:not-allowed}
@@ -503,9 +517,29 @@ background-size:44px 44px;
 .pg-traffic .mtag b{font-weight:500;text-transform:none;letter-spacing:.02em;color:var(--txt)}
 .pg-traffic .atag{border-style:solid;border-color:rgba(74,222,128,.45);color:var(--safe)}
 .pg-traffic .atag.pending{border-style:dashed;border-color:rgba(245,181,68,.5);color:var(--watch)}
+/* The table layout (the car's screen, a laptop): what you tap is as big as on a phone, the
+   search types at 16 px, and rows are as tall as the other pages' lists. For a mouse too:
+   the car's browser may not say it's a touch screen, and the other pages' controls are
+   this size already. */
+@media(min-width:861px){
+.pg-traffic{--cols:92px 172px minmax(140px,1fr) 56px 60px 200px 176px}
+.pg-traffic .led-inner{min-width:896px}
+.pg-traffic .toolbar{gap:12px;padding:14px 16px}
+.pg-traffic .live{min-height:44px;padding:0 16px}
+.pg-traffic .chips{padding:0}
+.pg-traffic .chip{min-height:44px}
+.pg-traffic .chip>span{padding:0 16px;font-size:11.5px}
+.pg-traffic .psel-face{height:44px;padding:0 14px 0 16px}
+.pg-traffic .search{min-height:44px;padding:0 14px}
+.pg-traffic .search input{font-size:16px;height:42px}
+.pg-traffic .mutebtn{height:44px;padding:0 14px;font-size:11.5px}
+.pg-traffic .led-head div{padding:14px 16px}
+.pg-traffic .led-row{min-height:72px}
+.pg-traffic .led-cell{padding:14px 16px}
+.pg-traffic .rbtn{min-height:44px;padding:0 14px;font-size:11.5px;border-radius:8px}
+}
 @media(max-width:860px){
 html:has(.pg-traffic){overflow-anchor:none}
-.pg-traffic .sub{display:none}
 .pg-traffic .phead{margin-bottom:16px}
 .pg-traffic .toolbar,.pg-traffic .ledger{margin-left:calc(-1*clamp(20px,3vw,44px));margin-right:calc(-1*clamp(20px,3vw,44px));border-left:0;border-right:0;border-radius:0}
 .pg-traffic .toolbar{padding:10px 16px;gap:8px}
@@ -518,6 +552,7 @@ html:has(.pg-traffic){overflow-anchor:none}
 .pg-traffic .chip{flex:1;min-height:44px}
 .pg-traffic .chip>span{padding:0 4px;gap:5px;font-size:11px;letter-spacing:.03em}
 .pg-traffic .psel{order:3;height:44px}
+.pg-traffic .pmenu{left:auto;right:0} /* the button sits at the right end of the toolbar here */
 .pg-traffic .psel-face{height:44px;padding:0 10px 0 12px}
 .pg-traffic .ledger{overflow:visible}
 .pg-traffic .led-scroll{height:auto;overflow:hidden;overflow:clip}
@@ -531,10 +566,10 @@ html:has(.pg-traffic){overflow-anchor:none}
 .pg-traffic .c-vd{grid-area:vd}
 .pg-traffic .c-cli{grid-area:cli;min-width:0}
 .pg-traffic .c-time{grid-area:time}
-.pg-traffic .c-port,.pg-traffic .c-proto,.pg-traffic .c-rev,.pg-traffic .cliip,.pg-traffic .domip{display:none}
-.pg-traffic .dom{font-size:13px}
-.pg-traffic .cli{font-size:12.5px;font-weight:400;color:var(--dim)}
-.pg-traffic .vd{font-size:11px;letter-spacing:.05em;gap:6px}
+.pg-traffic .c-port,.pg-traffic .c-proto,.pg-traffic .c-rev,.pg-traffic .cliip,.pg-traffic .domip,.pg-traffic .vd-now{display:none}
+.pg-traffic .dom{font-size:14px}
+.pg-traffic .cli{font-size:13px;font-weight:400;color:var(--dim)}
+.pg-traffic .vd{font-size:11.5px;letter-spacing:.05em;gap:6px}
 .pg-traffic .c-chev{grid-area:chev;display:grid;place-items:center;width:44px;height:44px;padding:0;border:0;background:transparent;color:var(--dim)}
 .pg-traffic .c-chev svg{width:14px;height:14px;transition:transform var(--t-panel) var(--ease-std)}
 .pg-traffic .led-row.open .c-chev svg{transform:rotate(90deg)}
