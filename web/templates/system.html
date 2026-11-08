@@ -7,10 +7,10 @@
 
     <div class="vitals" role="group" aria-label="Appliance status" data-rise="1">
         <div class="vital" :class="rebooting ? 'down' : ''"><div class="vk"><i aria-hidden="true"></i>Uptime</div><div class="vv" x-text="rebooting ? 'Rebooting' : (v ? fmtUptime(v.uptime_s) : '—')">—</div><div class="vs" x-text="rebooting ? 'back in about a minute' : 'service running'"></div></div>
-        <div class="vital"><div class="vk">Processor</div><div class="vv" x-text="v && v.temp_c != null ? v.temp_c.toFixed(1) + ' °C' : '—'">—</div><div class="vs" x-text="v ? 'load ' + v.load1.toFixed(2) : ''"></div></div>
+        <div class="vital"><div class="vk">CPU temp</div><div class="vv" x-text="v && v.temp_c != null ? v.temp_c.toFixed(1) + ' °C' : '—'">—</div><div class="vs" x-text="v ? 'load ' + v.load1.toFixed(2) : ''"></div></div>
         <div class="vital"><div class="vk">Memory</div><div class="vv" x-text="v ? fmtBytes(v.mem_used) : '—'">—</div><div class="vs" x-text="v ? 'of ' + fmtBytes(v.mem_total) : ''"></div></div>
         <div class="vital"><div class="vk">Storage</div><div class="vv" x-text="v ? fmtBytes(v.disk_used) : '—'">—</div><div class="vs" x-text="v ? 'of ' + fmtBytes(v.disk_total) : ''"></div></div>
-        <div class="vital"><div class="vk">Internet</div><div class="vv" x-text="rate ? '↓ ' + fmtRate(rate.down) : '—'">—</div><div class="vs" x-text="(rate ? '↑ ' + fmtRate(rate.up) : '↑ —') + (v && v.wan_if ? ' · ' + v.wan_if : '')"></div></div>
+        <div class="vital"><div class="vk">Network I/O</div><div class="vv" x-text="rate ? '↓ ' + fmtRate(rate.down) : '—'">—</div><div class="vs" x-text="(rate ? '↑ ' + fmtRate(rate.up) : '↑ —') + (v && v.wan_if ? ' · ' + v.wan_if : '')"></div></div>
     </div>
     <p class="machine" data-rise="1" x-text="machine"></p>
 
