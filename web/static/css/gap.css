@@ -100,12 +100,15 @@ body{display:flex;flex-direction:column}
 /* Dashboard: the gate. Lifted from the mockup (Main.dc.html); .screen became .dash. */
 @keyframes gatein{from{opacity:0;transform:scaleY(.18)}to{opacity:1;transform:none}}
 @keyframes gateglow{0%,100%{opacity:.46}50%{opacity:.76}}
-.dash{flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden;
+/* The gate was drawn at 1440 wide; past 1280 its lanes stretch flat. So the drawing stops
+   at 1280, centred: --side is the margin either side of it. The host list stays docked to
+   the window's right edge and the rules run full width, as in the mockup. */
+.dash{--side:max(0px,(100vw - 1280px) / 2);flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden;
 background:radial-gradient(130% 82% at 48% 44%,rgba(44,76,108,.20),rgba(7,10,18,0) 62%),linear-gradient(180deg,#080B14,#06080F)}
-.herohead{padding:clamp(14px,2.2vh,24px) clamp(20px,3vw,44px) clamp(8px,1.4vh,14px);position:relative;z-index:3;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-start;gap:13px}
+.herohead{padding:clamp(14px,2.2vh,24px) calc(var(--side) + clamp(20px,3vw,44px)) clamp(8px,1.4vh,14px);position:relative;z-index:3;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-start;gap:13px}
 .hstmt{font-family:'Martian Mono',monospace;font-weight:600;font-size:clamp(24px,3.2vw,42px);line-height:1;letter-spacing:-.02em;margin:0;text-transform:uppercase;transition:color .4s ease}
 .hstmt>span{transition:color .4s ease}
-.work{flex:1;min-height:320px;display:flex;position:relative;z-index:2}
+.work{flex:1;min-height:320px;display:flex;position:relative;z-index:2;padding-left:var(--side)}
 .stage{flex:1;min-width:0;position:relative;overflow:hidden}
 .stage::before{content:"";position:absolute;inset:0;pointer-events:none;
 background-image:linear-gradient(rgba(132,164,205,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(132,164,205,.05) 1px,transparent 1px);
@@ -123,9 +126,9 @@ background-size:44px 44px;
 .car svg{width:24px;height:24px;color:var(--gate);flex-shrink:0}
 .car-n{font-family:'Martian Mono',monospace;font-size:12px;letter-spacing:1.5px;color:var(--txt)}
 .car.off{opacity:.55}
-.panel{width:clamp(165px,26vw,388px);border-left:1px solid var(--line);background:linear-gradient(180deg,rgba(10,14,22,.5),rgba(8,11,19,.72));backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);display:flex;flex-direction:column;position:relative;z-index:3;padding-top:42px}
+.panel{width:calc(clamp(165px,26vw,333px) + var(--side));border-left:1px solid var(--line);background:linear-gradient(180deg,rgba(10,14,22,.5),rgba(8,11,19,.72));backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);display:flex;flex-direction:column;position:relative;z-index:3;padding-top:42px}
 .hostlist{flex:1;display:flex;flex-direction:column;list-style:none;margin:0;padding:0}
-.hostrow{flex:1;min-height:0;display:flex;align-items:center;gap:13px;padding:0 20px;border-top:1px solid var(--line);transition:opacity .4s ease}
+.hostrow{flex:1;min-height:0;display:flex;align-items:center;gap:13px;padding:0 calc(20px + var(--side)) 0 20px;border-top:1px solid var(--line);transition:opacity .4s ease}
 .hostrow:first-child{border-top:0}
 .hostrow.empty .hdot{visibility:hidden}
 .hdot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
@@ -136,8 +139,8 @@ background-size:44px 44px;
 .hsub2{font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.12em;font-size:9px;font-weight:600;margin-top:5px}
 .hsub2.safe{color:var(--safe)}
 .hsub2.danger{color:var(--danger)}
-.panel-note{position:absolute;inset:42px 0 0;margin:0;display:grid;place-items:center;padding:20px;text-align:center;font-family:'Martian Mono',monospace;font-size:11px;line-height:1.7;letter-spacing:.04em;color:var(--dim)}
-.readouts{display:flex;align-items:center;gap:clamp(18px,3.2vw,44px);padding:14px clamp(20px,3vw,44px);border-top:1px solid var(--line);position:relative;z-index:3;flex-wrap:wrap;flex-shrink:0}
+.panel-note{position:absolute;inset:42px var(--side) 0 0;margin:0;display:grid;place-items:center;padding:20px;text-align:center;font-family:'Martian Mono',monospace;font-size:11px;line-height:1.7;letter-spacing:.04em;color:var(--dim)}
+.readouts{display:flex;align-items:center;gap:clamp(18px,3.2vw,44px);padding:14px calc(var(--side) + clamp(20px,3vw,44px));border-top:1px solid var(--line);position:relative;z-index:3;flex-wrap:wrap;flex-shrink:0}
 .ro-l{font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.12em;font-size:9.5px;color:var(--dim);margin:0 0 7px}
 .ro-v{font-size:26px;font-weight:600;letter-spacing:.01em;line-height:1;margin:0;font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
 .ro-v.danger{color:var(--danger)}
