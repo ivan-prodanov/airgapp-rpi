@@ -1,10 +1,451 @@
 {{define "title"}}System{{end}}
 
 {{define "content"}}
-<div class="wrap pg-system">
-    <p class="eyebrow">The appliance</p>
-    <h1 class="h1">System</h1>
+<div class="wrap pg-system" x-data="systemApp()">
+    <p class="eyebrow" data-rise>The appliance</p>
+    <h1 class="h1" data-rise>System</h1>
+
+    <div class="vitals" role="group" aria-label="Appliance status" data-rise="1">
+        <div class="vital" :class="rebooting ? 'down' : ''"><div class="vk"><i aria-hidden="true"></i>Uptime</div><div class="vv" x-text="rebooting ? 'Rebooting' : (v ? fmtUptime(v.uptime_s) : '—')">—</div><div class="vs" x-text="rebooting ? 'back in about a minute' : 'service running'"></div></div>
+        <div class="vital"><div class="vk">Processor</div><div class="vv" x-text="v && v.temp_c != null ? v.temp_c.toFixed(1) + ' °C' : '—'">—</div><div class="vs" x-text="v ? 'load ' + v.load1.toFixed(2) : ''"></div></div>
+        <div class="vital"><div class="vk">Memory</div><div class="vv" x-text="v ? fmtBytes(v.mem_used) : '—'">—</div><div class="vs" x-text="v ? 'of ' + fmtBytes(v.mem_total) : ''"></div></div>
+        <div class="vital"><div class="vk">Storage</div><div class="vv" x-text="v ? fmtBytes(v.disk_used) : '—'">—</div><div class="vs" x-text="v ? 'of ' + fmtBytes(v.disk_total) : ''"></div></div>
+        <div class="vital"><div class="vk">Internet</div><div class="vv" x-text="rate ? '↓ ' + fmtRate(rate.down) : '—'">—</div><div class="vs" x-text="(rate ? '↑ ' + fmtRate(rate.up) : '↑ —') + (v && v.wan_if ? ' · ' + v.wan_if : '')"></div></div>
+    </div>
+    <p class="machine" data-rise="1" x-text="machine"></p>
+
+    <div class="ghead" data-rise="2"><h2>Hotspot</h2></div>
+    <div class="srow first can-open" :class="{ open: open.wifi }" data-rise="2">
+        <div class="s-id" @click="toggle('wifi')"><div class="sname">Wi-Fi network</div><div class="ssub"><span x-text="wifiSummary"></span></div></div>
+        <div class="s-act"></div>
+        <button class="s-chev" type="button" @click="toggle('wifi')" :aria-expanded="open.wifi ? 'true' : 'false'" aria-label="Wi-Fi network settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button>
+        <div class="s-fold"><div class="s-fold-in"><div class="s-panel">
+            <div class="fields">
+                <label class="field"><span class="flabel">Name</span><input class="finput" type="text" x-model="wifi.ssid" @input="wifiStatus = null" @keydown.enter.prevent="applyWifi()" :aria-invalid="wifiStatus && wifiStatus.field === 'ap_ssid' ? 'true' : 'false'" autocomplete="off"></label>
+                <label class="field"><span class="flabel">Password</span><span class="pw"><input class="finput mono" :type="pwShown ? 'text' : 'password'" :placeholder="s.ap_password_set === 'true' ? 'Unchanged' : 'At least 8 characters'" x-model="wifi.pw" @input="wifiStatus = null" @keydown.enter.prevent="applyWifi()" :aria-invalid="wifiStatus && wifiStatus.field === 'ap_password' ? 'true' : 'false'" autocomplete="new-password"><button type="button" @click="pwShown = !pwShown" :aria-pressed="pwShown ? 'true' : 'false'" x-text="pwShown ? 'Hide' : 'Show'">Show</button></span></label>
+            </div>
+            <div class="field"><span class="flabel" id="band-l">Band</span>
+                <div class="seg" role="radiogroup" aria-labelledby="band-l">
+                    <label class="opt"><input type="radio" name="band" value="2" :checked="band(wifi.channel) === 2" @change="wifi.channel = '6'; wifiStatus = null"><span>2.4 GHz</span></label>
+                    <label class="opt"><input type="radio" name="band" value="5" :checked="band(wifi.channel) === 5" @change="wifi.channel = '36'; wifiStatus = null"><span>5 GHz</span></label>
+                </div>
+            </div>
+            <div class="field"><span class="flabel" id="chan-l">Channel</span>
+                <div class="seg" role="radiogroup" aria-labelledby="chan-l">
+                    <template x-for="c in (band(wifi.channel) === 5 ? ['36','40','44','48'] : ['1','6','11'])" :key="c">
+                        <label class="opt"><input type="radio" name="chan" :value="c" :checked="wifi.channel === c" @change="wifi.channel = c; wifiStatus = null"><span x-text="c"></span></label>
+                    </template>
+                </div>
+            </div>
+            <p class="hint"><span x-show="s.ap_country">Country <b x-text="countryName(s.ap_country)"></b>. </span>Connected devices, the car included, drop for a few seconds while the hotspot restarts.</p>
+            <div class="status" :class="{ err: wifiStatus && wifiStatus.err }" role="status" aria-live="polite" x-text="wifiStatus ? wifiStatus.text : ''"></div>
+            <div class="btnrow"><button class="btnp" type="button" :disabled="!!busy.wifi" @click="applyWifi()">Apply</button></div>
+        </div></div></div>
+    </div>
+    <div class="srow can-open" :class="{ open: open.dns }" data-rise="2">
+        <div class="s-id" @click="toggle('dns')"><div class="sname">DNS upstream</div><div class="ssub"><span x-text="dns.join(' · ')"></span></div></div>
+        <div class="s-act"></div>
+        <button class="s-chev" type="button" @click="toggle('dns')" :aria-expanded="open.dns ? 'true' : 'false'" aria-label="DNS upstream settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button>
+        <div class="s-fold"><div class="s-fold-in"><div class="s-panel">
+            <p class="hint">Allowed lookups and Open devices resolve through these, in order.</p>
+            <div class="chips">
+                <template x-for="ip in dns" :key="ip"><span class="chip"><span x-text="ip"></span><button type="button" @click="removeDns(ip)" :aria-label="'Remove ' + ip"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button></span></template>
+            </div>
+            <div class="addline"><input class="finput mono" type="text" inputmode="decimal" placeholder="e.g. 9.9.9.9" x-model="dnsDraft" @input="dnsStatus = null" @keydown.enter.prevent="addDns()" aria-label="Add a resolver" :aria-invalid="dnsStatus && dnsStatus.err ? 'true' : 'false'"><button class="btn" type="button" @click="addDns()">Add</button></div>
+            <div class="status" :class="{ err: dnsStatus && dnsStatus.err }" role="status" aria-live="polite" x-text="dnsStatus ? dnsStatus.text : ''"></div>
+        </div></div></div>
+    </div>
+    <div class="srow last can-open" :class="{ open: open.ret }" data-rise="2">
+        <div class="s-id" @click="toggle('ret')"><div class="sname">Traffic history</div><div class="ssub"><span x-text="'Kept for ' + (s.log_retention_days || '30') + ' days'"></span></div></div>
+        <div class="s-act"></div>
+        <button class="s-chev" type="button" @click="toggle('ret')" :aria-expanded="open.ret ? 'true' : 'false'" aria-label="Traffic history settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button>
+        <div class="s-fold"><div class="s-fold-in"><div class="s-panel">
+            <div class="seg" role="radiogroup" aria-label="Keep traffic history for">
+                <template x-for="d in ['7','30','90']" :key="d"><label class="opt"><input type="radio" name="ret" :value="d" :checked="(s.log_retention_days || '30') === d" @change="setRetention(d)"><span x-text="d + ' days'"></span></label></template>
+            </div>
+            <p class="hint">Older events are deleted. Traffic and the hit counts on Filters only reach back this far.</p>
+        </div></div></div>
+    </div>
+
+    <div class="ghead" data-rise="2"><h2>Access</h2></div>
+    <div class="srow first can-open" :class="[open.ts ? 'open' : '', ts.authenticated ? 'ok' : 'warn']" data-rise="2">
+        <div class="s-id" @click="toggle('ts')"><div class="sname">Tailscale</div><div class="ssub"><span x-text="tsSummary"></span></div></div>
+        <div class="s-act"></div>
+        <button class="s-chev" type="button" @click="toggle('ts')" :aria-expanded="open.ts ? 'true' : 'false'" aria-label="Tailscale details"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button>
+        <div class="s-fold"><div class="s-fold-in"><div class="s-panel">
+            <template x-if="ts.authenticated">
+                <div class="s-sub">
+                    <dl class="facts">
+                        <div><dt>Dashboard</dt><dd><span x-text="dashUrl"></span><button class="copy" type="button" @click="copyDash()">Copy</button></dd></div>
+                        <div><dt>Tailnet IP</dt><dd><span x-text="ts.tailnet_ipv4 || '—'"></span></dd></div>
+                    </dl>
+                    <p class="hint">Open the dashboard from any device signed in to your tailnet.</p>
+                    <div class="btnrow"><button class="btn danger" type="button" @click="tsConfirm = true">Sign out of Tailscale</button></div>
+                    <template x-if="tsConfirm"><div class="confirm" role="group" aria-label="Confirm sign out"><p>Sign out? You'll lose remote access, and Airgapp can't reach the car, until you sign in again from the hotspot.</p><div class="btns"><button class="btn" type="button" @click="tsConfirm = false">Cancel</button><button class="btn danger" type="button" @click="tsLogout()">Sign out</button></div></div></template>
+                </div>
+            </template>
+            <template x-if="ts.installed && !ts.authenticated">
+                <div class="s-sub">
+                    <p class="hint">Signed out. Remote access and Airgapp are offline until you sign in.</p>
+                    <div class="addline"><input class="finput mono" type="password" placeholder="tskey-auth-…" x-model="authKey" @input="tsStatus = null" @keydown.enter.prevent="tsIn()" aria-label="Tailscale auth key" autocomplete="off" :aria-invalid="tsStatus && tsStatus.err ? 'true' : 'false'"><button class="btnp" type="button" :disabled="!!busy.ts" @click="tsIn()">Sign in</button></div>
+                    <p class="hint">Make an auth key at login.tailscale.com → Settings → Keys.</p>
+                </div>
+            </template>
+            <template x-if="loadedTs && !ts.installed">
+                <div class="s-sub">
+                    <p class="hint">Tailscale isn't installed. Installing takes about a minute.</p>
+                    <div class="btnrow"><button class="btnp" type="button" :disabled="!!busy.ts" @click="tsInstall()" x-text="busy.ts ? 'Installing…' : 'Install Tailscale'">Install Tailscale</button></div>
+                </div>
+            </template>
+            <div class="status" :class="{ err: tsStatus && tsStatus.err }" role="status" aria-live="polite" x-text="tsStatus ? tsStatus.text : ''"></div>
+        </div></div></div>
+    </div>
+    <div class="srow" :class="ts.authenticated && ts.ble_funnel ? 'ok' : 'warn'" data-rise="2">
+        <div class="s-id"><div class="sname">Airgapp access</div><div class="ssub"><span x-text="ts.authenticated && ts.ble_funnel ? 'Always on · Airgapp on your phones reaches the car' : 'Always on · waiting for Tailscale'"></span></div></div>
+        <div class="s-act"><label class="sw locked" title="Always on"><input type="checkbox" role="switch" checked disabled aria-label="Airgapp access, always on"><span class="track"><span class="k"></span></span></label></div>
+        <span></span>
+    </div>
+    <div class="srow can-open" :class="{ open: open.users }" data-rise="2">
+        <div class="s-id" @click="toggle('users')"><div class="sname">Users</div><div class="ssub"><span x-text="users.length ? users.length + (users.length === 1 ? ' phone · ' : ' phones · ') + users.map(u => u.name).join(', ') : 'No phones yet'"></span></div></div>
+        <div class="s-act"></div>
+        <button class="s-chev" type="button" @click="toggle('users')" :aria-expanded="open.users ? 'true' : 'false'" aria-label="Users"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button>
+        <div class="s-fold"><div class="s-fold-in"><div class="s-panel">
+            <p class="hint">Each phone gets its own access.</p>
+            <ul class="ulist" x-show="users.length">
+                <template x-for="u in users" :key="u.id">
+                    <li :class="{ fresh: freshUser === u.id }">
+                        <div class="u-t"><b x-text="u.name"></b><span x-text="userMeta(u)"></span></div>
+                        <button class="btn" type="button" @click="showQr(u)" x-text="onPhone ? 'Set up' : 'Show QR'">Show QR</button>
+                        <button class="btn danger" type="button" @click="removeId = u.id" :aria-label="'Remove ' + u.name">Remove</button>
+                    </li>
+                </template>
+            </ul>
+            <p class="hint" x-show="!users.length">No users yet. Add one to set up a phone.</p>
+            <template x-if="removeUser"><div class="confirm" role="group" aria-label="Confirm removing a user"><p x-text="'Remove ' + removeUser.name + '? Airgapp on that phone loses access immediately.'"></p><div class="btns"><button class="btn" type="button" @click="removeId = null">Cancel</button><button class="btn danger" type="button" @click="doRemove()">Remove</button></div></div></template>
+            <div class="addline"><input class="finput" type="text" maxlength="32" placeholder="Name, e.g. Maria's phone" x-model="userDraft" @input="userStatus = null" @keydown.enter.prevent="addUser()" aria-label="New user name" :aria-invalid="userStatus && userStatus.err ? 'true' : 'false'"><button class="btnp" type="button" :disabled="!!busy.user" @click="addUser()">Add user</button></div>
+            <div class="status" :class="{ err: userStatus && userStatus.err }" role="status" aria-live="polite" x-text="userStatus ? userStatus.text : ''"></div>
+        </div></div></div>
+    </div>
+    <div class="srow can-open" :class="{ open: open.pass }" data-rise="2">
+        <div class="s-id" @click="toggle('pass')"><div class="sname">Dashboard password</div><div class="ssub"><span>Signs you in to this dashboard</span></div></div>
+        <div class="s-act"></div>
+        <button class="s-chev" type="button" @click="toggle('pass')" :aria-expanded="open.pass ? 'true' : 'false'" aria-label="Change dashboard password"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button>
+        <div class="s-fold"><div class="s-fold-in"><div class="s-panel">
+            <label class="field narrow"><span class="flabel">New password</span><span class="pw"><input class="finput mono" :type="adminPwShown ? 'text' : 'password'" autocomplete="new-password" x-model="pw1" @input="passStatus = null" @keydown.enter.prevent="savePass()" :aria-invalid="passStatus && passStatus.err ? 'true' : 'false'"><button type="button" @click="adminPwShown = !adminPwShown" :aria-pressed="adminPwShown ? 'true' : 'false'" x-text="adminPwShown ? 'Hide' : 'Show'">Show</button></span></label>
+            <p class="hint">At least 8 characters. Every browser signs in again afterwards, this one included.</p>
+            <div class="status" :class="{ err: passStatus && passStatus.err }" role="status" aria-live="polite" x-text="passStatus ? passStatus.text : ''"></div>
+            <div class="btnrow"><button class="btnp" type="button" :disabled="!!busy.pass" @click="savePass()">Change password</button></div>
+        </div></div></div>
+    </div>
+    <div class="srow last" data-rise="2">
+        <div class="s-id"><div class="sname">Sign out</div><div class="ssub"><span>Ends this session on this browser</span></div></div>
+        <div class="s-act"><button class="btn" type="button" onclick="logout()">Sign out</button></div>
+        <span></span>
+    </div>
+
+    <div class="ghead" data-rise="2"><h2>Maintenance</h2></div>
+    <div class="srow first can-open" :class="{ open: open.act }" data-rise="2">
+        <div class="s-id" @click="toggle('act')"><div class="sname">Recent activity</div><div class="ssub"><span x-text="activity.total ? fmt(activity.total) + (activity.total === 1 ? ' event' : ' events') + (activity.since ? ' since ' + fmtDay(activity.since) : '') : 'Nothing yet'"></span></div></div>
+        <div class="s-act"></div>
+        <button class="s-chev" type="button" @click="toggle('act')" :aria-expanded="open.act ? 'true' : 'false'" aria-label="Recent activity"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button>
+        <div class="s-fold"><div class="s-fold-in"><div class="s-panel">
+            <ul class="alist">
+                <template x-for="a in activity.entries" :key="a.id"><li><time x-text="fmtWhen(a.timestamp)"></time><span x-text="a.details || a.action"></span></li></template>
+            </ul>
+        </div></div></div>
+    </div>
+    <div class="srow last danger" data-rise="2">
+        <div class="s-id"><div class="sname">Reboot the Pi</div><div class="ssub"><span x-text="rebooting ? 'Rebooting…' : 'Drops every connection for about a minute'"></span></div></div>
+        <div class="s-act"><button class="btn danger" type="button" :disabled="rebooting" @click="rebootConfirm = true">Reboot</button></div>
+        <span></span>
+        <template x-if="rebootConfirm">
+            <div class="s-fold shown"><div class="s-fold-in"><div class="s-panel">
+                <div class="confirm" role="group" aria-label="Confirm reboot"><p>Reboot now? Every connection drops for about a minute, the car's included.</p><div class="btns"><button class="btn" type="button" @click="rebootConfirm = false">Cancel</button><button class="btn danger" type="button" @click="reboot()">Reboot</button></div></div>
+            </div></div></div>
+        </template>
+    </div>
+
+    <dialog class="qdlg" x-ref="qdlg" @click="if ($event.target === $refs.qdlg) $refs.qdlg.close()" :aria-label="qrUser ? 'Set up ' + qrUser.name : 'Set up a phone'">
+        <div class="q-in">
+            <template x-if="qr && onPhone && qrView !== 'qr'">
+                <div class="q-sub">
+                    <a class="openapp" :href="qr.url"><img src="/static/img/airgapp-icon.png" alt="">Open in Airgapp</a>
+                    <button class="linkbtn" type="button" @click="qrView = 'qr'">Show QR instead</button>
+                </div>
+            </template>
+            <template x-if="qr && (!onPhone || qrView === 'qr')">
+                <div class="q-sub">
+                    <div class="qr"><svg :viewBox="qr.box" shape-rendering="crispEdges" role="img" :aria-label="'QR code for ' + (qrUser ? qrUser.name : '')"><path :d="qr.path" fill="#ffffff"/></svg><div class="qr-mark"><img src="/static/img/airgapp-icon.png" alt=""></div></div>
+                    <p class="q-note">Scan with a phone that has Airgapp installed</p>
+                </div>
+            </template>
+            <template x-if="qrUser && !qr"><p class="q-none">Sign in to Tailscale first.</p></template>
+        </div>
+    </dialog>
 </div>
 {{end}}
 
-{{define "scripts"}}{{end}}
+{{define "scripts"}}
+<script src="/static/js/qrcode.min.js"></script>
+<script>
+// The Gap System page: the Pi's vitals, the hotspot, access and maintenance. Settings
+// are validated on the server, which names the field it refuses; changes apply at once.
+function systemApp() {
+    const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+    let qrMemo = { url: null, val: null };   // outside Alpine's state: building a QR is work
+    return {
+        v: null, prev: null, rate: null, rebooting: false, upBefore: 0,
+        s: {}, wifi: { ssid: '', pw: '', channel: '36' }, pwShown: false, wifiStatus: null,
+        dns: [], dnsDraft: '', dnsStatus: null,
+        ts: {}, loadedTs: false, tsConfirm: false, authKey: '', tsStatus: null,
+        users: [], userDraft: '', userStatus: null, removeId: null, freshUser: null,
+        qrUser: null, qrView: null,
+        pw1: '', adminPwShown: false, passStatus: null,
+        activity: { entries: [], total: 0, since: '' },
+        open: {}, busy: {}, rebootConfirm: false,
+        // A phone or tablet can open the enrol link straight into Airgapp; a desktop needs the QR.
+        onPhone: (() => { try { return matchMedia('(hover: none) and (pointer: coarse)').matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent); } catch (e) { return false; } })(),
+
+        init() {
+            this.loadVitals(); this.loadSettings(); this.loadTs(); this.loadUsers(); this.loadActivity();
+            this.timers = [setInterval(() => this.loadVitals(), 2000), setInterval(() => this.loadTs(), 10000), setInterval(() => this.loadActivity(), 30000)];
+            this.$refs.qdlg.addEventListener('close', () => { this.qrUser = null; this.qrView = null; });
+        },
+        destroy() { this.timers.forEach(clearInterval); },
+
+        // Plain fetch, so a refusal shows where it applies instead of as a toast.
+        async send(method, url, body) {
+            const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: body ? JSON.stringify(body) : undefined });
+            if (res.status === 401) { window.location = '/login'; throw new Error('Signed out.'); }
+            let data = null;
+            try { data = await res.json(); } catch (e) { /* empty */ }
+            if (!res.ok) { const e = new Error((data && data.error) || 'Something went wrong. Try again.'); e.key = data && data.key; throw e; }
+            return data;
+        },
+
+        // ── Vitals: polled while the page is visible; WAN rates from successive counters.
+        async loadVitals() {
+            if (document.visibilityState === 'hidden') return;
+            let v;
+            try { v = await this.send('GET', '/api/system/vitals'); } catch (e) { return; }   // unreachable while rebooting
+            const now = performance.now();
+            if (this.rebooting && v.uptime_s >= this.upBefore) return;   // not gone down yet
+            if (this.rebooting) { this.rebooting = false; this.prev = null; this.rate = null; }
+            if (this.prev && v.wan_rx >= this.prev.rx && v.wan_tx >= this.prev.tx) {
+                const dt = (now - this.prev.t) / 1000;
+                if (dt > 0.2) this.rate = { down: (v.wan_rx - this.prev.rx) / dt, up: (v.wan_tx - this.prev.tx) / dt };
+            }
+            this.prev = { rx: v.wan_rx, tx: v.wan_tx, t: now };
+            this.v = v;
+        },
+        get machine() {
+            const v = this.v;
+            if (!v) return '';
+            return [v.model, v.os, v.wan_ip && 'internet ' + v.wan_ip, v.lan_ip && 'hotspot ' + v.lan_ip].filter(Boolean).join(' · ');
+        },
+
+        // ── Hotspot
+        async loadSettings() {
+            try { this.s = await this.send('GET', '/api/settings'); } catch (e) { return; }
+            this.wifi = { ssid: this.s.ap_ssid || '', pw: '', channel: this.s.ap_channel || '36' };
+            this.dns = (this.s.dns_upstream || '').split(',').map(x => x.trim()).filter(Boolean);
+        },
+        band(ch) { return +ch > 14 ? 5 : 2; },
+        get wifiSummary() {
+            const ch = this.s.ap_channel;
+            return (this.s.ap_ssid || '') + (ch ? ' · ' + (this.band(ch) === 5 ? '5 GHz' : '2.4 GHz') + ', channel ' + ch : '');
+        },
+        countryName(cc) {
+            if (!cc) return '';
+            try { return new Intl.DisplayNames(['en'], { type: 'region' }).of(cc.toUpperCase()) + ' (' + cc.toUpperCase() + ')'; } catch (e) { return cc.toUpperCase(); }
+        },
+        async applyWifi() {
+            const ssid = this.wifi.ssid.trim(), bytes = new TextEncoder().encode(ssid).length, pw = this.wifi.pw;
+            const fail = (text, field) => { this.wifiStatus = { text, err: true, field }; };
+            if (!ssid) return fail('Give the network a name.', 'ap_ssid');
+            // hostapd counts bytes, not characters: emoji take 4 each.
+            if (bytes > 32) return fail('Too long: ' + bytes + ' of 32 bytes. Emoji count as 4 each.', 'ap_ssid');
+            if (pw && (pw.length < 8 || pw.length > 63)) return fail('The password needs 8 to 63 characters.', 'ap_password');
+            if (ssid === this.s.ap_ssid && this.wifi.channel === this.s.ap_channel && !pw) { this.wifiStatus = { text: 'Nothing to change.' }; return; }
+            const body = { ap_ssid: ssid, ap_channel: this.wifi.channel };
+            if (pw) body.ap_password = pw;
+            this.busy.wifi = true;
+            try { await this.send('PUT', '/api/settings', body); } catch (e) {
+                this.busy.wifi = false;
+                await this.loadSettings();
+                this.wifi = { ssid, pw, channel: body.ap_channel };
+                return fail(e.message, e.key);
+            }
+            this.busy.wifi = false;
+            await this.loadSettings();
+            this.wifiStatus = { text: 'Hotspot restarted. The car reconnects on its own.' };
+            notify('Hotspot restarting with the new settings.');
+            this.loadActivity();
+        },
+        // Each change saves the whole list; Undo saves the previous one.
+        async saveDns(list, prev, msg) {
+            try { await this.send('PUT', '/api/settings', { dns_upstream: list.join(',') }); } catch (e) { this.dnsStatus = { text: e.message, err: true }; return false; }
+            await this.loadSettings();
+            notify(msg, 'info', { undo: async () => {
+                try { await this.send('PUT', '/api/settings', { dns_upstream: prev.join(',') }); } catch (e) { notify(e.message, 'error'); }
+                this.loadSettings();
+            } });
+            this.loadActivity();
+            return true;
+        },
+        async addDns() {
+            const ip = this.dnsDraft.trim();
+            if (!IPV4.test(ip)) { this.dnsStatus = { text: 'Enter an IPv4 address like 9.9.9.9.', err: true }; return; }
+            if (this.dns.includes(ip)) { this.dnsStatus = { text: ip + ' is already in the list.', err: true }; return; }
+            const prev = [...this.dns];
+            if (await this.saveDns([...prev, ip], prev, 'Added ' + ip + '.')) { this.dnsDraft = ''; this.dnsStatus = null; }
+        },
+        async removeDns(ip) {
+            if (this.dns.length === 1) { this.dnsStatus = { text: 'Keep at least one resolver.', err: true }; return; }
+            const prev = [...this.dns];
+            if (await this.saveDns(prev.filter(x => x !== ip), prev, 'Removed ' + ip + '.')) this.dnsStatus = null;
+        },
+        async setRetention(d) {
+            const prev = this.s.log_retention_days || '30';
+            try { await this.send('PUT', '/api/settings', { log_retention_days: d }); } catch (e) { notify(e.message, 'error'); this.loadSettings(); return; }
+            await this.loadSettings();
+            notify('Traffic history is now kept for ' + d + ' days.', 'info', { undo: async () => {
+                try { await this.send('PUT', '/api/settings', { log_retention_days: prev }); } catch (e) { notify(e.message, 'error'); }
+                this.loadSettings();
+            } });
+            this.loadActivity();
+        },
+
+        // ── Tailscale
+        async loadTs() {
+            if (document.visibilityState === 'hidden' && this.loadedTs) return;
+            try { this.ts = await this.send('GET', '/api/remote/status'); this.loadedTs = true; } catch (e) { /* keep the last */ }
+        },
+        get tsSummary() {
+            if (!this.loadedTs) return '';
+            if (!this.ts.installed) return 'Not installed';
+            if (!this.ts.authenticated) return 'Signed out';
+            return 'Connected · ' + (this.ts.tailnet_hostname || '').split('.')[0] + (this.ts.tailnet_ipv4 ? ' · ' + this.ts.tailnet_ipv4 : '');
+        },
+        // The admin UI is served to the tailnet on :10000 with Tailscale's own certificate.
+        get dashUrl() { return this.ts.tailnet_hostname ? 'https://' + this.ts.tailnet_hostname + ':10000' : '—'; },
+        copyDash() {
+            try { navigator.clipboard.writeText(this.dashUrl); notify('Dashboard address copied.'); } catch (e) { notify('Couldn\'t copy. Select the address instead.', 'error'); }
+        },
+        async tsLogout() {
+            this.tsConfirm = false;
+            try { await this.send('POST', '/api/remote/logout'); } catch (e) { this.tsStatus = { text: e.message, err: true }; return; }
+            await this.loadTs();
+            notify('Signed out of Tailscale.');
+            this.loadActivity();
+        },
+        async tsIn() {
+            const key = this.authKey.trim();
+            if (!key) { this.tsStatus = { text: 'Paste an auth key that starts with tskey-.', err: true }; return; }
+            this.busy.ts = true;
+            try { await this.send('POST', '/api/remote/up', { auth_key: key }); } catch (e) { this.busy.ts = false; this.tsStatus = { text: e.message, err: true }; return; }
+            this.busy.ts = false; this.authKey = ''; this.tsStatus = null;
+            await this.loadTs();
+            notify('Signed in to Tailscale.');
+            this.loadActivity();
+        },
+        async tsInstall() {
+            this.busy.ts = true;
+            try { await this.send('POST', '/api/remote/install'); } catch (e) { this.busy.ts = false; this.tsStatus = { text: e.message, err: true }; return; }
+            this.busy.ts = false; this.tsStatus = null;
+            await this.loadTs();
+            notify('Tailscale installed. Sign in to connect.');
+        },
+
+        // ── Users: one relay token per phone, re-viewable as the enrol QR.
+        async loadUsers() {
+            try { this.users = ((await this.send('GET', '/api/tesla/tokens')) || {}).tokens || []; } catch (e) { /* keep the last */ }
+        },
+        userMeta(u) {
+            return 'added ' + this.fmtWhen(u.created_at) + (u.last_used_at ? ' · last used ' + this.fmtWhen(u.last_used_at) : ' · not used yet');
+        },
+        get removeUser() { return this.users.find(u => u.id === this.removeId) || null; },
+        async addUser() {
+            const name = this.userDraft.trim();
+            if (!name) { this.userStatus = { text: 'Name the phone, so you can tell them apart.', err: true }; return; }
+            if (this.users.some(u => u.name.toLowerCase() === name.toLowerCase())) { this.userStatus = { text: 'There\'s already a user called ' + name + '.', err: true }; return; }
+            this.busy.user = true;
+            let r;
+            try { r = await this.send('POST', '/api/tesla/tokens', { name }); } catch (e) { this.busy.user = false; this.userStatus = { text: e.message, err: true }; return; }
+            this.busy.user = false; this.userDraft = ''; this.userStatus = null;
+            await this.loadUsers();
+            const u = this.users.find(x => x.id === r.token.id) || Object.assign({}, r.token, { plain: r.plain });
+            this.freshUser = u.id;
+            setTimeout(() => { if (this.freshUser === u.id) this.freshUser = null; }, 1400);
+            this.showQr(u);
+            this.loadActivity();
+        },
+        async doRemove() {
+            const u = this.removeUser;
+            this.removeId = null;
+            if (!u) return;
+            try { await this.send('DELETE', '/api/tesla/tokens/' + u.id); } catch (e) { this.userStatus = { text: e.message, err: true }; return; }
+            await this.loadUsers();
+            notify(u.name + ' removed.');
+            this.loadActivity();
+        },
+        showQr(u) { this.qrUser = u; this.qrView = null; this.$refs.qdlg.showModal(); },
+        // The enrol link the Airgapp app reads, drawn as one SVG path of white modules.
+        get qr() {
+            const u = this.qrUser;
+            if (!u || !u.plain || !this.ts.ble_funnel_url || typeof qrcode !== 'function') return null;
+            const url = 'airgapp://enrol?' + new URLSearchParams({ api: this.ts.ble_funnel_url, token: u.plain, nickname: u.name }).toString();
+            if (qrMemo.url === url) return qrMemo.val;
+            const q = qrcode(0, 'H');
+            q.addData(url);
+            q.make();
+            const n = q.getModuleCount(), m = 2;
+            let d = '';
+            for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) d += 'M' + (c + m) + ' ' + (r + m) + 'h1v1h-1z';
+            qrMemo = { url, val: { url, path: d, box: '0 0 ' + (n + 2 * m) + ' ' + (n + 2 * m) } };
+            return qrMemo.val;
+        },
+
+        // ── Password: a new one ends every session, this one included.
+        async savePass() {
+            if (this.pw1.length < 8) { this.passStatus = { text: 'Use at least 8 characters.', err: true }; return; }
+            this.busy.pass = true;
+            try { await this.send('PUT', '/api/settings/password', { password: this.pw1 }); } catch (e) { this.busy.pass = false; this.passStatus = { text: e.message, err: true }; return; }
+            window.location = '/login';
+        },
+
+        // ── Maintenance
+        async loadActivity() {
+            try { this.activity = await this.send('GET', '/api/system/audit'); } catch (e) { /* keep the last */ }
+        },
+        async reboot() {
+            this.rebootConfirm = false;
+            this.upBefore = this.v ? this.v.uptime_s : 0;
+            try { await this.send('POST', '/api/system/reboot'); } catch (e) { notify(e.message, 'error'); return; }
+            this.rebooting = true;
+            notify('Rebooting. Back in about a minute.');
+        },
+
+        toggle(k) { this.open = Object.assign({}, this.open, { [k]: !this.open[k] }); if (k !== 'ts') this.tsConfirm = false; },
+        fmt(n) { return Number(n).toLocaleString('en-US'); },
+        fmtBytes(b) { return b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : b >= 1e6 ? Math.round(b / 1e6) + ' MB' : Math.round(b / 1e3) + ' KB'; },
+        fmtRate(b) { return b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB/s' : b >= 1e3 ? Math.round(b / 1e3) + ' KB/s' : Math.round(b) + ' B/s'; },
+        fmtUptime(s) {
+            if (s < 60) return 'Just now';
+            const m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+            return d ? d + ' d ' + (h % 24) + ' h' : h ? h + ' h ' + (m % 60) + ' min' : m + ' min';
+        },
+        parse(ts) { return new Date(String(ts).includes('T') ? ts : String(ts).replace(' ', 'T') + 'Z'); },
+        fmtDay(ts) { const d = this.parse(ts); return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); },
+        // Today: the time; earlier: the day.
+        fmtWhen(ts) {
+            const d = this.parse(ts);
+            if (isNaN(d)) return '';
+            return d.toDateString() === new Date().toDateString()
+                ? String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+                : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+        },
+    };
+}
+</script>
+{{end}}

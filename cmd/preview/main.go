@@ -14,11 +14,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -45,6 +47,10 @@ type mockState struct {
 	traffic         []kv
 	muted           []kv
 	settings        kv
+	remote          kv
+	tokens          []kv
+	audit           []kv
+	rebootAt        time.Time
 	nextID          int64
 }
 
@@ -82,11 +88,23 @@ func newMockState() *mockState {
 			{"id": 902, "pattern": "msftconnecttest.com", "match_type": "suffix", "enabled": true, "created_at": "2026-04-02T09:00:00Z", "since_id": int64(0)},
 		},
 		settings: kv{
-			"ap_ssid":      "Airgapp",
-			"ap_password":  "•••••••••••",
-			"ap_channel":   "6",
-			"dns_upstream": "1.1.1.1,8.8.8.8",
+			"ap_ssid":            "Airgapp",
+			"ap_password":        "preview-password",
+			"ap_channel":         "36",
+			"ap_country":         "BG",
+			"dns_upstream":       "1.1.1.1,8.8.8.8",
+			"log_retention_days": "30",
 		},
+		remote: kv{"installed": true, "daemon_active": true, "authenticated": true, "backend_state": "Running",
+			"tailnet_hostname": "airgapp-preview.example.ts.net", "tailnet_ipv4": "100.64.0.1",
+			"ble_funnel": true, "ble_funnel_url": "https://airgapp-preview.example.ts.net/api/ble"},
+		audit: []kv{
+			{"id": int64(1), "action": "tesla.ble_session_open", "details": "Phone opened a car session", "timestamp": time.Now().Add(-70 * time.Minute).UTC().Format("2006-01-02 15:04:05")},
+			{"id": int64(2), "action": "tesla.ble_session_close", "details": "Phone closed a car session", "timestamp": time.Now().Add(-64 * time.Minute).UTC().Format("2006-01-02 15:04:05")},
+			{"id": int64(3), "action": "tesla.ble_session_open", "details": "Phone opened a car session", "timestamp": time.Now().Add(-12 * time.Minute).UTC().Format("2006-01-02 15:04:05")},
+		},
+		tokens: []kv{{"id": int64(40), "name": "Phone", "created_at": time.Now().Add(-26 * time.Hour).UTC().Format(time.RFC3339),
+			"last_used_at": time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339), "plain": "preview-token-not-real"}},
 	}
 	return s
 }
@@ -313,6 +331,12 @@ func mockFeed(q url.Values) kv {
 	return kv{"entries": out, "last_id": total, "muted": len(state.muted)}
 }
 
+// mockAudit records an activity entry the way the real handlers do (caller holds state.mu).
+func mockAudit(action, details string) {
+	state.audit = append(state.audit, kv{"id": int64(len(state.audit) + 1), "action": action, "details": details,
+		"timestamp": time.Now().UTC().Format("2006-01-02 15:04:05")})
+}
+
 // startedAt anchors the mock's growing counters.
 var startedAt = time.Now()
 
@@ -423,13 +447,93 @@ func main() {
 		}
 	})
 	// Remote access (example data only: this repository is public).
+	// ?scenario=tsout starts signed out; tsmissing starts with Tailscale not installed.
 	mux.HandleFunc("/api/remote/status", func(w http.ResponseWriter, req *http.Request) {
-		writeJSON(w, kv{"installed": true, "daemon_active": true, "authenticated": true, "backend_state": "Running",
-			"tailnet_hostname": "airgapp-preview", "tailnet_ipv4": "100.64.0.1",
-			"ble_funnel": true, "ble_funnel_url": "https://airgapp-preview.example.ts.net/api/ble"})
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		switch req.URL.Query().Get("scenario") {
+		case "tsout":
+			if state.remote["scenarioSeen"] == nil {
+				state.remote["scenarioSeen"], state.remote["authenticated"], state.remote["ble_funnel"] = true, false, false
+			}
+		case "tsmissing":
+			if state.remote["scenarioSeen"] == nil {
+				state.remote["scenarioSeen"], state.remote["installed"], state.remote["authenticated"], state.remote["ble_funnel"] = true, false, false, false
+			}
+		}
+		out := kv{}
+		for k, v := range state.remote {
+			if k != "scenarioSeen" {
+				out[k] = v
+			}
+		}
+		writeJSON(w, out)
+	})
+	mux.HandleFunc("/api/remote/up", func(w http.ResponseWriter, req *http.Request) {
+		var body struct {
+			AuthKey string `json:"auth_key"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		if !strings.HasPrefix(strings.TrimSpace(body.AuthKey), "tskey-") {
+			writeStatusJSON(w, http.StatusInternalServerError, kv{"error": "auth key must start with `tskey-`"})
+			return
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		state.remote["authenticated"], state.remote["ble_funnel"], state.remote["backend_state"] = true, true, "Running"
+		mockAudit("remote.up", "owner signed in to Tailscale")
+		writeJSON(w, kv{"ok": true})
+	})
+	mux.HandleFunc("/api/remote/logout", func(w http.ResponseWriter, req *http.Request) {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		state.remote["authenticated"], state.remote["ble_funnel"], state.remote["backend_state"] = false, false, "NeedsLogin"
+		mockAudit("remote.logout", "owner signed out of Tailscale")
+		writeJSON(w, kv{"ok": true})
+	})
+	mux.HandleFunc("/api/remote/install", func(w http.ResponseWriter, req *http.Request) {
+		time.Sleep(800 * time.Millisecond)
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		state.remote["installed"], state.remote["daemon_active"], state.remote["backend_state"] = true, true, "NeedsLogin"
+		writeJSON(w, kv{"ok": true})
 	})
 	mux.HandleFunc("/api/tesla/tokens", func(w http.ResponseWriter, req *http.Request) {
-		writeJSON(w, kv{"tokens": []kv{}})
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if req.Method == http.MethodPost {
+			var body struct{ Name string }
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			name := strings.TrimSpace(body.Name)
+			if name == "" {
+				writeStatusJSON(w, http.StatusBadRequest, kv{"error": "token name cannot be empty"})
+				return
+			}
+			id := state.nextID
+			state.nextID++
+			t := kv{"id": id, "name": name, "created_at": time.Now().UTC().Format(time.RFC3339), "plain": fmt.Sprintf("preview-token-%d", id)}
+			state.tokens = append(state.tokens, t)
+			mockAudit("tesla.token_issue", "owner issued BLE client token '"+name+"'")
+			writeJSON(w, kv{"token": kv{"id": id, "name": name, "created_at": t["created_at"]}, "plain": t["plain"]})
+			return
+		}
+		writeJSON(w, kv{"tokens": state.tokens})
+	})
+	mux.HandleFunc("/api/tesla/tokens/", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodDelete {
+			http.NotFound(w, req)
+			return
+		}
+		id := extractIDFromTail(req.URL.Path)
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		for _, t := range state.tokens {
+			if t["id"] == id {
+				mockAudit("tesla.token_delete", "owner removed BLE client token '"+t["name"].(string)+"'")
+			}
+		}
+		state.tokens = filterOutInt(state.tokens, "id", id)
+		okJSON(w)
 	})
 	mux.HandleFunc("/api/logout", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Set-Cookie", "netfilter_session=; Path=/; Max-Age=0")
@@ -858,28 +962,105 @@ func main() {
 		okJSON(w)
 	})
 
+	// Settings validated with the server's own rules. ?scenario=hotspotfail: the
+	// hotspot "doesn't restart" after a valid save.
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, req *http.Request) {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		if req.Method == http.MethodPut {
-			var body kv
+			var body map[string]string
 			_ = json.NewDecoder(req.Body).Decode(&body)
+			if err := services.ValidateSettings(body); err != nil {
+				var se *services.SettingError
+				if errors.As(err, &se) {
+					writeStatusJSON(w, http.StatusBadRequest, kv{"error": se.Msg, "key": se.Key})
+					return
+				}
+				writeStatusJSON(w, http.StatusBadRequest, kv{"error": err.Error()})
+				return
+			}
+			hotspot := false
+			keys := []string{}
 			for k, v := range body {
+				if k == "ap_password" && v == "" {
+					continue
+				}
+				if k == "dns_upstream" {
+					v = strings.Join(services.SplitUpstreams(v), ",")
+				}
 				state.settings[k] = v
+				keys = append(keys, k)
+				hotspot = hotspot || strings.HasPrefix(k, "ap_")
+			}
+			sort.Strings(keys)
+			mockAudit("settings.update", "changed "+strings.Join(keys, ", "))
+			if hotspot && req.URL.Query().Get("scenario") == "hotspotfail" {
+				writeStatusJSON(w, http.StatusInternalServerError, kv{"error": "Saved, but the hotspot didn't restart: restart hostapd: exit status 1"})
+				return
 			}
 			okJSON(w)
 			return
 		}
-		writeJSON(w, state.settings)
+		out := kv{"ap_password_set": "false"}
+		for k, v := range state.settings {
+			if k == "ap_password" {
+				if v != "" {
+					out["ap_password_set"] = "true"
+				}
+				continue
+			}
+			out[k] = v
+		}
+		writeJSON(w, out)
 	})
-	mux.HandleFunc("/api/settings/password", func(w http.ResponseWriter, req *http.Request) { okJSON(w) })
+	mux.HandleFunc("/api/settings/password", func(w http.ResponseWriter, req *http.Request) {
+		var body struct{ Password string }
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		if len(body.Password) < 8 {
+			writeStatusJSON(w, http.StatusBadRequest, kv{"error": "Use at least 8 characters."})
+			return
+		}
+		writeJSON(w, kv{"signed_out": true})
+	})
 
 	mux.HandleFunc("/api/system/audit", func(w http.ResponseWriter, req *http.Request) {
-		writeJSON(w, []kv{
-			{"id": 1, "timestamp": time.Now().Add(-2 * time.Minute).Format(time.RFC3339), "action": "device.status", "details": "MAC=F4:F5:D8:1A:22:C7 status=filtered"},
-			{"id": 2, "timestamp": time.Now().Add(-7 * time.Minute).Format(time.RFC3339), "action": "filter.enabled", "details": "Tesla AP/Nav · ON"},
-			{"id": 3, "timestamp": time.Now().Add(-15 * time.Minute).Format(time.RFC3339), "action": "session.login", "details": "user=admin ip=192.168.4.22"},
-		})
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		out := []kv{}
+		for i := len(state.audit) - 1; i >= 0 && len(out) < 14; i-- {
+			out = append(out, state.audit[i])
+		}
+		writeJSON(w, kv{"entries": out, "total": 5206 + len(state.audit), "since": "2026-05-22 08:00:00"})
+	})
+	// Vitals that move like a live Pi: uptime ticks, counters grow. ?scenario=nothermal: no sensor.
+	mux.HandleFunc("/api/system/vitals", func(w http.ResponseWriter, req *http.Request) {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if !state.rebootAt.IsZero() && time.Since(state.rebootAt) < 6*time.Second {
+			writeStatusJSON(w, http.StatusBadGateway, kv{"error": "rebooting"})
+			return
+		}
+		boot := startedAt.Add(-50 * time.Hour)
+		if !state.rebootAt.IsZero() {
+			boot = state.rebootAt.Add(6 * time.Second)
+		}
+		el := time.Since(startedAt).Seconds()
+		up := time.Since(boot).Seconds()
+		var temp any = math.Round((36.5+math.Sin(el/9)*1.4)*10) / 10
+		if req.URL.Query().Get("scenario") == "nothermal" {
+			temp = nil
+		}
+		writeJSON(w, kv{"uptime_s": int64(up), "temp_c": temp, "load1": math.Round((0.19+math.Sin(el/7)*0.05)*100) / 100,
+			"mem_used": uint64(268e6), "mem_total": uint64(3977e6), "disk_used": uint64(6.2e9), "disk_total": uint64(15.1e9),
+			"wan_rx": uint64(972119 + up*14200), "wan_tx": uint64(1426105 + up*3100), "wan_if": "usb0",
+			"wan_ip": "192.168.8.100", "lan_ip": "192.168.4.1", "model": "Raspberry Pi 4 Model B", "os": "Debian 13"})
+	})
+	mux.HandleFunc("/api/system/reboot", func(w http.ResponseWriter, req *http.Request) {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		state.rebootAt = time.Now()
+		mockAudit("system.reboot", "user requested reboot")
+		writeJSON(w, kv{"status": "rebooting"})
 	})
 	mux.HandleFunc("/api/system/connectivity", func(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, []kv{

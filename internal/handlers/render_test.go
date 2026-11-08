@@ -253,3 +253,22 @@ func TestTrafficAllowing(t *testing.T) {
 		}
 	}
 }
+
+// The Gap System page: vitals, Hotspot, Access (sign-out last), Maintenance,
+// and the enrol QR dialog — no certificate row.
+func TestSystemPage(t *testing.T) {
+	body, _ := renderPage(NewRenderer(web.Content), "system.html", "system")
+	for _, want := range []string{`class="vitals"`, "Wi-Fi network", "DNS upstream", "Traffic history", "Tailscale", "Airgapp access", "Users", "Dashboard password", "Sign out", "Recent activity", "Reboot the Pi", `class="qdlg"`, "/static/js/qrcode.min.js", "/api/system/vitals"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("system page lacks %s", want)
+		}
+	}
+	for _, gone := range []string{"netfilter-ca", "Certificate"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("system page still contains %q", gone)
+		}
+	}
+	if a, s := strings.LastIndex(body, "Dashboard password"), strings.LastIndex(body, ">Sign out<"); s < a {
+		t.Error("Sign out should be the last row of Access, after Dashboard password")
+	}
+}
