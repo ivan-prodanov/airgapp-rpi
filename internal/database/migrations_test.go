@@ -635,27 +635,6 @@ func TestMigrateV29_CarAppsSplit(t *testing.T) {
 	})
 }
 
-// A private seed written for an older schema (here, the per-domain enabled
-// column v27 dropped) must not stop the daemon booting: the schema is
-// already migrated, so failing would fail every start, old binary included.
-func TestMigrate_LocalSeedFailureIsNotFatal(t *testing.T) {
-	saved := localSeeds
-	t.Cleanup(func() { localSeeds = saved })
-	localSeeds = []string{
-		`INSERT OR IGNORE INTO filter_domains (preset_id, domain, description, enabled)
-		 SELECT f.id, 'private.example', 'Old seed', 1 FROM filters f WHERE f.name = 'Connectivity'`,
-		`INSERT OR IGNORE INTO filter_domains (preset_id, domain, description)
-		 SELECT f.id, 'later.example', 'Good seed' FROM filters f WHERE f.name = 'Connectivity'`,
-	}
-	db := openMemory(t)
-	if err := Migrate(db); err != nil {
-		t.Fatalf("Migrate with a stale local seed: %v", err)
-	}
-	if !filterDomainSet(t, db, "Connectivity")["later.example"] {
-		t.Fatal("a good seed after a failing one was not applied")
-	}
-}
-
 // v30 rewrites the audit rows that held a VIN.
 func TestMigrateV30_ScrubsVINs(t *testing.T) {
 	db := openMemory(t)
@@ -763,5 +742,44 @@ func TestMigrateV31_TailscaleToCarSystem(t *testing.T) {
 	}
 	if exists, _, _, _ := filterRow(t, fresh, "Tailscale"); exists {
 		t.Fatal("v31 created a Tailscale filter")
+	}
+}
+
+// v31 also carries the two internal FSD hosts in Connectivity, which used to
+// come from a git-ignored local seed: a fresh install gets them, and an
+// install that already has them (the Pi) keeps one row each.
+func TestMigrateV31_FSDHostsInConnectivity(t *testing.T) {
+	hosts := []string{"tinit.int.lupin.pl", "tssp.int.lupin.pl"}
+
+	fresh := openMemory(t)
+	if err := Migrate(fresh); err != nil {
+		t.Fatal(err)
+	}
+	set := filterDomainSet(t, fresh, "Connectivity")
+	for _, h := range hosts {
+		if !set[h] {
+			t.Errorf("fresh install: Connectivity lacks %s", h)
+		}
+	}
+
+	pi := openMemory(t)
+	migrateTo(t, pi, 30)
+	for _, h := range hosts {
+		if _, err := pi.Exec(`INSERT INTO filter_domains (preset_id, domain, description) SELECT id, ?, 'FSD Root' FROM filters WHERE name = 'Connectivity'`, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Migrate(pi); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hosts {
+		var n int
+		var note sql.NullString
+		if err := pi.QueryRow(`SELECT COUNT(*), MAX(fd.description) FROM filter_domains fd JOIN filters f ON f.id = fd.preset_id WHERE f.name = 'Connectivity' AND fd.domain = ?`, h).Scan(&n, &note); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 || note.String != "FSD Root" {
+			t.Errorf("existing install: %s has %d rows, note %q", h, n, note.String)
+		}
 	}
 }
