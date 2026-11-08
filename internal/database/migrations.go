@@ -1118,7 +1118,7 @@ var migrations = []string{
 
 	// v26: optional claim window for self-service enrolment tokens. NULL means
 	// "never expires" (every operator-issued token, unchanged). A non-NULL
-	// expires_at is a self-issued air.gapp QR that must be scanned+claimed
+	// expires_at is a self-issued airgapp.me QR that must be scanned+claimed
 	// before it lapses — Validate rejects it past expiry and clears the column
 	// to NULL on first successful use, so a claimed token becomes permanent and
 	// an unscanned one can't linger. Existing rows get NULL, so nothing expires.

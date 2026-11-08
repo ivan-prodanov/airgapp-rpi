@@ -39,7 +39,7 @@ type TeslaClientToken struct {
 	// re-display a user's enrolment QR without re-issuing (v25). List returns
 	// active tokens only, so this is always set there; never set on Validate/get.
 	Plain string `json:"plain,omitempty"`
-	// ExpiresAt is the claim window for a self-service air.gapp token: non-NULL
+	// ExpiresAt is the claim window for a self-service airgapp.me token: non-NULL
 	// means "must be scanned+used before this instant, else dead" (v26). Cleared
 	// to NULL on first successful Validate so a claimed token is permanent.
 	// Operator-issued tokens have it NULL. Only populated by Validate's scan.
@@ -110,7 +110,7 @@ func (s *TeslaTokenService) Issue(name string) (*TeslaTokenIssue, error) {
 
 // IssueEphemeral mints a bearer with a claim window: it works only if scanned
 // and first-used within ttl, after which Validate clears the window and the
-// token becomes permanent (see Validate). Used by the self-service air.gapp
+// token becomes permanent (see Validate). Used by the self-service airgapp.me
 // enrol page so an unscanned QR can't linger as a live credential. Same shape
 // as Issue otherwise — the plaintext is returned once.
 //
@@ -266,7 +266,7 @@ func (s *TeslaTokenService) Validate(plain string) (*TeslaClientToken, error) {
 		return nil, fmt.Errorf("validate token: %w", err)
 	}
 
-	// Claim-on-first-use: a self-service air.gapp token proves itself by being
+	// Claim-on-first-use: a self-service airgapp.me token proves itself by being
 	// used inside its window (it passed the clause above). Clear the window so
 	// it is permanent from here on — only ever runs once per token, and an
 	// unclaimed one would already have failed the WHERE and never reach here.
