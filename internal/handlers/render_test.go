@@ -249,3 +249,14 @@ func TestTrafficMuting(t *testing.T) {
 		}
 	}
 }
+
+// Allowing: a dialog to add the domain to a filter (or a new one), and a locked
+// Allow for domains no filter can allow.
+func TestTrafficAllowing(t *testing.T) {
+	body, _ := renderPage(NewRenderer(web.Content), "traffic.html", "traffic")
+	for _, want := range []string{`aria-labelledby="adlg-h"`, `name="allow-target"`, "+ New filter", `class="rbtn locked"`, `aria-disabled="true"`, "/api/filters/?domains=1"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("traffic page lacks %s", want)
+		}
+	}
+}

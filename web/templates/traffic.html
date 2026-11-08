@@ -46,6 +46,7 @@
                             <div class="led-cell tmono c-proto" x-text="r.proto"></div>
                             <div class="led-cell c-vd"><span class="vd" :class="r.class || 'other'" :title="how(r)"><span class="dot" aria-hidden="true"></span><span x-text="label(r)"></span></span></div>
                             <div class="led-cell rev c-rev">
+                                <template x-if="r.class === 'blocked' && r.domain && !r.locked && coverOf(r)"><span class="mtag atag" :class="coverOf(r).enabled ? '' : 'pending'" x-text="coverOf(r).enabled ? 'Allowed · ' + coverOf(r).name : 'Pending · ' + coverOf(r).name + ' is off'"></span></template><template x-if="r.class === 'blocked' && r.domain && !r.locked && !coverOf(r)"><button class="rbtn allow" type="button" @click.stop="openAllow(r.domain)" :aria-label="'Allow ' + r.domain">Allow</button></template><template x-if="r.class === 'blocked' && r.domain && r.locked"><button class="rbtn locked" type="button" aria-disabled="true" @click.stop="explainLock(r)" title="Always blocked. Can't be allowed." :aria-label="'Allow ' + r.domain + ': unavailable, always blocked'"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="2.5" y="5.5" width="7" height="5" rx="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5"/></svg>Allow</button></template>
                                 <template x-if="r.domain && !mutedBy(r)"><button class="rbtn" type="button" @click.stop="muteFromRow(r.domain)" :aria-label="'Mute ' + r.domain">Mute</button></template>
                                 <template x-if="r.domain && mutedBy(r)"><span class="mtag" :title="'Muted by ' + mutedBy(r)">Muted</span></template>
                             </div>
@@ -57,7 +58,7 @@
                                     <div><dt>Port</dt><dd x-text="r.port + ' · ' + r.proto"></dd></div>
                                     <div><dt>Verdict</dt><dd x-text="how(r)"></dd></div>
                                 </dl>
-                                <div class="c-acts"><template x-if="r.domain && !mutedBy(r)"><button class="rbtn" type="button" @click="muteFromRow(r.domain)" :aria-label="'Mute ' + r.domain">Mute</button></template><template x-if="r.domain && mutedBy(r)"><span class="mtag">Muted by <b x-text="mutedBy(r)"></b></span></template></div>
+                                <div class="c-acts"><template x-if="r.class === 'blocked' && r.domain && !r.locked && coverOf(r)"><span class="mtag atag" :class="coverOf(r).enabled ? '' : 'pending'" x-text="coverOf(r).enabled ? 'Allowed · ' + coverOf(r).name : 'Pending · ' + coverOf(r).name + ' is off'"></span></template><template x-if="r.class === 'blocked' && r.domain && !r.locked && !coverOf(r)"><button class="rbtn allow" type="button" @click="openAllow(r.domain)" :aria-label="'Allow ' + r.domain">Allow</button></template><template x-if="r.class === 'blocked' && r.domain && r.locked"><button class="rbtn locked" type="button" aria-disabled="true" @click="explainLock(r)" title="Always blocked. Can't be allowed." :aria-label="'Allow ' + r.domain + ': unavailable, always blocked'"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="2.5" y="5.5" width="7" height="5" rx="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5"/></svg>Allow</button></template><template x-if="r.domain && !mutedBy(r)"><button class="rbtn" type="button" @click="muteFromRow(r.domain)" :aria-label="'Mute ' + r.domain">Mute</button></template><template x-if="r.domain && mutedBy(r)"><span class="mtag">Muted by <b x-text="mutedBy(r)"></b></span></template></div>
                             </div></div>
                         </div>
                     </template>
@@ -85,6 +86,27 @@
             <p class="mempty" x-show="!mutes.length">Nothing muted yet.</p>
         </div>
     </dialog>
+
+    <dialog class="ndlg adlg" x-ref="adlg" @click="if ($event.target === $refs.adlg) $refs.adlg.close()" aria-labelledby="adlg-h">
+        <div class="ndlg-form">
+            <div class="ndlg-head"><h2 id="adlg-h">Allow a domain</h2><button class="ndlg-x" type="button" @click="$refs.adlg.close()" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button></div>
+            <p>Pick the filter it belongs to. Filtered devices can reach it whenever that filter is on.</p>
+            <label class="field"><span class="flabel">Domain</span><input class="finput mono" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" x-model="allow.domain" @input="allow.err = ''; allow.bad = ''" @keydown.enter.prevent="confirmAllow()" :aria-invalid="allow.bad === 'domain' ? 'true' : 'false'"></label>
+            <div class="field">
+                <span class="flabel" id="fpick-l">Add to filter</span>
+                <div class="fpick" role="radiogroup" aria-labelledby="fpick-l">
+                    <template x-for="f in allowOpts" :key="f.id">
+                        <label class="fopt"><input type="radio" name="allow-target" :value="String(f.id)" :checked="allow.target === String(f.id)" @change="allow.target = String(f.id); allow.err = ''"><span><span x-text="f.name"></span><i x-show="!f.enabled">off</i></span></label>
+                    </template>
+                    <label class="fopt new"><input type="radio" name="allow-target" value="new" :checked="allow.target === 'new'" @change="allow.target = 'new'; allow.err = ''"><span>+ New filter</span></label>
+                </div>
+            </div>
+            <label class="field" x-show="allow.target === 'new'"><span class="flabel">New filter name</span><input class="finput" type="text" maxlength="64" placeholder="e.g. Apple Music" x-model="allow.newName" @input="allow.err = ''; allow.bad = ''" @keydown.enter.prevent="confirmAllow()" :aria-invalid="allow.bad === 'name' ? 'true' : 'false'"></label>
+            <label class="field"><span class="flabel">Note (optional)</span><input class="finput" type="text" placeholder="What it's for" x-model="allow.note" @keydown.enter.prevent="confirmAllow()"></label>
+            <div class="fstatus err" role="status" aria-live="polite" x-text="allow.err"></div>
+            <div class="btns"><button class="btn" type="button" @click="$refs.adlg.close()">Cancel</button><button class="btnp" type="button" :disabled="allow.busy" @click="confirmAllow()">Allow</button></div>
+        </div>
+    </dialog>
 </div>
 {{end}}
 
@@ -97,6 +119,10 @@
 // rows wait in a buffer behind the "N new" pill; at the edge they slide in (FLIP).
 function trafficApp() {
     const CAP = 80, EDGE = 24, COMPACT = '(max-width:860px)', POLL = 2000;
+    // The server's rule for filter names (services.ValidPresetName).
+    const NAME = /^[A-Za-z0-9][A-Za-z0-9 _\-+\/]{0,63}$/;
+    // A domain as the server normalises it: a pasted URL, a port or a *. prefix reduced to the host.
+    const hostOf = q => String(q || '').trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split(/[\/?#]/)[0].replace(/:\d+$/, '').replace(/\.$/, '').replace(/^\*\./, '');
     const HOW = { allowed: 'Passed the gate', resolved: 'Resolved by DNS', blocked: 'Dropped at the gate', sinkholed: 'Sinkholed by DNS' };
     return {
         CAP,
@@ -105,6 +131,8 @@ function trafficApp() {
         outcome: 'all', proto: 'All', query: '',
         muted: 0, failing: false, inflight: false, gen: 0,
         mutes: [], muteDraft: '', mstatus: null, freshMute: null,
+        filters: [], allowed: [],
+        allow: { domain: '', target: '', newName: '', note: '', err: '', bad: '', busy: false },
         compact: matchMedia(COMPACT).matches, barH: 0, edgeAway: false,
 
         init() {
@@ -313,7 +341,7 @@ function trafficApp() {
         async submitMute() {
             const raw = this.muteDraft.trim();
             if (!raw) return;
-            const host = raw.toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split(/[\/?#]/)[0].replace(/:\d+$/, '').replace(/\.$/, '').replace(/^\*\./, '');
+            const host = hostOf(raw);
             if (this.mutes.some(m => m.pattern === host)) { this.mstatus = { err: true, text: host + ' is already muted.' }; return; }
             let id;
             try { id = await this.postMute(raw); } catch (e) { this.mstatus = { err: true, text: e.message }; return; }
@@ -333,6 +361,90 @@ function trafficApp() {
                 await this.loadMutes();
                 this.mstatus = { text: 'Muted ' + m.pattern + ' again.' };
             } };
+        },
+
+        // ── Allowing. The server decides what can be allowed and says why not; the page adds
+        // only what it knows from the filters list (already allowed, names).
+        coverOf(r) {
+            const d = (r.domain || '').toLowerCase();
+            const local = this.allowed.find(a => d === a.domain || d.endsWith('.' + a.domain));
+            return local ? local.cover : r.cover;
+        },
+        explainLock(r) { notify(r.domain + ' is always blocked. It can\'t be allowed.'); },
+        // Filters on the Car system first, then the rest, as the Filters page lists them.
+        get allowOpts() {
+            return [...this.filters.filter(f => f.group === 'System'), ...this.filters.filter(f => f.group !== 'System')];
+        },
+        // The filter that already lists the same registrable domain (music.youtube.com → YouTube).
+        suggest(domain) {
+            const reg = hostOf(domain).split('.').slice(-2).join('.');
+            const f = this.allowOpts.find(x => (x.domains || []).some(y => y.domain === reg || y.domain.endsWith('.' + reg)));
+            return f ? String(f.id) : '';
+        },
+        coveredBy(d) {
+            const hits = this.filters.filter(f => (f.domains || []).some(x => d === x.domain || d.endsWith('.' + x.domain)));
+            return hits.find(f => f.enabled) || hits[0] || null;
+        },
+        async openAllow(domain) {
+            try { this.filters = (await api.get('/api/filters/?domains=1')) || []; } catch (e) { return; }
+            this.allow = { domain, target: this.suggest(domain), newName: '', note: '', err: '', bad: '', busy: false };
+            this.$refs.adlg.showModal();
+        },
+        // Plain fetch, so the server's reason shows in the dialog instead of a toast.
+        async send(method, url, body) {
+            const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: body ? JSON.stringify(body) : undefined });
+            if (res.status === 401) { window.location = '/login'; throw new Error('Signed out.'); }
+            let data = null;
+            try { data = await res.json(); } catch (e) { /* empty */ }
+            if (!res.ok) throw new Error((data && data.error) || 'Something went wrong. Try again.');
+            return data;
+        },
+        async confirmAllow() {
+            const a = this.allow;
+            if (a.busy) return;
+            const fail = (err, bad) => { a.err = err; a.bad = bad || ''; };
+            const d = hostOf(a.domain);
+            if (!d) return fail('Enter a domain like cdn.example.com.', 'domain');
+            const cover = this.coveredBy(d);
+            if (cover && cover.enabled) return fail(d + ' is already allowed by ' + cover.name + '.', 'domain');
+            if (!a.target) return fail('Pick a filter, or create a new one.');
+            let target, created = null;
+            if (a.target === 'new') {
+                const name = a.newName.trim();
+                if (!NAME.test(name)) return fail(name ? 'Use letters, numbers, spaces and _ - + / only, starting with a letter or number.' : 'Name the new filter.', 'name');
+                if (this.filters.some(f => f.name.toLowerCase() === name.toLowerCase())) return fail('There\'s already a filter called ' + name + '.', 'name');
+                target = { name, enabled: true };
+            } else {
+                target = this.filters.find(f => String(f.id) === a.target);
+                if (!target) return fail('Pick a filter, or create a new one.');
+            }
+            a.busy = true;
+            let did;
+            try {
+                if (a.target === 'new') { created = await this.send('POST', '/api/filters', { name: target.name }); target = { id: created.id, name: target.name, enabled: true }; }
+                did = (await this.send('POST', '/api/filters/' + target.id + '/domains', { domain: d, description: a.note.trim() })).id;
+                // Created to allow this domain, so it starts on.
+                if (created) await this.send('PUT', '/api/filters/' + created.id + '/enabled', { enabled: true });
+            } catch (e) {
+                if (created && !did) { try { await this.send('DELETE', '/api/filters/' + created.id); } catch (x) { /* best effort */ } }
+                a.busy = false;
+                return fail(e.message, 'domain');
+            }
+            a.busy = false;
+            this.$refs.adlg.close();
+            const entry = { domain: d, cover: { id: target.id, name: target.name, enabled: !!target.enabled } };
+            this.allowed = [...this.allowed, entry];
+            const on = !!target.enabled;
+            notify(on ? (created ? 'Created ' + target.name + ' and allowed ' + d + '.' : 'Allowed ' + d + ' in ' + target.name + '.') + ' New connections pass.'
+                      : 'Added ' + d + ' to ' + target.name + '. It applies once ' + target.name + ' is on.', 'info', {
+                undo: async () => {
+                    try {
+                        await this.send('DELETE', '/api/filters/domains/' + did);
+                        if (created) await this.send('DELETE', '/api/filters/' + created.id);
+                    } catch (e) { notify(e.message, 'error'); }
+                    this.allowed = this.allowed.filter(x => x !== entry);
+                },
+            });
         },
 
         // The registrable domain stays visible when space runs out; it says who is being contacted.
