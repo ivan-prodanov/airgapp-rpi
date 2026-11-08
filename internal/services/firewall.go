@@ -379,6 +379,15 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 	b.WriteString("table ip nat {\n")
 	b.WriteString("    chain prerouting {\n")
 	b.WriteString("        type nat hook prerouting priority dstnat; policy accept;\n")
+	// The enrol host resolves to EnrolAddr: any hotspot device's web traffic to
+	// it lands on the Pi — HTTP on the enrol page, HTTPS on the responder that
+	// refuses the name, so a browser falls back to HTTP at once.
+	if s.cfg.EnrolHost != "" && ValidIPv4(s.cfg.EnrolAddr) {
+		for _, port := range []int{80, 443} {
+			fmt.Fprintf(&b, "        iifname \"%s\" ip daddr %s tcp dport %d dnat to %s:%d\n",
+				s.cfg.LANInterface, s.cfg.EnrolAddr, port, s.cfg.LANGateway, port)
+		}
+	}
 	for _, mac := range snap.filtered {
 		fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s tcp dport 80 dnat to %s\n",
 			s.cfg.LANInterface, mac, s.cfg.LANGateway)

@@ -30,6 +30,11 @@ type Config struct {
 	// typed name with no real top-level domain as a search. The page stays
 	// LAN-only: :80 is wlan0-bound and nothing publishes it.
 	EnrolHost string `yaml:"enrol_host"`
+	// EnrolAddr is what the enrol host resolves to on the hotspot: a public-
+	// looking address the Pi intercepts (its web traffic is DNAT'd to the Pi),
+	// because the car's browser won't connect to a private one. TEST-NET-3 is
+	// never routed on the internet, so off the hotspot it goes nowhere.
+	EnrolAddr string `yaml:"enrol_addr"`
 	DryRun    bool   `yaml:"dry_run"`
 	LogLevel  string `yaml:"log_level"`
 }
@@ -53,6 +58,7 @@ func Defaults() Config {
 		DNSUpstream:    "1.1.1.1,8.8.8.8",
 		SNIProxyPort:   8444,
 		EnrolHost:      "airgapp.me",
+		EnrolAddr:      "203.0.113.80",
 		DryRun:         false,
 		LogLevel:       "info",
 	}
@@ -87,6 +93,7 @@ func applyEnvOverrides(cfg *Config) {
 		"NETFILTER_WAN_INTERFACE":    &cfg.WANInterface,
 		"NETFILTER_LAN_INTERFACE":    &cfg.LANInterface,
 		"NETFILTER_ENROL_HOST":       &cfg.EnrolHost,
+		"NETFILTER_ENROL_ADDR":       &cfg.EnrolAddr,
 		"NETFILTER_LAN_SUBNET":       &cfg.LANSubnet,
 		"NETFILTER_LAN_GATEWAY":      &cfg.LANGateway,
 		"NETFILTER_DHCP_RANGE_START": &cfg.DHCPRangeStart,

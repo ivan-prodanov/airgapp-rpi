@@ -31,6 +31,7 @@ type Services struct {
 func New(db *sql.DB, exec *executor.Executor, cfg config.Config) *Services {
 	audit := NewAuditService(db)
 	trafficLog := NewTrafficLogService(db)
+	trafficLog.SetLocalNames([]string{cfg.EnrolHost})
 	filter := NewFilterService(db)
 	network := NewNetworkService(db, cfg)
 	tesla := NewTeslaService(db, audit)

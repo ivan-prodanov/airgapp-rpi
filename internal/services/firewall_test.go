@@ -379,3 +379,24 @@ func TestDNSQNameMatch(t *testing.T) {
 		t.Fatal("accepted an invalid name")
 	}
 }
+
+// Any hotspot device's web traffic to the enrol address lands on the Pi:
+// HTTP on the enrol page, HTTPS on the responder that refuses the name (so a
+// browser falls back to HTTP at once). Ahead of the per-device rules.
+func TestEnrolAddrDNAT(t *testing.T) {
+	cfg := config.Config{LANInterface: "wlan0", WANInterface: "eth1", LANGateway: "192.168.4.1", SNIProxyPort: 8444, DNSUpstream: "1.1.1.1", EnrolHost: "airgapp.me", EnrolAddr: "203.0.113.80"}
+	s := &FirewallService{cfg: cfg}
+	out := s.generateConfig(nil, deviceSnapshot{filtered: []string{"0c:29:8f:93:2a:08"}, open: []string{"aa:bb:cc:dd:ee:ff"}})
+	http := `iifname "wlan0" ip daddr 203.0.113.80 tcp dport 80 dnat to 192.168.4.1:80`
+	https := `iifname "wlan0" ip daddr 203.0.113.80 tcp dport 443 dnat to 192.168.4.1:443`
+	first := strings.Index(out, `ether saddr 0c:29:8f:93:2a:08`)
+	for _, rule := range []string{http, https} {
+		if i := strings.Index(out, rule); i < 0 || i > first {
+			t.Fatalf("want %q ahead of the per-device rules:\n%s", rule, out)
+		}
+	}
+	s.cfg.EnrolAddr = ""
+	if strings.Contains(s.generateConfig(nil, deviceSnapshot{}), "203.0.113.80") {
+		t.Fatal("no enrol address, yet a rule for it")
+	}
+}
