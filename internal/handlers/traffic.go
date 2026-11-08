@@ -32,19 +32,22 @@ type feedEntry struct {
 	Port     string                `json:"port"`
 	Proto    string                `json:"proto"`
 	Action   string                `json:"action"`
-	Class    string                `json:"class"`  // "allowed", "blocked", or ""
+	Class    string                `json:"class"`  // "allowed", "blocked", "unreachable", or ""
 	Locked   bool                  `json:"locked"` // always blocked: Allow is shown locked
 	Cover    *services.FilterCover `json:"cover"`  // the filter that lists the domain
 	MutedBy  string                `json:"muted_by"`
 }
 
-// verdictClass maps an action onto the two labels the console uses.
+// verdictClass maps an action onto the labels the console uses: allowed,
+// blocked, or unreachable (allowed through, but the site never answered).
 func verdictClass(action string) string {
 	switch action {
 	case "allowed", "resolved":
 		return "allowed"
 	case "blocked", "sinkholed":
 		return "blocked"
+	case "unreachable":
+		return "unreachable"
 	}
 	return ""
 }

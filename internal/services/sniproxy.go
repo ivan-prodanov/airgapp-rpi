@@ -261,7 +261,7 @@ func (s *SNIProxyService) handle(client net.Conn) {
 	upstream, err := s.dial("tcp", net.JoinHostPort(sni, "443"))
 	if err != nil {
 		log.Printf("[SNI] %s: dial %s: %v", clientIP, sni, err)
-		s.trafficLog.LogSNIEvent(clientIP, sni, false)
+		s.trafficLog.LogSNIUnreachable(clientIP, sni) // allowed; the site didn't answer
 		return
 	}
 	defer upstream.Close()

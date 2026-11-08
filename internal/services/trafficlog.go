@@ -376,7 +376,7 @@ func deviceMatch(mac, ip string) (string, []any) {
 func recentHostsSQL(match string) string {
 	return `SELECT id, domain, action FROM query_log
 		WHERE id >= ? AND +timestamp >= ? AND ` + match + ` AND domain != ''
-		  AND +action IN ('allowed','resolved','blocked','sinkholed')
+		  AND +action IN ('allowed','resolved','unreachable','blocked','sinkholed')
 		ORDER BY id DESC LIMIT 500`
 }
 
@@ -418,7 +418,7 @@ func (s *TrafficLogService) RecentHosts(mac, ip string, since time.Time, limit i
 		}
 		seen[key] = true
 		out = append(out, HostVerdict{ID: id, Domain: domain,
-			Crossed: action == "allowed" || action == "resolved", Safe: s.IsAllowListed(domain)})
+			Crossed: action == "allowed" || action == "resolved" || action == "unreachable", Safe: s.IsAllowListed(domain)})
 		if len(out) == limit {
 			break
 		}
@@ -467,7 +467,7 @@ func (s *TrafficLogService) ClassCountsSince(mac, ip string, since time.Time) (b
 		return 0, 0
 	}
 	var b, a sql.NullInt64
-	err := s.db.QueryRow(`SELECT SUM(action IN ('blocked','sinkholed')), SUM(action IN ('allowed','resolved'))
+	err := s.db.QueryRow(`SELECT SUM(action IN ('blocked','sinkholed')), SUM(action IN ('allowed','resolved','unreachable'))
 		FROM query_log WHERE `+match+` AND timestamp >= ?`,
 		append(args, since.UTC().Format("2006-01-02 15:04:05"))...).Scan(&b, &a)
 	if err != nil {
@@ -807,6 +807,21 @@ func (s *TrafficLogService) LogSNIEvent(clientIP, sni string, allowed bool) {
 	})
 }
 
+// LogSNIUnreachable records a connection the SNI proxy let through whose site
+// never answered (the onward dial failed): "unreachable", not "blocked" — the
+// gate allowed it. Logged as blocked before, a Tailscale relay that timed out
+// read as blocked by the very filter that allowed it.
+func (s *TrafficLogService) LogSNIUnreachable(clientIP, sni string) {
+	s.insertEntry(TrafficEntry{
+		SrcIP:    clientIP,
+		Domain:   sni,
+		DstPort:  "443",
+		Protocol: "TLS",
+		Action:   "unreachable",
+		Source:   "sniproxy",
+	})
+}
+
 func (s *TrafficLogService) insertEntry(e TrafficEntry) {
 	if e.Source == "" {
 		e.Source = "forward"
@@ -937,6 +952,8 @@ func (s *TrafficLogService) Feed(f FeedFilter) (entries []TrafficEntry, lastID i
 	switch f.Outcome {
 	case "allowed":
 		where = append(where, "action IN ('allowed','resolved')")
+	case "unreachable": // let through, but the site never answered: its own chip
+		where = append(where, "action = 'unreachable'")
 	case "blocked":
 		where = append(where, "action IN ('blocked','sinkholed')")
 	}
