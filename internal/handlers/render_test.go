@@ -70,6 +70,11 @@ func TestLayoutStylesheets(t *testing.T) {
 	if strings.Contains(string(css), "Bridge:") {
 		t.Error("gap.css still carries the app.css bridge")
 	}
+	for _, gone := range []string{"static/css/app.css", "static/css/pico.min.css", "templates/settings.html", "templates/remote-access.html"} {
+		if _, err := web.Content.ReadFile(gone); err == nil {
+			t.Errorf("%s is still shipped", gone)
+		}
+	}
 }
 
 // The Gap top bar: five links in a fixed order, the current one marked active.

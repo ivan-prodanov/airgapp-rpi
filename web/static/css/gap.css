@@ -151,8 +151,7 @@ background-size:44px 44px;
 .readouts{gap:16px 24px}
 }
 
-/* Gap pages: shared state colours, focus ring and controls. Controls are scoped under .wrap (a ported
-   page) so they don't collide with app.css's .btn/.field on pages not yet ported (slice 6 drops app.css). */
+/* Gap pages: shared state colours, focus ring and controls (scoped under .wrap, the page frame). */
 :focus-visible{outline:2px solid var(--gate);outline-offset:2px}
 .s-blocked{--c:var(--danger);--t:rgba(255,90,60,.13);--cb:rgba(255,90,60,.42)}
 .s-filtered{--c:var(--watch);--t:rgba(245,181,68,.13);--cb:rgba(245,181,68,.42)}
