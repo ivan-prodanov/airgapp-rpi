@@ -2,6 +2,8 @@ package services
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -214,5 +216,28 @@ func TestSetEnabledDownIsNeverGated(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("stop must still have run")
+	}
+}
+
+// hostapd.conf holds the WPA passphrase: only root may read it, including
+// when the file already exists with a looser mode.
+func TestHotspotConfMode0600(t *testing.T) {
+	db := migratedDB(t)
+	mustExec(t, db, `INSERT INTO settings (key, value) VALUES ('ap_ssid','Airgapp'),('ap_password','longenough'),('ap_channel','36')
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+	s := NewHotspotService(db, executor.New(true))
+	s.confPath = filepath.Join(t.TempDir(), "hostapd.conf")
+	if err := os.WriteFile(s.confPath, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Apply(); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	fi, err := os.Stat(s.confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0600 {
+		t.Fatalf("hostapd.conf mode %v, want 0600", fi.Mode().Perm())
 	}
 }

@@ -1,8 +1,10 @@
 package services
 
 import (
+	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -119,4 +121,99 @@ func SanitizeSingleLine(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// SettingKeys is every setting the console may change: one list for the
+// handler, the hotspot and the page.
+var SettingKeys = []string{"ap_ssid", "ap_password", "ap_channel", "ap_country", "dns_upstream", "log_retention_days"}
+
+// SettingError names the setting a value was refused for, in words the
+// System page shows next to that field.
+type SettingError struct{ Key, Msg string }
+
+func (e *SettingError) Error() string { return e.Msg }
+
+var (
+	// The channels the hotspot offers: 2.4 GHz 1/6/11, 5 GHz UNII-1 36-48.
+	apChannels   = map[string]bool{"1": true, "6": true, "11": true, "36": true, "40": true, "44": true, "48": true}
+	countryRe    = regexp.MustCompile(`^[A-Za-z]{2}$`)
+	retainDays   = map[string]bool{"7": true, "30": true, "90": true}
+	settingKnown = func() map[string]bool {
+		m := map[string]bool{}
+		for _, k := range SettingKeys {
+			m[k] = true
+		}
+		return m
+	}()
+)
+
+// SplitUpstreams returns the resolvers in a dns_upstream value, trimmed,
+// empty entries dropped.
+func SplitUpstreams(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ValidateSettings checks every value before anything is saved. An empty
+// ap_password means "unchanged".
+func ValidateSettings(in map[string]string) error {
+	unknown := []string{}
+	for k := range in {
+		if !settingKnown[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return &SettingError{unknown[0], fmt.Sprintf("unknown setting %q", unknown[0])}
+	}
+	for _, k := range SettingKeys {
+		v, ok := in[k]
+		if !ok {
+			continue
+		}
+		bad := func(msg string) error { return &SettingError{k, msg} }
+		switch k {
+		case "ap_ssid":
+			if strings.TrimSpace(v) == "" {
+				return bad("Give the network a name.")
+			}
+			// hostapd counts bytes, not characters.
+			if len(v) > 32 {
+				return bad(fmt.Sprintf("Too long: %d of 32 bytes. Emoji count as 4 each.", len(v)))
+			}
+		case "ap_password":
+			if v != "" && (len(v) < 8 || len(v) > 63) {
+				return bad("The password needs 8 to 63 characters.")
+			}
+		case "ap_channel":
+			if !apChannels[v] {
+				return bad("Pick a channel the hotspot supports.")
+			}
+		case "ap_country":
+			if !countryRe.MatchString(v) {
+				return bad("Use a two-letter country code.")
+			}
+		case "dns_upstream":
+			ups := SplitUpstreams(v)
+			if len(ups) == 0 {
+				return bad("Keep at least one resolver.")
+			}
+			for _, u := range ups {
+				if !ValidIPv4(u) {
+					return bad(u + " isn't an IPv4 address like 9.9.9.9.")
+				}
+			}
+		case "log_retention_days":
+			if !retainDays[v] {
+				return bad("Keep traffic for 7, 30 or 90 days.")
+			}
+		}
+	}
+	return nil
 }

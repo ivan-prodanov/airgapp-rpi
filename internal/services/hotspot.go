@@ -37,16 +37,17 @@ func bandFor(channel int) (hwMode string, is5GHz bool, err error) {
 }
 
 type HotspotService struct {
-	db   *sql.DB
-	exec *executor.Executor
-	mu   sync.Mutex
+	db       *sql.DB
+	exec     *executor.Executor
+	mu       sync.Mutex
+	confPath string // hostapd.conf; tests point it at a temp file
 
 	verifyFirewall func() error
 	applyFirewall  func() error
 }
 
 func NewHotspotService(db *sql.DB, exec *executor.Executor) *HotspotService {
-	return &HotspotService{db: db, exec: exec}
+	return &HotspotService{db: db, exec: exec, confPath: "/etc/hostapd/hostapd.conf"}
 }
 
 // SetFirewallGate installs the airgap gate. Wired in services.New from
@@ -122,8 +123,14 @@ func (s *HotspotService) Apply() error {
 	b.WriteString("wpa_key_mgmt=WPA-PSK\n")
 	b.WriteString("rsn_pairwise=CCMP\n")
 
-	confPath := "/etc/hostapd/hostapd.conf"
-	if err := os.WriteFile(confPath, []byte(b.String()), 0644); err != nil {
+	// The file holds the WPA passphrase: root only. WriteFile keeps an existing
+	// file's mode, so set it explicitly too.
+	confPath := s.confPath
+	err = os.WriteFile(confPath, []byte(b.String()), 0600)
+	if err == nil {
+		err = os.Chmod(confPath, 0600)
+	}
+	if err != nil {
 		if !s.exec.DryRun {
 			return fmt.Errorf("write %s: %w", confPath, err)
 		}

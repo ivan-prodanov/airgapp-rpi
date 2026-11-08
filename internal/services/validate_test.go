@@ -1,6 +1,10 @@
 package services
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestValidPresetName(t *testing.T) {
 	cases := []struct {
@@ -162,5 +166,46 @@ func TestValidIPOrCIDR(t *testing.T) {
 		if ValidIPOrCIDR(s) {
 			t.Errorf("ValidIPOrCIDR(%q) should be false", s)
 		}
+	}
+}
+
+// The System page shows these messages as they are, on the field named by Key.
+func TestValidateSettings(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]string
+		key  string // "" = valid
+		msg  string
+	}{
+		{"all good", map[string]string{"ap_ssid": "Airgapp", "ap_password": "longenough", "ap_channel": "36", "ap_country": "BG", "dns_upstream": "1.1.1.1,9.9.9.9", "log_retention_days": "30"}, "", ""},
+		{"password unchanged", map[string]string{"ap_ssid": "Airgapp", "ap_password": ""}, "", ""},
+		{"unknown key", map[string]string{"admin": "x"}, "admin", `unknown setting "admin"`},
+		{"empty ssid", map[string]string{"ap_ssid": "  "}, "ap_ssid", "Give the network a name."},
+		{"emoji ssid over 32 bytes", map[string]string{"ap_ssid": "🔥🔥🔥🔥🔥🔥🔥🔥🔥"}, "ap_ssid", "Too long: 36 of 32 bytes. Emoji count as 4 each."},
+		{"ssid 32 bytes", map[string]string{"ap_ssid": "abcdefghijabcdefghijabcdefghijab"}, "", ""},
+		{"short password", map[string]string{"ap_password": "short"}, "ap_password", "The password needs 8 to 63 characters."},
+		{"long password", map[string]string{"ap_password": strings.Repeat("x", 64)}, "ap_password", "The password needs 8 to 63 characters."},
+		{"bad channel", map[string]string{"ap_channel": "13"}, "ap_channel", "Pick a channel the hotspot supports."},
+		{"2.4 channel", map[string]string{"ap_channel": "11"}, "", ""},
+		{"bad country", map[string]string{"ap_country": "BGR"}, "ap_country", "Use a two-letter country code."},
+		{"no resolver", map[string]string{"dns_upstream": " "}, "dns_upstream", "Keep at least one resolver."},
+		{"bad resolver", map[string]string{"dns_upstream": "1.1.1.1,dns.google"}, "dns_upstream", "dns.google isn't an IPv4 address like 9.9.9.9."},
+		{"bad retention", map[string]string{"log_retention_days": "14"}, "log_retention_days", "Keep traffic for 7, 30 or 90 days."},
+		{"retention 90", map[string]string{"log_retention_days": "90"}, "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateSettings(c.in)
+			if c.key == "" {
+				if err != nil {
+					t.Fatalf("want valid, got %v", err)
+				}
+				return
+			}
+			var se *SettingError
+			if !errors.As(err, &se) || se.Key != c.key || se.Msg != c.msg {
+				t.Fatalf("got %#v, want key %q msg %q", err, c.key, c.msg)
+			}
+		})
 	}
 }
