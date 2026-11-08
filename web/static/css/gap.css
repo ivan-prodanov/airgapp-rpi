@@ -1,14 +1,12 @@
-/* The Gap — Airgapp console theme.
-   Spec: docs/superpowers/specs/2026-11-07-the-gap-redesign.md
-   Loaded after app.css. Until every page is ported it also bridges app.css's
-   tokens onto the Gap palette (removed in slice 6 together with app.css). */
+/* The Gap — Airgapp console theme, the console's only stylesheet.
+   Spec: docs/superpowers/specs/2026-11-07-the-gap-redesign.md */
 
 /* Fonts: self-hosted variable woff2, latin subset (make fonts). */
 @font-face{font-family:'Saira';font-style:normal;font-weight:300 700;font-display:swap;src:url(/static/fonts/saira.woff2) format('woff2')}
 @font-face{font-family:'Martian Mono';font-style:normal;font-weight:400 600;font-display:swap;src:url(/static/fonts/martian-mono.woff2) format('woff2')}
 
-/* Tokens. Same selector as app.css's token block, so this later sheet wins. */
-:root,[data-theme="dark"]{
+/* Tokens */
+:root{
 --bg0:#070A12;
 --line:rgba(132,164,205,.14);--line2:rgba(132,164,205,.26);
 --panel:rgba(12,17,27,.55);
@@ -18,18 +16,18 @@
 --t-fast:120ms;--t-panel:200ms;--t-exit:150ms;--t-blip:700ms;--t-flash:1.2s;--t-live:2s;--t-rise:400ms;
 --rise-1:60ms;--rise-2:120ms;--rise-3:180ms;
 --ease-std:cubic-bezier(.2,0,.38,.9);--ease-enter:cubic-bezier(0,0,.38,.9);--ease-exit:cubic-bezier(.2,0,1,.9);--ease-rise:cubic-bezier(0,0,.3,1);
-/* Bridge: app.css tokens re-pointed at the Gap palette for pages not yet ported. */
---bg:var(--bg0);--bg-elev:#0C111B;--bg-elev-2:#121A28;--bg-inset:#05070D;
---line-bright:var(--line2);--line-strong:var(--faint);
---fg:var(--txt);--fg-dim:var(--dim);--fg-mute:var(--faint);--fg-faint:#4A5568;--accent:var(--txt);
---danger-faint:rgba(255,90,60,.12);--warn:var(--watch);--warn-faint:rgba(245,181,68,.12);
---ok:var(--safe);--ok-faint:rgba(74,222,128,.14);
 }
 
 /* Base */
+*{box-sizing:border-box;-webkit-font-smoothing:antialiased}
+html,body{margin:0;padding:0;font-size:13.5px;line-height:1.5;font-feature-settings:"ss01","cv11","tnum";letter-spacing:-.008em;font-weight:400}
+@media(max-width:900px){body{font-size:14px}}
+::selection{background:rgba(255,255,255,.18)}
+/* The wordmark: the white-on-transparent PNG as a mask, filled with the text colour. Size per use. */
+.brand-logo{display:inline-block;background-color:var(--txt);-webkit-mask:url(/static/img/airgapp-logo.png) no-repeat center/contain;mask:url(/static/img/airgapp-logo.png) no-repeat center/contain}
 body{background:var(--bg0);color:var(--txt);font-family:'Saira','Helvetica Neue',sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;
 background-image:radial-gradient(130% 70% at 50% 0%,rgba(44,76,108,.16),rgba(7,10,18,0) 60%),linear-gradient(180deg,#080B14,#06080F);background-attachment:fixed}
-code,.mono,.tnum{font-family:'Martian Mono',ui-monospace,monospace}
+code,.mono,.tnum{font-family:'Martian Mono',ui-monospace,monospace;font-feature-settings:"tnum"}
 
 /* Motion: the frame is still; a page arrives top to bottom in one shared rhythm.
    backwards fill only, so nothing lingers (a leftover transform breaks sticky/fixed children). */
@@ -690,7 +688,7 @@ html:has(.pg-traffic){overflow-anchor:none}
 .pg-system .srow{margin:0 calc(-1*clamp(20px,3vw,44px));border-left:0;border-right:0;border-radius:0!important;grid-template-columns:minmax(0,1fr) auto 44px;column-gap:6px;padding:5px 2px 5px 18px}
 .pg-system .s-panel{padding:4px 16px 16px 0}
 .pg-system .finput,.pg-system .finput.mono{font-size:16px;height:44px}
-.pg-system .opt>span{min-height:40px}
+.pg-system .opt>span{min-height:44px}
 .pg-system .chip{height:44px}
 .pg-system .chip button{width:44px;height:44px}
 .pg-system .addline{max-width:none}

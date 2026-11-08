@@ -25,10 +25,6 @@ fonts:
 # Download frontend assets
 assets: fonts
 	@mkdir -p web/static/css web/static/js
-	@if [ ! -s web/static/css/pico.min.css ] || [ $$(wc -c < web/static/css/pico.min.css) -lt 1000 ]; then \
-		echo "Downloading Pico CSS..."; \
-		curl -sLo web/static/css/pico.min.css "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"; \
-	fi
 	@if [ ! -s web/static/js/alpine.min.js ] || [ $$(wc -c < web/static/js/alpine.min.js) -lt 1000 ]; then \
 		echo "Downloading Alpine.js..."; \
 		curl -sLo web/static/js/alpine.min.js "https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"; \

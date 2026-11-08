@@ -43,13 +43,12 @@ func TestRenderPageConcurrent(t *testing.T) {
 	wg.Wait()
 }
 
-// The Gap stylesheet loads after app.css (so its tokens win), fonts are
+// One stylesheet, the Gap's: app.css and its bridge are gone. Fonts are
 // self-hosted, and the product name in the title is "Airgapp".
 func TestLayoutStylesheets(t *testing.T) {
 	body, _ := renderPage(NewRenderer(web.Content), "devices.html", "devices")
-	app, gap := strings.Index(body, `href="/static/css/app.css"`), strings.Index(body, `href="/static/css/gap.css"`)
-	if app < 0 || gap < 0 || gap < app {
-		t.Errorf("want app.css then gap.css, got app.css at %d, gap.css at %d", app, gap)
+	if !strings.Contains(body, `href="/static/css/gap.css"`) {
+		t.Error("layout lacks gap.css")
 	}
 	for _, want := range []string{
 		`<link rel="preload" href="/static/fonts/saira.woff2" as="font" type="font/woff2" crossorigin>`,
@@ -59,8 +58,17 @@ func TestLayoutStylesheets(t *testing.T) {
 			t.Errorf("layout lacks %s", want)
 		}
 	}
-	if strings.Contains(body, "fonts.googleapis.com") {
-		t.Error("layout still requests Google Fonts")
+	for _, gone := range []string{"fonts.googleapis.com", "/static/css/app.css"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("layout still loads %s", gone)
+		}
+	}
+	css, err := web.Content.ReadFile("static/css/gap.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(css), "Bridge:") {
+		t.Error("gap.css still carries the app.css bridge")
 	}
 }
 
@@ -113,17 +121,6 @@ func TestLayoutNav(t *testing.T) {
 	}
 }
 
-// The sidebar footer (sign out) and its Remote access link are gone; until the
-// System page lands, Settings carries both.
-func TestSettingsInterimLinks(t *testing.T) {
-	body, _ := renderPage(NewRenderer(web.Content), "settings.html", "settings")
-	for _, want := range []string{`href="/remote-access"`, `onclick="logout()"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("settings page lacks %s", want)
-		}
-	}
-}
-
 // The login page uses the Gap theme and drops the old placeholder copy.
 func TestLoginPage(t *testing.T) {
 	rec := httptest.NewRecorder()
@@ -136,7 +133,7 @@ func TestLoginPage(t *testing.T) {
 			t.Errorf("login page lacks %s", want)
 		}
 	}
-	for _, gone := range []string{"fonts.googleapis.com", "netfilterd-01", "Guardian", "Operator", "192.168.4.1"} {
+	for _, gone := range []string{"fonts.googleapis.com", "netfilterd-01", "Guardian", "Operator", "192.168.4.1", "/static/css/app.css"} {
 		if strings.Contains(body, gone) {
 			t.Errorf("login page still contains %q", gone)
 		}
