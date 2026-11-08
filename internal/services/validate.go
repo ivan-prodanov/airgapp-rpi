@@ -49,8 +49,11 @@ func ValidDomain(s string) bool {
 // ValidIPv4: net.ParseIP + To4 conversion. Rejects IPv6, CIDR, and any
 // string with trailing garbage like "1.2.3.4 extra".
 func ValidIPv4(s string) bool {
-	ip := net.ParseIP(strings.TrimSpace(s))
-	return ip != nil && ip.To4() != nil
+	s = strings.TrimSpace(s)
+	// A dotted quad only: ParseIP also accepts IPv4-mapped IPv6 ("::ffff:9.9.9.9"),
+	// which nft refuses in an ip-family rule.
+	ip := net.ParseIP(s)
+	return ip != nil && ip.To4() != nil && !strings.Contains(s, ":")
 }
 
 // ValidIPOrCIDR: a single IPv4 or a CIDR.

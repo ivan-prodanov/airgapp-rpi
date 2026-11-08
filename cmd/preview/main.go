@@ -456,11 +456,29 @@ func main() {
 			if state.remote["scenarioSeen"] == nil {
 				state.remote["scenarioSeen"], state.remote["authenticated"], state.remote["ble_funnel"] = true, false, false
 			}
+		case "funneloff":
+			if state.remote["scenarioSeen"] == nil {
+				state.remote["scenarioSeen"], state.remote["ble_funnel"], state.remote["ble_funnel_url"] = true, false, ""
+				state.remote["ble_funnel_error"] = "Funnel isn't enabled for this tailnet. Turn it on at https://login.tailscale.com/f/funnel?node=preview, then retry."
+			}
 		case "tsmissing":
 			if state.remote["scenarioSeen"] == nil {
 				state.remote["scenarioSeen"], state.remote["installed"], state.remote["authenticated"], state.remote["ble_funnel"] = true, false, false, false
 			}
 		}
+		out := kv{}
+		for k, v := range state.remote {
+			if k != "scenarioSeen" {
+				out[k] = v
+			}
+		}
+		writeJSON(w, out)
+	})
+	mux.HandleFunc("/api/remote/funnel/ble/enable", func(w http.ResponseWriter, req *http.Request) {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		state.remote["ble_funnel"], state.remote["ble_funnel_url"] = true, "https://airgapp-preview.example.ts.net/api/ble"
+		delete(state.remote, "ble_funnel_error")
 		out := kv{}
 		for k, v := range state.remote {
 			if k != "scenarioSeen" {

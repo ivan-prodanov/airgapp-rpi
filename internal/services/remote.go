@@ -35,8 +35,10 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // RemoteStatus is what /api/remote/status returns to the UI. Flat,
@@ -84,6 +86,10 @@ type RemoteStatus struct {
 	// BLEFunnelURL is the public URL clients hit when BLEFunnel is on,
 	// e.g. https://pi.tailXXXX.ts.net/api/ble. Empty when off.
 	BLEFunnelURL string `json:"ble_funnel_url"`
+
+	// BLEFunnelError says why the Funnel is off while signed in, when the last
+	// attempt to turn it on failed.
+	BLEFunnelError string `json:"ble_funnel_error,omitempty"`
 }
 
 // bleFunnelPath is the URL prefix exposed via Funnel. The Pi's chi
@@ -115,6 +121,40 @@ const adminServePort = "10000"
 // for JSON parsing.
 type RemoteService struct {
 	mu sync.Mutex // serialise install / up / logout operations
+
+	errMu     sync.Mutex
+	funnelErr string // why the /api/ble Funnel didn't turn on, for the System page
+}
+
+// funnelTimeout bounds `tailscale funnel`: with Funnel not enabled for the
+// tailnet it waits, indefinitely, for someone to enable it in the admin console.
+var funnelTimeout = 20 * time.Second
+
+var tailscaleURLRe = regexp.MustCompile(`https://login\.tailscale\.com/\S+`)
+
+// FunnelError is why the last attempt to turn the Funnel on failed, or "".
+func (s *RemoteService) FunnelError() string {
+	s.errMu.Lock()
+	defer s.errMu.Unlock()
+	return s.funnelErr
+}
+
+func (s *RemoteService) setFunnelError(e string) {
+	s.errMu.Lock()
+	s.funnelErr = e
+	s.errMu.Unlock()
+}
+
+// funnelReason turns the CLI's answer into a sentence for the System page.
+func funnelReason(out string, err error) string {
+	if u := tailscaleURLRe.FindString(out); u != "" {
+		return "Funnel isn't enabled for this tailnet. Turn it on at " + u + ", then retry."
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if last := strings.TrimSpace(lines[len(lines)-1]); last != "" {
+		return last
+	}
+	return err.Error()
 }
 
 func NewRemoteService() *RemoteService {
@@ -185,6 +225,9 @@ func (s *RemoteService) Status(ctx context.Context) (RemoteStatus, error) {
 			out.BLEFunnel, out.BLEFunnelURL = parseServeStatus(serveOut, out.TailnetHostname)
 		}
 	}
+	if out.Authenticated && !out.BLEFunnel {
+		out.BLEFunnelError = s.FunnelError()
+	}
 	return out, nil
 }
 
@@ -244,7 +287,9 @@ func (s *RemoteService) EnableBLEFunnel(ctx context.Context) error {
 	return s.enableBLEFunnelLocked(ctx)
 }
 
-func (s *RemoteService) enableBLEFunnelLocked(ctx context.Context) error {
+func (s *RemoteService) enableBLEFunnelLocked(parent context.Context) error {
+	ctx, cancel := context.WithTimeout(parent, funnelTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx,
 		"tailscale", "funnel",
 		"--bg",
@@ -252,8 +297,10 @@ func (s *RemoteService) enableBLEFunnelLocked(ctx context.Context) error {
 		"https+insecure://localhost:8443",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		s.setFunnelError(funnelReason(string(out), err))
 		return fmt.Errorf("enable BLE funnel: %w\n%s", err, string(out))
 	}
+	s.setFunnelError("")
 	return nil
 }
 
@@ -368,8 +415,9 @@ func (s *RemoteService) Up(ctx context.Context, authKey string) error {
 	if err := s.ensureAdminServeLocked(ctx); err != nil {
 		log.Printf("[REMOTE] admin serve setup after up failed (non-fatal): %v", err)
 	}
-	// Airgapp access (the /api/ble Funnel) is always on once signed in.
-	if err := s.enableBLEFunnelLocked(ctx); err != nil {
+	// Airgapp access (the /api/ble Funnel) is always on once signed in. Its own
+	// deadline: `up` may have used most of the request's.
+	if err := s.enableBLEFunnelLocked(context.Background()); err != nil {
 		log.Printf("[REMOTE] BLE funnel after up failed (non-fatal): %v", err)
 	}
 	return nil

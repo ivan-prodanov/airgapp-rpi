@@ -190,6 +190,7 @@ func TestValidateSettings(t *testing.T) {
 		{"bad country", map[string]string{"ap_country": "BGR"}, "ap_country", "Use a two-letter country code."},
 		{"no resolver", map[string]string{"dns_upstream": " "}, "dns_upstream", "Keep at least one resolver."},
 		{"bad resolver", map[string]string{"dns_upstream": "1.1.1.1,dns.google"}, "dns_upstream", "dns.google isn't an IPv4 address like 9.9.9.9."},
+		{"mapped v6 resolver", map[string]string{"dns_upstream": "::ffff:9.9.9.9"}, "dns_upstream", "::ffff:9.9.9.9 isn't an IPv4 address like 9.9.9.9."},
 		{"bad retention", map[string]string{"log_retention_days": "14"}, "log_retention_days", "Keep traffic for 7, 30 or 90 days."},
 		{"retention 90", map[string]string{"log_retention_days": "90"}, "", ""},
 	}

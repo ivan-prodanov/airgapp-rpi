@@ -100,10 +100,19 @@
             <div class="status" :class="{ err: tsStatus && tsStatus.err }" role="status" aria-live="polite" x-text="tsStatus ? tsStatus.text : ''"></div>
         </div></div></div>
     </div>
-    <div class="srow" :class="ts.authenticated && ts.ble_funnel ? 'ok' : 'warn'" data-rise="2">
-        <div class="s-id"><div class="sname">Airgapp access</div><div class="ssub"><span x-text="ts.authenticated && ts.ble_funnel ? 'Always on · Airgapp on your phones reaches the car' : 'Always on · waiting for Tailscale'"></span></div></div>
-        <div class="s-act"><label class="sw locked" title="Always on"><input type="checkbox" role="switch" checked disabled aria-label="Airgapp access, always on"><span class="track"><span class="k"></span></span></label></div>
-        <span></span>
+    <div class="srow" :class="[ts.authenticated && ts.ble_funnel ? 'ok' : 'warn', accessOff ? 'can-open' : '', accessOff && open.access ? 'open' : '']" data-rise="2">
+        <div class="s-id" @click="accessOff && toggle('access')"><div class="sname">Airgapp access</div><div class="ssub"><span x-text="accessSummary"></span></div></div>
+        <div class="s-act"><label class="sw locked" title="Always on"><input type="checkbox" role="switch" :checked="!!ts.ble_funnel" disabled aria-label="Airgapp access, always on"><span class="track"><span class="k"></span></span></label></div>
+        <template x-if="accessOff"><button class="s-chev" type="button" @click="toggle('access')" :aria-expanded="open.access ? 'true' : 'false'" aria-label="Why Airgapp access is off"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button></template>
+        <template x-if="!accessOff"><span></span></template>
+        <template x-if="accessOff">
+            <div class="s-fold"><div class="s-fold-in"><div class="s-panel">
+                <p class="hint" x-text="ts.ble_funnel_error || 'Funnel didn\'t turn on. Check that Funnel is enabled for this tailnet, then retry.'"></p>
+                <p class="hint" x-show="funnelURL"><a :href="funnelURL" target="_blank" rel="noopener">Open the Tailscale admin console</a></p>
+                <div class="status" :class="{ err: funnelStatus && funnelStatus.err }" role="status" aria-live="polite" x-text="funnelStatus ? funnelStatus.text : ''"></div>
+                <div class="btnrow"><button class="btnp" type="button" :disabled="!!busy.funnel" @click="retryFunnel()">Retry</button></div>
+            </div></div></div>
+        </template>
     </div>
     <div class="srow can-open" :class="{ open: open.users }" data-rise="2">
         <div class="s-id" @click="toggle('users')"><div class="sname">Users</div><div class="ssub"><span x-text="users.length ? users.length + (users.length === 1 ? ' phone · ' : ' phones · ') + users.map(u => u.name).join(', ') : 'No phones yet'"></span></div></div>
@@ -179,7 +188,7 @@
                     <p class="q-note">Scan with a phone that has Airgapp installed</p>
                 </div>
             </template>
-            <template x-if="qrUser && !qr"><p class="q-none">Sign in to Tailscale first.</p></template>
+            <template x-if="qrUser && !qr"><p class="q-none" x-text="ts.authenticated ? 'Airgapp access is off. Turn it on under Airgapp access first.' : 'Sign in to Tailscale first.'"></p></template>
         </div>
     </dialog>
 </div>
@@ -197,7 +206,7 @@ function systemApp() {
         v: null, prev: null, rate: null, rebooting: false, upBefore: 0,
         s: {}, wifi: { ssid: '', pw: '', channel: '36' }, pwShown: false, wifiStatus: null,
         dns: [], dnsDraft: '', dnsStatus: null,
-        ts: {}, loadedTs: false, tsConfirm: false, authKey: '', tsStatus: null,
+        ts: {}, loadedTs: false, tsConfirm: false, authKey: '', tsStatus: null, funnelStatus: null,
         users: [], userDraft: '', userStatus: null, removeId: null, freshUser: null,
         qrUser: null, qrView: null,
         pw1: '', adminPwShown: false, passStatus: null,
@@ -215,7 +224,12 @@ function systemApp() {
 
         // Plain fetch, so a refusal shows where it applies instead of as a toast.
         async send(method, url, body) {
-            const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: body ? JSON.stringify(body) : undefined });
+            let res;
+            try {
+                res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: body ? JSON.stringify(body) : undefined });
+            } catch (e) {
+                const x = new Error('Couldn\'t reach the Pi.'); x.network = true; throw x;   // no answer at all
+            }
             if (res.status === 401) { window.location = '/login'; throw new Error('Signed out.'); }
             let data = null;
             try { data = await res.json(); } catch (e) { /* empty */ }
@@ -272,6 +286,13 @@ function systemApp() {
             this.busy.wifi = true;
             try { await this.send('PUT', '/api/settings', body); } catch (e) {
                 this.busy.wifi = false;
+                // On the hotspot, its restart drops this very request: say what to do, then
+                // pick the settings up again once the Pi answers.
+                if (e.network) {
+                    this.wifiStatus = { text: 'The hotspot is restarting. Reconnect to ' + ssid + ', then check here.' };
+                    this.waitForPi();
+                    return;
+                }
                 await this.loadSettings();
                 this.wifi = { ssid, pw, channel: body.ap_channel };
                 return fail(e.message, e.key);
@@ -281,6 +302,13 @@ function systemApp() {
             this.wifiStatus = { text: 'Hotspot restarted. The car reconnects on its own.' };
             notify('Hotspot restarting with the new settings.');
             this.loadActivity();
+        },
+        waitForPi(tries = 40) {
+            setTimeout(async () => {
+                try { this.s = await this.send('GET', '/api/settings'); } catch (e) { if (tries > 1) this.waitForPi(tries - 1); return; }
+                await this.loadSettings();
+                this.wifiStatus = { text: 'Hotspot restarted. The car reconnects on its own.' };
+            }, 3000);
         },
         // Each change saves the whole list; Undo saves the previous one.
         async saveDns(list, prev, msg) {
@@ -319,7 +347,26 @@ function systemApp() {
         // ── Tailscale
         async loadTs() {
             if (document.visibilityState === 'hidden' && this.loadedTs) return;
-            try { this.ts = await this.send('GET', '/api/remote/status'); this.loadedTs = true; } catch (e) { /* keep the last */ }
+            try { this.ts = await this.send('GET', '/api/remote/status' + location.search); this.loadedTs = true; } catch (e) { /* keep the last */ }
+        },
+        // Airgapp access is always on; signed in with the Funnel off, the row says why and offers Retry.
+        get accessOff() { return !!this.ts.authenticated && !this.ts.ble_funnel; },
+        get accessSummary() {
+            if (!this.ts.authenticated) return 'Always on · waiting for Tailscale';
+            return this.ts.ble_funnel ? 'Always on · Airgapp on your phones reaches the car' : 'Couldn\'t turn on · Airgapp on your phones can\'t reach the car';
+        },
+        get funnelURL() { const m = (this.ts.ble_funnel_error || '').match(/https:\/\/login\.tailscale\.com\/[^\s,]+/); return m ? m[0] : ''; },
+        async retryFunnel() {
+            this.busy.funnel = true; this.funnelStatus = null;
+            try { this.ts = await this.send('POST', '/api/remote/funnel/ble/enable' + location.search); } catch (e) {
+                this.busy.funnel = false;
+                this.funnelStatus = { text: e.message, err: true };
+                this.loadTs();
+                return;
+            }
+            this.busy.funnel = false;
+            if (this.ts.ble_funnel) notify('Airgapp access is on.');
+            this.loadActivity();
         },
         get tsSummary() {
             if (!this.loadedTs) return '';

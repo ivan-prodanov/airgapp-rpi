@@ -148,3 +148,23 @@ func TestChangePassword_EndsAllSessions(t *testing.T) {
 		t.Errorf("new password doesn't sign in: %v", err)
 	}
 }
+
+// Only the console's own settings go to the page: other rows (the car's VIN)
+// stay on the server.
+func TestGetSettings_OnlyConsoleSettings(t *testing.T) {
+	st := newSettingsTest(t)
+	st.db.Exec(`INSERT INTO settings (key, value) VALUES ('tesla_vin','5YJ3E1EA7KF000001') ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+	_, out := st.do(t, "GET", "")
+	for k := range out {
+		if k == "ap_password_set" {
+			continue
+		}
+		known := false
+		for _, s := range services.SettingKeys {
+			known = known || s == k
+		}
+		if !known {
+			t.Errorf("GET /api/settings returned %q", k)
+		}
+	}
+}

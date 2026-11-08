@@ -33,8 +33,8 @@ func NewSettingsHandler(db *sql.DB, svc *services.Services, renderer *Renderer) 
 	return h
 }
 
-// Get returns the settings, except the hotspot password: the page only learns
-// whether one is set.
+// Get returns the console's settings (SettingKeys), except the hotspot
+// password: the page only learns whether one is set.
 func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query("SELECT key, value FROM settings")
 	if err != nil {
@@ -43,11 +43,15 @@ func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	console := map[string]bool{}
+	for _, k := range services.SettingKeys {
+		console[k] = true
+	}
 	settings := map[string]string{"ap_password_set": "false"}
 	for rows.Next() {
 		var k, v string
-		if err := rows.Scan(&k, &v); err != nil {
-			continue
+		if err := rows.Scan(&k, &v); err != nil || !console[k] {
+			continue // only the console's own settings: the VIN and the like stay here
 		}
 		if k == "ap_password" {
 			if v != "" {
