@@ -77,7 +77,7 @@
                 <input id="mute-in" class="finput" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="e.g. apple.com" x-model="muteDraft" @input="mstatus = null" @keydown.enter.prevent="submitMute()" :aria-invalid="mstatus && mstatus.err ? 'true' : 'false'" aria-describedby="mute-status">
                 <button class="btnp" type="button" :disabled="!muteDraft.trim()" @click="submitMute()">Mute</button>
             </div>
-            <div id="mute-status" class="mstatus" :class="{ err: mstatus && mstatus.err }" role="status" aria-live="polite"><span x-text="mstatus ? mstatus.text : ''"></span><template x-if="mstatus && mstatus.undo"><button type="button" @click="mstatus.undo()">Undo</button></template></div>
+            <div id="mute-status" class="mstatus" :class="{ err: mstatus && mstatus.err }" role="status" aria-live="polite"><span x-text="mstatus ? mstatus.text : ''"></span><template x-if="!!(mstatus && mstatus.undo)"><button type="button" @click="mstatus.undo()">Undo</button></template></div>
             <ul class="mlist" aria-label="Muted domains" x-show="mutes.length">
                 <template x-for="m in mutes" :key="m.id">
                     <li :class="{ fresh: freshMute === m.id }"><div class="mpat"><b x-text="m.pattern"></b><span x-text="muteNote(m)"></span></div><button class="mrm" type="button" @click="unmute(m)" :aria-label="'Unmute ' + m.pattern">Unmute</button></li>
@@ -432,7 +432,7 @@ function trafficApp() {
             }
             a.busy = false;
             this.$refs.adlg.close();
-            const entry = { domain: d, cover: { id: target.id, name: target.name, enabled: !!target.enabled } };
+            const entry = { key: did, domain: d, cover: { id: target.id, name: target.name, enabled: !!target.enabled } };
             this.allowed = [...this.allowed, entry];
             const on = !!target.enabled;
             notify(on ? (created ? 'Created ' + target.name + ' and allowed ' + d + '.' : 'Allowed ' + d + ' in ' + target.name + '.') + ' New connections pass.'
@@ -442,7 +442,7 @@ function trafficApp() {
                         await this.send('DELETE', '/api/filters/domains/' + did);
                         if (created) await this.send('DELETE', '/api/filters/' + created.id);
                     } catch (e) { notify(e.message, 'error'); }
-                    this.allowed = this.allowed.filter(x => x !== entry);
+                    this.allowed = this.allowed.filter(x => x.key !== entry.key);   // items are wrapped: compare keys
                 },
             });
         },
