@@ -891,6 +891,9 @@ type FeedFilter struct {
 	Proto   string
 	Query   string
 	Limit   int
+	// ClientIPs are the addresses of devices whose name matches Query: a
+	// search finds a device's rows by its name too.
+	ClientIPs []string
 }
 
 // Feed returns the newest rows matching f, newest first: at most f.Limit
@@ -925,6 +928,18 @@ func (s *TrafficLogService) Feed(f FeedFilter) (entries []TrafficEntry, lastID i
 	}
 	if f.Query != "" {
 		clause, qargs := searchClause(f.Query)
+		if strings.HasPrefix(clause, "id IN (SELECT rowid FROM query_log_fts") {
+			// Keep the full-text match inside this request's id range, so a
+			// poll costs the new rows, not every match in the log.
+			clause = strings.TrimSuffix(clause, ")") + " AND rowid > ? AND rowid <= ?)"
+			qargs = append(qargs, f.After, lastID)
+		}
+		if len(f.ClientIPs) > 0 {
+			clause = "(" + clause + " OR client_ip IN (" + strings.TrimSuffix(strings.Repeat("?,", len(f.ClientIPs)), ",") + "))"
+			for _, ip := range f.ClientIPs {
+				qargs = append(qargs, ip)
+			}
+		}
 		where = append(where, clause)
 		args = append(args, qargs...)
 	}

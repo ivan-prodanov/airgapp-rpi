@@ -305,7 +305,7 @@ func mockFeed(q url.Values) kv {
 		if proto != "" && proto != "ALL" && e["proto"] != proto {
 			continue
 		}
-		if needle != "" && !strings.Contains(strings.ToLower(fmt.Sprint(e["domain"], " ", e["client_ip"], " ", e["dst_ip"], " ", e["port"])), needle) {
+		if needle != "" && !strings.Contains(strings.ToLower(fmt.Sprint(e["domain"], " ", e["client"], " ", e["client_ip"], " ", e["dst_ip"], " ", e["port"])), needle) {
 			continue
 		}
 		out = append(out, e)

@@ -65,19 +65,28 @@ func (h *TrafficHandler) Feed(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	after, _ := strconv.ParseInt(q.Get("after"), 10, 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
+	search := strings.TrimSpace(q.Get("q"))
+	devices, err := h.network.ListDevices()
+	if err != nil {
+		JSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var named []string // devices whose name matches the search
+	if needle := strings.ToLower(search); needle != "" {
+		for _, d := range devices {
+			if d.IPAddress != "" && (strings.Contains(strings.ToLower(d.Alias), needle) || strings.Contains(strings.ToLower(d.Hostname), needle)) {
+				named = append(named, d.IPAddress)
+			}
+		}
+	}
 	rows, lastID, err := h.trafficLog.Feed(services.FeedFilter{
-		After: after, Outcome: q.Get("outcome"), Proto: q.Get("proto"), Query: strings.TrimSpace(q.Get("q")), Limit: limit,
+		After: after, Outcome: q.Get("outcome"), Proto: q.Get("proto"), Query: search, Limit: limit, ClientIPs: named,
 	})
 	if err != nil {
 		JSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	cover, err := h.filter.CoverIndex()
-	if err != nil {
-		JSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	devices, err := h.network.ListDevices()
 	if err != nil {
 		JSONError(w, http.StatusInternalServerError, err.Error())
 		return

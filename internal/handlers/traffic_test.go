@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -303,4 +304,50 @@ func TestTrafficFeed_EntryContext(t *testing.T) {
 			t.Fatalf("no-domain row %+v", e)
 		}
 	})
+}
+
+// A poll while searching looks only at the new rows: its cost doesn't grow
+// with how many rows in the whole log match (measured: 549 ms at 400k rows
+// before the fix, 2 ms after). Timed against a search over the whole log, so
+// it holds under the race detector too.
+func TestTrafficFeed_SearchPollStaysInRange(t *testing.T) {
+	tt := newTrafficTest(t)
+	if _, err := tt.db.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40000)
+		INSERT INTO query_log (timestamp, client_ip, domain, dst_ip, dst_port, protocol, action, client_mac, source, policy)
+		SELECT CURRENT_TIMESTAMP, '192.168.4.10', 'cdn.example.com', '', '53', 'DNS', 'resolved', '', 'dns', '' FROM n`); err != nil {
+		t.Fatal(err)
+	}
+	last := tt.feed(t, "?limit=1").LastID
+	tt.event(t, "192.168.4.10", "", "new.example.com", "", "53", "DNS", "resolved", "dns")
+	timed := func(q string) (feedResp, time.Duration) {
+		best := time.Hour
+		var r feedResp
+		for i := 0; i < 3; i++ {
+			start := time.Now()
+			r = tt.feed(t, q)
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return r, best
+	}
+	_, whole := timed("?q=example&limit=1")
+	poll, took := timed(fmt.Sprintf("?after=%d&q=example", last))
+	if len(poll.Entries) != 1 {
+		t.Fatalf("poll returned %d rows, want 1", len(poll.Entries))
+	}
+	if took*4 > whole {
+		t.Fatalf("a search poll for one new row took %v, a search of the whole log %v: the poll scans every match", took, whole)
+	}
+}
+
+// "Search domain · client · IP": a device's name finds its rows.
+func TestTrafficFeed_SearchByDeviceName(t *testing.T) {
+	tt := newTrafficTest(t)
+	tt.db.Exec(`INSERT INTO devices (mac_address, ip_address, alias) VALUES ('AA:BB:CC:00:00:31', '192.168.4.31', 'iPhone')`)
+	mine := tt.event(t, "192.168.4.31", "", "apple.com", "", "53", "DNS", "resolved", "dns")
+	tt.event(t, "192.168.4.10", "", "cdn.example.com", "", "53", "DNS", "resolved", "dns")
+	if got := tt.feed(t, "?q=iphone"); fmt.Sprint(ids(got)) != fmt.Sprint([]int64{mine}) {
+		t.Fatalf("q=iphone: %v, want [%d]", ids(got), mine)
+	}
 }

@@ -63,7 +63,8 @@
                         </div>
                     </template>
                 </div>
-                <p class="led-empty" x-show="loaded && rows.length === 0" x-cloak>No traffic matches this filter.</p>
+                <p class="led-empty" x-show="loaded && !failing && rows.length === 0" x-cloak>No traffic matches this filter.</p>
+                <p class="led-empty led-err" x-show="failing && rows.length === 0" x-cloak>Couldn't load traffic. Retrying.</p>
             </div>
         </div>
     </div>
@@ -129,7 +130,7 @@ function trafficApp() {
         rows: [], pending: [], lastId: 0, loaded: false,
         live: true, held: false, openId: null,
         outcome: 'all', proto: 'All', query: '',
-        muted: 0, failing: false, inflight: false, gen: 0,
+        muted: 0, failing: false, inflight: false, reloading: false, gen: 0,
         mutes: [], muteDraft: '', mstatus: null, freshMute: null,
         filters: [], allowed: [],
         allow: { domain: '', target: '', newName: '', note: '', err: '', bad: '', busy: false },
@@ -200,14 +201,17 @@ function trafficApp() {
             this.failing = true;
         },
 
-        // A new filter starts over from the server: rows and buffer from the old one go.
+        // A new filter starts over from the server: rows, buffer and last id from the old
+        // one go, and nothing polls until it has loaded (a failed load is retried by tick).
         async reload() {
             const g = ++this.gen;
             this.rows = []; this.pending = []; this.openId = null; this.held = false;
+            this.loaded = false; this.lastId = 0; this.reloading = true;
             if (this.$refs.sc && !this.compact) this.$refs.sc.scrollTop = 0;
             let r;
-            try { r = await this.fetchFeed(0); } catch (e) { if (g === this.gen) { this.loaded = true; this.failed(); } return; }
+            try { r = await this.fetchFeed(0); } catch (e) { if (g === this.gen) { this.reloading = false; this.failed(); } return; }
             if (g !== this.gen) return;
+            this.reloading = false;
             this.failing = false;
             this.rows = r.entries || [];
             this.lastId = r.last_id || 0;
@@ -216,7 +220,8 @@ function trafficApp() {
         },
         // Events always arrive; whether they reach the screen depends only on whether someone is reading.
         async tick() {
-            if (this.inflight || !this.loaded || document.visibilityState === 'hidden') return;
+            if (this.inflight || document.visibilityState === 'hidden') return;
+            if (!this.loaded) { if (!this.reloading) this.reload(); return; }
             this.inflight = true;
             const g = this.gen;
             let r;
