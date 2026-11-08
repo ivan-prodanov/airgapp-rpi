@@ -886,8 +886,7 @@ var migrations = []string{
 	// Hulu, TikTok, Spotify, Prime, F1) and their domains, the extra domains
 	// hung on the system filters, Grok flipped on, and the YT Music OAuth
 	// endpoint enabled. This seeds all of it so a fresh Pi reproduces the
-	// running appliance. (A few operator-private hostnames are seeded
-	// separately out of a gitignored local_seed.go — see localSeeds.)
+	// running appliance.
 	//
 	// The four non-HTTPS port-holes the car's apps need (QUIC/UDP 443,
 	// WebRTC-STUN/UDP 19302, FCM-push/TCP 5228, Spotify-AP/TCP 4070) used to
@@ -1209,14 +1208,6 @@ var migrations = []string{
 	`UPDATE filters SET grp = 'System' WHERE name = 'Tailscale' AND is_system = 0;`,
 }
 
-// localSeeds holds operator-private seed statements that must NOT be
-// committed (e.g. internal hostnames). They live in a gitignored
-// local_seed.go on the operator's machine, appended via init(); on a
-// fresh clone the slice is empty and Migrate seeds nothing extra. Each
-// statement is re-asserted idempotently (OR IGNORE) on every run, after
-// the versioned migrations, so it applies to a fresh or migrated DB.
-var localSeeds []string
-
 // backupBeforeUpgrade keeps the database as it was, next to it as
 // <file>.v<N>.bak, before newer migrations run: they can't be undone (v27
 // drops a column the older binary reads), so rolling back means restoring
@@ -1274,14 +1265,6 @@ func Migrate(db *sql.DB) error {
 		}
 
 		log.Printf("[DB] Migration v%d applied", version)
-	}
-
-	// A private seed written for an older schema must not stop the daemon:
-	// the schema is already migrated, so failing here would fail every start.
-	for i, stmt := range localSeeds {
-		if _, err := db.Exec(stmt); err != nil {
-			log.Printf("[DB] WARN local seed %d not applied (update local_seed.go for the current schema): %v", i, err)
-		}
 	}
 
 	return nil
