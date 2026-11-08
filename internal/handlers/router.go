@@ -52,7 +52,7 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 	remoteH := NewRemoteHandler(svc, renderer)
 
 	// Static assets
-	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	r.Handle("/static/*", http.StripPrefix("/static/", StaticHandler(staticFS)))
 
 	// Public cert download so clients can install netfilterd's self-signed
 	// cert as a trusted root and get green-lock HTTPS. Chicken-and-egg

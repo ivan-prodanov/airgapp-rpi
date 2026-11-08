@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iulianfsdro/rpi-network-filter/internal/handlers"
 	"github.com/iulianfsdro/rpi-network-filter/internal/services"
 	web "github.com/iulianfsdro/rpi-network-filter/web"
 )
@@ -401,7 +402,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	mux.Handle("/static/", http.StripPrefix("/static/", handlers.StaticHandler(staticFS))) // the server's own caching
 	mux.HandleFunc("/netfilter-ca.crt", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/x-x509-ca-cert")
 		w.Write([]byte("-----BEGIN CERTIFICATE-----\nMOCK PREVIEW CERT — not a real CA\n-----END CERTIFICATE-----\n"))
