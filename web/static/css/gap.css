@@ -24,6 +24,10 @@ html,body{margin:0;padding:0;font-size:13.5px;line-height:1.5;font-feature-setti
 @media(max-width:900px){body{font-size:14px}}
 ::selection{background:rgba(255,255,255,.18)}
 /* The wordmark: the white-on-transparent PNG as a mask, filled with the text colour. Size per use. */
+/* Every page keeps the scrollbar's room, scrolling or not: otherwise the page changed width
+   by the scrollbar's width when moving between a long page (Filters, System) and a short one,
+   and the top bar visibly squeezed and stretched in the cross-fade. */
+html{scrollbar-gutter:stable}
 .brand-logo{display:inline-block;background-color:var(--txt);-webkit-mask:url(/static/img/airgapp-logo.png) no-repeat center/contain;mask:url(/static/img/airgapp-logo.png) no-repeat center/contain}
 body{background:var(--bg0);color:var(--txt);font-family:'Saira','Helvetica Neue',sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;
 background-image:radial-gradient(130% 70% at 50% 0%,rgba(44,76,108,.16),rgba(7,10,18,0) 60%),linear-gradient(180deg,#080B14,#06080F);background-attachment:fixed}
@@ -39,14 +43,19 @@ code,.mono,.tnum{font-family:'Martian Mono',ui-monospace,monospace;font-feature-
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:.01ms!important;transition-delay:0s!important}}
 
 /* Shell: the top bar. It never animates; from 520px up it sticks while the page scrolls. */
-.topbar{display:flex;align-items:center;gap:20px;padding:16px clamp(20px,3vw,44px);border-bottom:1px solid var(--line);flex-wrap:wrap;row-gap:12px;position:sticky;top:0;background:rgba(7,10,18,.82);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:10}
+/* One frame for the whole console: past 1280 px the bar's logo and links and every page sit
+   in the same centred 1280 px frame (the dashboard's), so the logo and each page's title start
+   on one line. The bar's band and rule still run the full width. Resolved where it is used,
+   against the page's width. */
+:root{--frame-x:calc(max(0px,(100% - 1280px) / 2) + clamp(20px,3vw,44px))}
+.topbar{display:flex;align-items:center;gap:20px;padding:16px var(--frame-x);border-bottom:1px solid var(--line);flex-wrap:wrap;row-gap:12px;position:sticky;top:0;background:rgba(7,10,18,.82);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:10}
 .brand{display:flex;flex:none}
 .topbar .brand-logo{display:inline-block;width:78px;height:32px;background-color:var(--txt);-webkit-mask:url(/static/img/airgapp-logo.png) no-repeat left center/contain;mask:url(/static/img/airgapp-logo.png) no-repeat left center/contain}
 .topnav{display:flex;gap:clamp(12px,1.8vw,26px);flex-wrap:wrap;flex:1}
 .navlink{font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.1em;font-size:11px;color:var(--dim);text-decoration:none;padding:5px 0;border-bottom:1.5px solid transparent;transition:color var(--t-fast) var(--ease-std),border-color var(--t-fast) var(--ease-std)}
 .navlink:hover{color:var(--txt)}
 .navlink.active{color:var(--txt);border-color:var(--gate)}
-.content{padding:clamp(22px,3vw,40px) clamp(20px,3vw,44px) 60px}
+.content{padding:clamp(22px,3vw,40px) var(--frame-x) 60px}
 @media(pointer:coarse){.navlink{padding-top:14px;padding-bottom:12px}}
 /* One page (app.js nav): the bar sits out of the cross-fade between pages, the fade is
    short, and pages after the first don't rise in again. */
@@ -110,7 +119,7 @@ body{display:flex;flex-direction:column}
 /* The gate was drawn at 1440 wide; past 1280 its lanes stretch flat. So the drawing stops
    at 1280, centred: --side is the margin either side of it. The host list stays docked to
    the window's right edge and the rules run full width, as in the mockup. */
-.dash{--side:max(0px,(100vw - 1280px) / 2);flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden;
+.dash{container-type:inline-size;--side:max(0px,(100cqw - 1280px) / 2);flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden;
 background:radial-gradient(130% 82% at 48% 44%,rgba(44,76,108,.20),rgba(7,10,18,0) 62%),linear-gradient(180deg,#080B14,#06080F)}
 .herohead{padding:clamp(14px,2.2vh,24px) calc(var(--side) + clamp(20px,3vw,44px)) clamp(8px,1.4vh,14px);position:relative;z-index:3;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-start;gap:13px}
 .hstmt{font-family:'Martian Mono',monospace;font-weight:600;font-size:clamp(24px,3.2vw,42px);line-height:1;letter-spacing:-.02em;margin:0;text-transform:uppercase;transition:color .4s ease}
@@ -133,6 +142,9 @@ background-size:44px 44px;
 .car svg{width:24px;height:24px;color:var(--gate);flex-shrink:0}
 .car-n{font-family:'Martian Mono',monospace;font-size:12px;letter-spacing:1.5px;color:var(--txt)}
 .car.off{opacity:.55}
+/* Wide enough for the box and its label to sit clear of where the lanes start: it lines up
+   with the headline and the readouts (the same inset, measured from the drawing's edge). */
+@container (min-width:1000px){.car{left:clamp(20px,3vw,44px)}}
 .panel{width:calc(clamp(165px,26vw,333px) + var(--side));border-left:1px solid var(--line);background:linear-gradient(180deg,rgba(10,14,22,.5),rgba(8,11,19,.72));backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);display:flex;flex-direction:column;position:relative;z-index:3;padding-top:42px}
 .hostlist{flex:1;display:flex;flex-direction:column;list-style:none;margin:0;padding:0}
 .hostrow{flex:1;min-height:0;display:flex;align-items:center;gap:13px;padding:0 calc(20px + var(--side)) 0 20px;border-top:1px solid var(--line);transition:opacity .4s ease}
@@ -169,6 +181,7 @@ background-size:44px 44px;
 @keyframes foldin{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 @keyframes ping{0%{box-shadow:0 0 0 0 rgba(74,222,128,.5)}70%{box-shadow:0 0 0 6px rgba(74,222,128,0)}100%{box-shadow:0 0 0 0 rgba(74,222,128,0)}}
 .wrap{max-width:1080px}
+.wrap.pg-traffic{max-width:none} /* the log is a wide table: it takes the frame's full width */
 /* Devices. Lifted from the mockup (Devices.dc.html). */
 .phead{margin-bottom:24px;}
 .eyebrow{font-family:'Martian Mono',monospace;text-transform:uppercase;letter-spacing:.18em;font-size:11px;color:var(--dim);margin:0 0 12px}
