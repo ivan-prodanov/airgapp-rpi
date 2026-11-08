@@ -16,12 +16,8 @@ var testPages = []struct{ file, key string }{
 	{"dashboard.html", "dashboard"},
 	{"devices.html", "devices"},
 	{"traffic.html", "traffic"},
-	{"stats.html", "stats"},
 	{"filters.html", "filters"},
-	{"firewall.html", "firewall"},
-	{"bandwidth.html", "bandwidth"},
-	{"settings.html", "settings"},
-	{"remote-access.html", "remote-access"},
+	{"system.html", "system"},
 }
 
 // renderPage renders one page through the real embedded templates, the way
@@ -68,14 +64,11 @@ func TestLayoutStylesheets(t *testing.T) {
 	}
 }
 
-// The Gap top bar: five links in a fixed order, the current one marked active
-// (System covers Settings and Remote access until they merge); pages outside
-// the nav mark nothing. The old sidebar is gone.
+// The Gap top bar: five links in a fixed order, the current one marked active.
+// The old sidebar is gone.
 func TestLayoutNav(t *testing.T) {
 	active := map[string]string{
-		"dashboard": "Dashboard", "devices": "Devices", "traffic": "Traffic", "filters": "Filters",
-		"settings": "System", "remote-access": "System",
-		"firewall": "", "stats": "", "bandwidth": "",
+		"dashboard": "Dashboard", "devices": "Devices", "traffic": "Traffic", "filters": "Filters", "system": "System",
 	}
 	activeRe := regexp.MustCompile(`aria-current="page">([A-Za-z]+)<`)
 	r := NewRenderer(web.Content)
@@ -98,7 +91,7 @@ func TestLayoutNav(t *testing.T) {
 			}
 			last = i
 		}
-		for _, href := range []string{`href="/"`, `href="/devices"`, `href="/traffic"`, `href="/filters"`, `href="/settings"`} {
+		for _, href := range []string{`href="/"`, `href="/devices"`, `href="/traffic"`, `href="/filters"`, `href="/system"`} {
 			if !strings.Contains(nav, href) {
 				t.Errorf("%s: nav lacks %s", p.key, href)
 			}

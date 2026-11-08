@@ -33,10 +33,6 @@ func NewSettingsHandler(db *sql.DB, svc *services.Services, renderer *Renderer) 
 	return h
 }
 
-func (h *SettingsHandler) Page(w http.ResponseWriter, r *http.Request) {
-	h.renderer.RenderPage(w, "settings.html", map[string]string{"page": "settings"})
-}
-
 // Get returns the settings, except the hotspot password: the page only learns
 // whether one is set.
 func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {

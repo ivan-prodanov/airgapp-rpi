@@ -39,10 +39,6 @@ func NewRemoteHandler(svc *services.Services, renderer *Renderer) *RemoteHandler
 	}
 }
 
-func (h *RemoteHandler) Page(w http.ResponseWriter, r *http.Request) {
-	h.renderer.RenderPage(w, "remote-access.html", map[string]string{"page": "remote-access"})
-}
-
 func (h *RemoteHandler) Status(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()

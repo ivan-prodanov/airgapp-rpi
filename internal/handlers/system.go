@@ -120,53 +120,6 @@ func (h *SystemHandler) MutedRemove(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *SystemHandler) StatsSummary(w http.ResponseWriter, r *http.Request) {
-	rangeStr := r.URL.Query().Get("range")
-	stats := h.trafficLog.Summary(rangeStr)
-	JSON(w, http.StatusOK, stats)
-}
-
-func (h *SystemHandler) StatsTopDomains(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	result := h.trafficLog.TopDomains(q.Get("action"), q.Get("range"), q.Get("q"), limit)
-	if result == nil {
-		result = []services.DomainCount{}
-	}
-	JSON(w, http.StatusOK, result)
-}
-
-func (h *SystemHandler) StatsTopClients(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	result := h.trafficLog.TopClients(q.Get("range"), limit)
-	if result == nil {
-		result = []services.ClientCount{}
-	}
-	JSON(w, http.StatusOK, result)
-}
-
-func (h *SystemHandler) StatsTimeSeries(w http.ResponseWriter, r *http.Request) {
-	rangeStr := r.URL.Query().Get("range")
-	result := h.trafficLog.TimeSeries(rangeStr)
-	if result == nil {
-		result = []services.TimePoint{}
-	}
-	JSON(w, http.StatusOK, result)
-}
-
 func (h *SystemHandler) AuditLog(w http.ResponseWriter, r *http.Request) {
 	logs, err := h.audit.Recent(14)
 	if err != nil {

@@ -44,8 +44,6 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 	authH := NewAuthHandler(svc.Auth, renderer)
 	dashH := NewDashboardHandler(svc, renderer)
 	devH := NewDevicesHandler(svc, renderer)
-	fwH := NewFirewallHandler(svc, renderer)
-	bwH := NewBandwidthHandler(svc, renderer)
 	filtH := NewFiltersHandler(svc, renderer)
 	trafH := NewTrafficHandler(svc)
 	settingsH := NewSettingsHandler(db, svc, renderer)
@@ -67,6 +65,12 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 
 	// Public routes
 	r.Get("/login", authH.LoginPage)
+	// System replaced Settings and Remote access.
+	for _, old := range []string{"/settings", "/remote-access"} {
+		r.Get(old, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/system", http.StatusMovedPermanently)
+		})
+	}
 
 	// Authenticated page routes
 	r.Group(func(r chi.Router) {
@@ -75,18 +79,11 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 		r.Get("/traffic", func(w http.ResponseWriter, r *http.Request) {
 			renderer.RenderPage(w, "traffic.html", map[string]string{"page": "traffic"})
 		})
-		r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
-			renderer.RenderPage(w, "stats.html", map[string]string{"page": "stats"})
-		})
 		r.Get("/devices", devH.Page)
-		r.Get("/firewall", fwH.Page)
 		r.Get("/filters", filtH.Page)
-		r.Get("/bandwidth", bwH.Page)
-		r.Get("/settings", settingsH.Page)
-		// V4.4 Phase 4: /garage was the Pi-as-Tesla-driver UI.
-		// The Pi no longer holds a signing key; the client app
-		// (client/index.html) is the Tesla UI now.
-		r.Get("/remote-access", remoteH.Page)
+		r.Get("/system", func(w http.ResponseWriter, r *http.Request) {
+			renderer.RenderPage(w, "system.html", map[string]string{"page": "system"})
+		})
 	})
 
 	// API routes
@@ -188,20 +185,6 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 				r.Delete("/domains/{domainID}", filtH.DeleteDomain)
 			})
 
-			r.Route("/firewall/rules", func(r chi.Router) {
-				r.Get("/", fwH.List)
-				r.Post("/", fwH.Create)
-				r.Put("/{id}", fwH.Update)
-				r.Delete("/{id}", fwH.Delete)
-			})
-
-			r.Route("/bandwidth/limits", func(r chi.Router) {
-				r.Get("/", bwH.List)
-				r.Post("/", bwH.Create)
-				r.Put("/{id}", bwH.Update)
-				r.Delete("/{id}", bwH.Delete)
-			})
-
 			r.Route("/settings", func(r chi.Router) {
 				r.Get("/", settingsH.Get)
 				r.Put("/", settingsH.Update)
@@ -218,10 +201,6 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 				r.Get("/traffic/muted", sysH.MutedList)
 				r.Post("/traffic/muted", sysH.MutedAdd)
 				r.Delete("/traffic/muted/{id}", sysH.MutedRemove)
-				r.Get("/stats/summary", sysH.StatsSummary)
-				r.Get("/stats/top-domains", sysH.StatsTopDomains)
-				r.Get("/stats/top-clients", sysH.StatsTopClients)
-				r.Get("/stats/timeseries", sysH.StatsTimeSeries)
 				r.Post("/reboot", sysH.Reboot)
 			})
 

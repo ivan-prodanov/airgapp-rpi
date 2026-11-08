@@ -44,8 +44,6 @@ type mockState struct {
 	filters         []kv
 	traffic         []kv
 	muted           []kv
-	firewall        []kv
-	bandwidth       []kv
 	settings        kv
 	nextID          int64
 }
@@ -82,15 +80,6 @@ func newMockState() *mockState {
 		muted: []kv{
 			{"id": 901, "pattern": "captive.apple.com", "match_type": "suffix", "enabled": true, "created_at": "2026-03-12T09:00:00Z", "since_id": int64(0)},
 			{"id": 902, "pattern": "msftconnecttest.com", "match_type": "suffix", "enabled": true, "created_at": "2026-04-02T09:00:00Z", "since_id": int64(0)},
-		},
-		firewall: []kv{
-			{"id": 1, "description": "Forward chain default-drop floor", "direction": "forward", "protocol": "all", "dest_ip": "", "dest_port": "", "action": "drop", "device_mac": "", "enabled": true, "priority": 1000},
-			{"id": 2, "description": "Allow established + related", "direction": "forward", "protocol": "all", "dest_ip": "", "dest_port": "", "action": "accept", "device_mac": "", "enabled": true, "priority": 10},
-			{"id": 3, "description": "Block all UDP/443 (QUIC) from Tesla", "direction": "forward", "protocol": "udp", "dest_ip": "", "dest_port": "443", "action": "drop", "device_mac": "F4:F5:D8:1A:22:C7", "enabled": true, "priority": 100},
-		},
-		bandwidth: []kv{
-			{"id": 1, "device_mac": "F4:F5:D8:1A:22:C7", "download_kbps": 8000, "upload_kbps": 2000, "enabled": true},
-			{"id": 2, "device_mac": "5C:CF:7F:8E:A4:11", "download_kbps": 2000, "upload_kbps": 512, "enabled": false},
 		},
 		settings: kv{
 			"ap_ssid":      "Airgapp",
@@ -396,6 +385,11 @@ func main() {
 
 	// ── Pages ─────────────────────────────────────────
 	mux.HandleFunc("/login", func(w http.ResponseWriter, req *http.Request) { r.renderLogin(w) })
+	for _, old := range []string{"/settings", "/remote-access"} { // System replaced them
+		mux.HandleFunc(old, func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, "/system", http.StatusMovedPermanently)
+		})
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/" {
 			http.NotFound(w, req)
@@ -403,7 +397,7 @@ func main() {
 		}
 		r.renderPage(w, "dashboard.html", map[string]string{"page": "dashboard"})
 	})
-	for _, page := range []string{"devices", "traffic", "stats", "filters", "firewall", "bandwidth", "settings", "remote-access"} {
+	for _, page := range []string{"devices", "traffic", "filters", "system"} {
 		p := page
 		mux.HandleFunc("/"+p, func(w http.ResponseWriter, req *http.Request) {
 			r.renderPage(w, p+".html", map[string]string{"page": p})
@@ -864,76 +858,6 @@ func main() {
 		okJSON(w)
 	})
 
-	mux.HandleFunc("/api/firewall/rules", func(w http.ResponseWriter, req *http.Request) {
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		if req.Method == http.MethodPost {
-			var body kv
-			_ = json.NewDecoder(req.Body).Decode(&body)
-			body["id"] = state.nextID
-			state.nextID++
-			state.firewall = append(state.firewall, body)
-			okJSON(w)
-			return
-		}
-		writeJSON(w, state.firewall)
-	})
-	mux.HandleFunc("/api/firewall/rules/", func(w http.ResponseWriter, req *http.Request) {
-		id := extractIDFromTail(req.URL.Path)
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		switch req.Method {
-		case http.MethodDelete:
-			state.firewall = filterOutInt(state.firewall, "id", id)
-		case http.MethodPut:
-			var body kv
-			_ = json.NewDecoder(req.Body).Decode(&body)
-			for _, r := range state.firewall {
-				if int64(toInt(r["id"])) == id {
-					for k, v := range body {
-						r[k] = v
-					}
-				}
-			}
-		}
-		okJSON(w)
-	})
-
-	mux.HandleFunc("/api/bandwidth/limits", func(w http.ResponseWriter, req *http.Request) {
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		if req.Method == http.MethodPost {
-			var body kv
-			_ = json.NewDecoder(req.Body).Decode(&body)
-			body["id"] = state.nextID
-			state.nextID++
-			state.bandwidth = append(state.bandwidth, body)
-			okJSON(w)
-			return
-		}
-		writeJSON(w, state.bandwidth)
-	})
-	mux.HandleFunc("/api/bandwidth/limits/", func(w http.ResponseWriter, req *http.Request) {
-		id := extractIDFromTail(req.URL.Path)
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		switch req.Method {
-		case http.MethodDelete:
-			state.bandwidth = filterOutInt(state.bandwidth, "id", id)
-		case http.MethodPut:
-			var body kv
-			_ = json.NewDecoder(req.Body).Decode(&body)
-			for _, r := range state.bandwidth {
-				if int64(toInt(r["id"])) == id {
-					for k, v := range body {
-						r[k] = v
-					}
-				}
-			}
-		}
-		okJSON(w)
-	})
-
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, req *http.Request) {
 		state.mu.Lock()
 		defer state.mu.Unlock()
@@ -962,60 +886,6 @@ func main() {
 			{"host": "1.1.1.1:53", "success": true, "latency": "38 ms"},
 			{"host": "8.8.8.8:53", "success": true, "latency": "42 ms"},
 			{"host": "google.com:443", "success": true, "latency": "62 ms"},
-		})
-	})
-	mux.HandleFunc("/api/system/stats/summary", func(w http.ResponseWriter, req *http.Request) {
-		writeJSON(w, kv{"total": 28530, "queries": 12044, "allowed": 16486, "blocked": 1422, "unique_domains": 412, "unique_clients": 7})
-	})
-	mux.HandleFunc("/api/system/stats/timeseries", func(w http.ResponseWriter, req *http.Request) {
-		out := make([]kv, 60)
-		for i := 0; i < 60; i++ {
-			out[i] = kv{
-				"time":    time.Now().Add(time.Duration(-60+i) * time.Minute).Format("15:04"),
-				"queries": 80 + rand.Intn(40),
-				"allowed": 120 + rand.Intn(50),
-				"blocked": rand.Intn(8),
-			}
-		}
-		writeJSON(w, out)
-	})
-	mux.HandleFunc("/api/system/stats/top-domains", func(w http.ResponseWriter, req *http.Request) {
-		action := req.URL.Query().Get("action")
-		var src []kv
-		switch action {
-		case "blocked":
-			src = []kv{
-				{"domain": "hermes-prd.ap.tesla.services", "count": 412},
-				{"domain": "ota.vn.tesla.services", "count": 386},
-				{"domain": "telemetry-prd.ap.tesla.services", "count": 284},
-				{"domain": "logupload-prod.vn.tesla.services", "count": 116},
-				{"domain": "fake.hypnos.vn.tesla.services", "count": 88},
-			}
-		case "allowed":
-			src = []kv{
-				{"domain": "apmv3.go.tesla.services", "count": 4_212},
-				{"domain": "daws.tesla.services", "count": 3_087},
-				{"domain": "maps-eu-prd.go.tesla.services", "count": 2_488},
-				{"domain": "maps.googleapis.com", "count": 1_966},
-				{"domain": "connman.vn.tesla.services", "count": 412},
-			}
-		case "query":
-			src = []kv{
-				{"domain": "apmv3.go.tesla.services", "count": 5_122},
-				{"domain": "daws.tesla.services", "count": 4_088},
-				{"domain": "google.com", "count": 2_312},
-				{"domain": "icloud.com", "count": 1_544},
-				{"domain": "captive.apple.com", "count": 1_018},
-			}
-		}
-		writeJSON(w, src)
-	})
-	mux.HandleFunc("/api/system/stats/top-clients", func(w http.ResponseWriter, req *http.Request) {
-		writeJSON(w, []kv{
-			{"client": "192.168.4.42", "count": 12_402},
-			{"client": "192.168.4.31", "count": 5_812},
-			{"client": "192.168.4.22", "count": 4_088},
-			{"client": "192.168.4.71", "count": 612},
 		})
 	})
 

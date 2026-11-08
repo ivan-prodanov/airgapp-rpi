@@ -17,9 +17,7 @@
             <a class="navlink{{if eq .page "devices"}} active{{end}}" href="/devices"{{if eq .page "devices"}} aria-current="page"{{end}}>Devices</a>
             <a class="navlink{{if eq .page "traffic"}} active{{end}}" href="/traffic"{{if eq .page "traffic"}} aria-current="page"{{end}}>Traffic</a>
             <a class="navlink{{if eq .page "filters"}} active{{end}}" href="/filters"{{if eq .page "filters"}} aria-current="page"{{end}}>Filters</a>
-            {{- /* Settings and Remote access merge into System in slice 6; until then System opens Settings. */}}
-            {{$system := or (eq .page "settings") (eq .page "remote-access") (eq .page "system")}}
-            <a class="navlink{{if $system}} active{{end}}" href="/settings"{{if $system}} aria-current="page"{{end}}>System</a>
+            <a class="navlink{{if eq .page "system"}} active{{end}}" href="/system"{{if eq .page "system"}} aria-current="page"{{end}}>System</a>
         </nav>
     </header>
 
