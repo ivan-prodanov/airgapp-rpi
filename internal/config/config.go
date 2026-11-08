@@ -9,27 +9,29 @@ import (
 )
 
 type Config struct {
-	ListenAddr    string `yaml:"listen_addr"`
-	UseTLS        bool   `yaml:"use_tls"`
-	TLSCert       string `yaml:"tls_cert"`
-	TLSKey        string `yaml:"tls_key"`
-	DBPath        string `yaml:"db_path"`
-	WANInterface  string `yaml:"wan_interface"`
-	LANInterface  string `yaml:"lan_interface"`
-	LANSubnet     string `yaml:"lan_subnet"`
-	LANGateway    string `yaml:"lan_gateway"`
+	ListenAddr     string `yaml:"listen_addr"`
+	UseTLS         bool   `yaml:"use_tls"`
+	TLSCert        string `yaml:"tls_cert"`
+	TLSKey         string `yaml:"tls_key"`
+	DBPath         string `yaml:"db_path"`
+	WANInterface   string `yaml:"wan_interface"`
+	LANInterface   string `yaml:"lan_interface"`
+	LANSubnet      string `yaml:"lan_subnet"`
+	LANGateway     string `yaml:"lan_gateway"`
 	DHCPRangeStart string `yaml:"dhcp_range_start"`
 	DHCPRangeEnd   string `yaml:"dhcp_range_end"`
-	DNSUpstream   string `yaml:"dns_upstream"`
-	SNIProxyPort  int    `yaml:"sni_proxy_port"`
-	// EnrolHost is the made-up hostname a LAN device (the car's browser, a
-	// phone on the AP) types to reach the self-service enrol-QR page over
-	// plain HTTP — no cert, no login. dnsmasq resolves it to LANGateway and
-	// the :80 spoof server vhosts it. It never resolves off-LAN (not a real
-	// TLD, not published via Funnel), so the page stays LAN-only.
-	EnrolHost     string `yaml:"enrol_host"`
-	DryRun        bool   `yaml:"dry_run"`
-	LogLevel      string `yaml:"log_level"`
+	DNSUpstream    string `yaml:"dns_upstream"`
+	SNIProxyPort   int    `yaml:"sni_proxy_port"`
+	// EnrolHost is the hostname a LAN device (the car's browser, a phone on
+	// the AP) types to reach the self-service enrol-QR page over plain HTTP —
+	// no cert, no login. On the hotspot the Pi answers it with LANGateway
+	// (dnsmasq, and for Open devices a DNS redirect for this one name) and
+	// the :80 spoof server vhosts it. A real-looking name: browsers treat a
+	// typed name with no real top-level domain as a search. The page stays
+	// LAN-only: :80 is wlan0-bound and nothing publishes it.
+	EnrolHost string `yaml:"enrol_host"`
+	DryRun    bool   `yaml:"dry_run"`
+	LogLevel  string `yaml:"log_level"`
 }
 
 func Defaults() Config {
@@ -50,7 +52,7 @@ func Defaults() Config {
 		DHCPRangeEnd:   "192.168.4.250",
 		DNSUpstream:    "1.1.1.1,8.8.8.8",
 		SNIProxyPort:   8444,
-		EnrolHost:      "air.gapp",
+		EnrolHost:      "airgapp.me",
 		DryRun:         false,
 		LogLevel:       "info",
 	}
@@ -78,15 +80,15 @@ func Load(path string) (Config, error) {
 
 func applyEnvOverrides(cfg *Config) {
 	envMap := map[string]*string{
-		"NETFILTER_LISTEN_ADDR":     &cfg.ListenAddr,
-		"NETFILTER_TLS_CERT":        &cfg.TLSCert,
-		"NETFILTER_TLS_KEY":         &cfg.TLSKey,
-		"NETFILTER_DB_PATH":         &cfg.DBPath,
-		"NETFILTER_WAN_INTERFACE":   &cfg.WANInterface,
-		"NETFILTER_LAN_INTERFACE":   &cfg.LANInterface,
-		"NETFILTER_ENROL_HOST":      &cfg.EnrolHost,
-		"NETFILTER_LAN_SUBNET":      &cfg.LANSubnet,
-		"NETFILTER_LAN_GATEWAY":     &cfg.LANGateway,
+		"NETFILTER_LISTEN_ADDR":      &cfg.ListenAddr,
+		"NETFILTER_TLS_CERT":         &cfg.TLSCert,
+		"NETFILTER_TLS_KEY":          &cfg.TLSKey,
+		"NETFILTER_DB_PATH":          &cfg.DBPath,
+		"NETFILTER_WAN_INTERFACE":    &cfg.WANInterface,
+		"NETFILTER_LAN_INTERFACE":    &cfg.LANInterface,
+		"NETFILTER_ENROL_HOST":       &cfg.EnrolHost,
+		"NETFILTER_LAN_SUBNET":       &cfg.LANSubnet,
+		"NETFILTER_LAN_GATEWAY":      &cfg.LANGateway,
 		"NETFILTER_DHCP_RANGE_START": &cfg.DHCPRangeStart,
 		"NETFILTER_DHCP_RANGE_END":   &cfg.DHCPRangeEnd,
 		"NETFILTER_DNS_UPSTREAM":     &cfg.DNSUpstream,

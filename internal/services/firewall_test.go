@@ -345,3 +345,37 @@ func TestFirewallOpenDNATUsesSettingsUpstream(t *testing.T) {
 		t.Fatalf("Open DNAT does not use the settings upstream:\n%s", out)
 	}
 }
+
+// Open devices use public DNS, so a name only the Pi answers never resolved
+// for them. Their queries for the enrol host alone go to the Pi's dnsmasq;
+// every other query still goes upstream.
+func TestOpenDeviceEnrolHostDNS(t *testing.T) {
+	cfg := config.Config{LANInterface: "wlan0", WANInterface: "eth1", LANGateway: "192.168.4.1", SNIProxyPort: 8444, DNSUpstream: "1.1.1.1", EnrolHost: "airgapp.me"}
+	s := &FirewallService{cfg: cfg}
+	out := s.generateConfig(nil, deviceSnapshot{open: []string{"aa:bb:cc:dd:ee:ff"}})
+	// QNAME in DNS wire format, right after the 8-byte UDP and 12-byte DNS headers.
+	enrol := `iifname "wlan0" ether saddr aa:bb:cc:dd:ee:ff udp dport 53 @th,160,96 0x0761697267617070026d6500 dnat to 192.168.4.1:53`
+	upstream := `iifname "wlan0" ether saddr aa:bb:cc:dd:ee:ff udp dport 53 dnat to 1.1.1.1:53`
+	i, j := strings.Index(out, enrol), strings.Index(out, upstream)
+	if i < 0 || j < 0 || i > j {
+		t.Fatalf("want the enrol-host rule before the upstream rule:\n%s", out)
+	}
+	s.cfg.EnrolHost = ""
+	if strings.Contains(s.generateConfig(nil, deviceSnapshot{open: []string{"aa:bb:cc:dd:ee:ff"}}), "@th,160") {
+		t.Fatal("no enrol host, yet a QNAME rule")
+	}
+}
+
+// A name longer than one 128-bit comparison is matched in chunks.
+func TestDNSQNameMatch(t *testing.T) {
+	if got, ok := dnsQNameMatch("airgapp.me"); !ok || got != "@th,160,96 0x0761697267617070026d6500" {
+		t.Fatalf("airgapp.me: %q %v", got, ok)
+	}
+	got, ok := dnsQNameMatch("enrol.example.com")
+	if !ok || got != "@th,160,128 0x05656e726f6c076578616d706c650363 @th,288,24 0x6f6d00" {
+		t.Fatalf("enrol.example.com: %q %v", got, ok)
+	}
+	if _, ok := dnsQNameMatch("not a host"); ok {
+		t.Fatal("accepted an invalid name")
+	}
+}

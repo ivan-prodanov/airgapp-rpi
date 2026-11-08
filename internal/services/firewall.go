@@ -331,6 +331,31 @@ func (s *FirewallService) verifyOutput(nat, fwd string, filtered []string) error
 	return nil
 }
 
+// dnsQNameMatch is an nft match for a DNS query (UDP) asking about host:
+// the QNAME in wire format (length-prefixed labels, then 0) right after the
+// 8-byte UDP header and 12-byte DNS header, compared 128 bits at a time.
+func dnsQNameMatch(host string) (string, bool) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" || !ValidDomain(host) {
+		return "", false
+	}
+	var wire []byte
+	for _, label := range strings.Split(host, ".") {
+		wire = append(wire, byte(len(label)))
+		wire = append(wire, label...)
+	}
+	wire = append(wire, 0)
+	var parts []string
+	for off := 0; off < len(wire); off += 16 {
+		end := off + 16
+		if end > len(wire) {
+			end = len(wire)
+		}
+		parts = append(parts, fmt.Sprintf("@th,%d,%d 0x%x", 160+off*8, (end-off)*8, wire[off:end]))
+	}
+	return strings.Join(parts, " "), true
+}
+
 func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap deviceSnapshot) string {
 	var b strings.Builder
 
@@ -372,7 +397,14 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 		fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s ip daddr != %s tcp dport 53 dnat to %s:53\n",
 			s.cfg.LANInterface, mac, s.cfg.LANGateway, s.cfg.LANGateway)
 	}
+	enrolMatch, enrolOK := dnsQNameMatch(s.cfg.EnrolHost)
 	for _, mac := range snap.open {
+		// Open devices use public DNS, which can't answer the enrol host: their
+		// queries for that one name go to the Pi's dnsmasq instead.
+		if enrolOK {
+			fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s udp dport 53 %s dnat to %s:53\n",
+				s.cfg.LANInterface, mac, enrolMatch, s.cfg.LANGateway)
+		}
 		fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s udp dport 53 dnat to %s:53\n",
 			s.cfg.LANInterface, mac, upstream)
 		fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s tcp dport 53 dnat to %s:53\n",

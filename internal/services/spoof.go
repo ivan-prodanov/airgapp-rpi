@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/iulianfsdro/rpi-network-filter/internal/config"
@@ -54,21 +55,21 @@ var spoofConnManHeaders = map[string]string{
 	"X-Cache":          "Hit from cloudfront",
 }
 
-// enrolTokenTTL is the claim window for a self-service air.gapp enrol code:
+// enrolTokenTTL is the claim window for a self-service airgapp.me enrol code:
 // scan + first-use within this long or it lapses (see TeslaTokenService.Validate).
 const enrolTokenTTL = 10 * time.Minute
 
 // SpoofService runs the captive-check responder (Tesla connman) on :80/:443,
 // and — when enrol deps are wired via SetEnrolDeps — also vhosts the
 // self-service enrol-QR page on the same :80 listener under the EnrolHost
-// (air.gapp). The Tesla's :80 traffic is steered here by a firewall DNAT rule;
-// a LAN device typing http://air.gapp/ reaches the same listener by its real
+// (airgapp.me). The Tesla's :80 traffic is steered here by a firewall DNAT rule;
+// a LAN device typing http://airgapp.me/ reaches the same listener by its real
 // gateway IP, and the Host header picks the branch.
 type SpoofService struct {
 	cfg  config.Config
 	exec *executor.Executor
 
-	// Enrol deps, injected by SetEnrolDeps (nil until then → the air.gapp
+	// Enrol deps, injected by SetEnrolDeps (nil until then → the airgapp.me
 	// vhost is simply off and every request gets the connman spoof).
 	webFS  fs.FS
 	tokens *TeslaTokenService
@@ -79,7 +80,7 @@ func NewSpoofService(cfg config.Config, exec *executor.Executor) *SpoofService {
 	return &SpoofService{cfg: cfg, exec: exec}
 }
 
-// SetEnrolDeps turns on the air.gapp enrol vhost. Separate from the
+// SetEnrolDeps turns on the airgapp.me enrol vhost. Separate from the
 // constructor because the web embed FS lives in main and the token/remote
 // services are built alongside this one. Safe to leave uncalled — without it
 // the :80 listener is the plain connman spoof it always was.
@@ -89,7 +90,7 @@ func (s *SpoofService) SetEnrolDeps(webFS fs.FS, tokens *TeslaTokenService, remo
 	s.remote = remote
 }
 
-// enrolEnabled reports whether the air.gapp vhost is wired and configured.
+// enrolEnabled reports whether the airgapp.me vhost is wired and configured.
 func (s *SpoofService) enrolEnabled() bool {
 	return s.cfg.EnrolHost != "" && s.webFS != nil && s.tokens != nil && s.remote != nil
 }
@@ -146,12 +147,25 @@ func (s *SpoofService) ListenAndServeTLS() error {
 	}
 	addr := net.JoinHostPort(s.cfg.LANGateway, "443")
 	srv := s.newServer(addr)
-	srv.TLSConfig = &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS10,
-	}
+	srv.TLSConfig = s.tlsConfig(cert)
 	log.Printf("[SPOOF] captive-check TLS responder listening on https://%s (host %s)", addr, spoofConnManHost)
 	return srv.ListenAndServeTLS("", "")
+}
+
+// tlsConfig serves the captive-check cert to everything except the enrol
+// host: the enrol page is plain HTTP, and a browser trying https:// first
+// should fail the handshake and fall back to http:// at once rather than
+// show a warning for the wrong certificate.
+func (s *SpoofService) tlsConfig(cert tls.Certificate) *tls.Config {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS10,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if s.cfg.EnrolHost != "" && strings.EqualFold(hello.ServerName, s.cfg.EnrolHost) {
+				return nil, fmt.Errorf("%s is plain HTTP only", s.cfg.EnrolHost)
+			}
+			return &cert, nil
+		},
+	}
 }
 
 // selfSignedCert builds an in-memory self-signed certificate for host.
@@ -186,7 +200,7 @@ func selfSignedCert(host string) (tls.Certificate, error) {
 // so the response is unconditional. Host + scheme are logged so a real
 // Tesla probe shows up in the journal as evidence.
 func (s *SpoofService) handle(w http.ResponseWriter, r *http.Request) {
-	// air.gapp enrol vhost — plain HTTP only (no cert), matched by Host header.
+	// Enrol vhost (EnrolHost) — plain HTTP only (no cert), matched by Host header.
 	// Everything else, and ALL :443 traffic, falls through to the connman spoof.
 	if r.TLS == nil && s.enrolEnabled() && hostWithoutPort(r.Host) == s.cfg.EnrolHost {
 		s.handleEnrol(w, r)
@@ -207,8 +221,8 @@ func (s *SpoofService) handle(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[SPOOF] %s %s://%s%s → 200 (client=%s)", r.Method, scheme, r.Host, r.URL.Path, r.RemoteAddr)
 }
 
-// hostWithoutPort strips a trailing :port from a request Host so "air.gapp"
-// and "air.gapp:80" both match the configured EnrolHost.
+// hostWithoutPort strips a trailing :port from a request Host so "airgapp.me"
+// and "airgapp.me:80" both match the configured EnrolHost.
 func hostWithoutPort(host string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		return h
@@ -216,9 +230,9 @@ func hostWithoutPort(host string) string {
 	return host
 }
 
-// handleEnrol routes the air.gapp vhost: the QR page, its one script, and the
-// unauthenticated token-issue endpoint. All LAN-only (air.gapp never resolves
-// off-LAN and :80 is wlan0-bound), which is the whole security premise: a relay
+// handleEnrol routes the enrol vhost (EnrolHost): the QR page, its one script, and the
+// unauthenticated token-issue endpoint. All LAN-only (only the Pi answers the
+// enrol host, and :80 is wlan0-bound), which is the whole security premise: a relay
 // token can't command the car without the car separately authorising the key.
 func (s *SpoofService) handleEnrol(w http.ResponseWriter, r *http.Request) {
 	switch {
@@ -282,7 +296,7 @@ func (s *SpoofService) buildEnrolURL(ctx context.Context) (string, int, error) {
 		base = "https://" + st.TailnetHostname + "/api/ble"
 	}
 
-	label := "air.gapp " + time.Now().Format("2006-01-02 15:04")
+	label := s.cfg.EnrolHost + " " + time.Now().Format("2006-01-02 15:04")
 	issued, err := s.tokens.IssueEphemeral(label, enrolTokenTTL)
 	if err != nil {
 		return "", 0, fmt.Errorf("issue token: %w", err)
