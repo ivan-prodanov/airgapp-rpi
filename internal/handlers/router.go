@@ -210,6 +210,7 @@ func NewRouterWithFS(db *sql.DB, svc *services.Services, cfg config.Config, webF
 
 			r.Route("/system", func(r chi.Router) {
 				r.Get("/info", sysH.Info)
+				r.Get("/vitals", sysH.Vitals)
 				r.Get("/audit", sysH.AuditLog)
 				r.Get("/connectivity", sysH.TestConnectivity)
 				r.Get("/traffic", sysH.TrafficLog)

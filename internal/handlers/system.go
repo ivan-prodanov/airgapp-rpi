@@ -29,6 +29,11 @@ func (h *SystemHandler) Info(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, info)
 }
 
+// Vitals is GET /api/system/vitals: the System page's live readout.
+func (h *SystemHandler) Vitals(w http.ResponseWriter, r *http.Request) {
+	JSON(w, http.StatusOK, h.system.Vitals())
+}
+
 func (h *SystemHandler) Reboot(w http.ResponseWriter, r *http.Request) {
 	h.audit.Log("system.reboot", "user requested reboot")
 	JSON(w, http.StatusOK, map[string]string{"status": "rebooting"})
