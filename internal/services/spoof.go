@@ -230,8 +230,9 @@ func hostWithoutPort(host string) string {
 	return host
 }
 
-// handleEnrol routes the enrol vhost (EnrolHost): the QR page, its one script, and the
-// unauthenticated token-issue endpoint. All LAN-only (only the Pi answers the
+// handleEnrol routes the enrol vhost (EnrolHost): the QR page, its script, the
+// Airgapp mark drawn in the middle of the QR, and the unauthenticated
+// token-issue endpoint. All LAN-only (only the Pi answers the
 // enrol host, and :80 is wlan0-bound), which is the whole security premise: a relay
 // token can't command the car without the car separately authorising the key.
 func (s *SpoofService) handleEnrol(w http.ResponseWriter, r *http.Request) {
@@ -240,6 +241,8 @@ func (s *SpoofService) handleEnrol(w http.ResponseWriter, r *http.Request) {
 		s.serveEnrolAsset(w, "static/enrol/airgapp.html", "text/html; charset=utf-8")
 	case r.Method == http.MethodGet && r.URL.Path == "/qrcode.min.js":
 		s.serveEnrolAsset(w, "static/js/qrcode.min.js", "application/javascript")
+	case r.Method == http.MethodGet && r.URL.Path == "/airgapp-icon.png":
+		s.serveEnrolAsset(w, "static/img/airgapp-icon.png", "image/png")
 	case r.Method == http.MethodPost && r.URL.Path == "/issue":
 		s.handleEnrolIssue(w, r)
 	default:
