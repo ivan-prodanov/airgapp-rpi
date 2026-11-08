@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iulianfsdro/rpi-network-filter/internal/config"
@@ -74,6 +75,39 @@ type SpoofService struct {
 	webFS  fs.FS
 	tokens *TeslaTokenService
 	remote *RemoteService
+
+	// The Pi's tailnet (WatchTailnet): where ConsoleHost redirects to.
+	mu      sync.RWMutex
+	tailnet Tailnet
+}
+
+// SetTailnet records the Pi's tailnet: ConsoleHost then redirects to the
+// console as Tailscale serves it.
+func (s *SpoofService) SetTailnet(t Tailnet) {
+	s.mu.Lock()
+	s.tailnet = t
+	s.mu.Unlock()
+}
+
+// consoleURL is where ConsoleHost sends the car: the console under the Pi's
+// tailnet name (real certificate) when Tailscale is signed in, else the Pi's
+// own console address on the hotspot.
+func (s *SpoofService) consoleURL() string {
+	s.mu.RLock()
+	t := s.tailnet
+	s.mu.RUnlock()
+	if t.Known() {
+		return t.ConsoleURL()
+	}
+	scheme, port := "http", ""
+	if s.cfg.UseTLS {
+		scheme = "https"
+	}
+	if _, p, err := net.SplitHostPort(s.cfg.ListenAddr); err == nil && p != "" &&
+		!(scheme == "http" && p == "80") && !(scheme == "https" && p == "443") {
+		port = ":" + p
+	}
+	return scheme + "://" + s.cfg.LANGateway + port + "/"
 }
 
 func NewSpoofService(cfg config.Config, exec *executor.Executor) *SpoofService {
@@ -153,15 +187,17 @@ func (s *SpoofService) ListenAndServeTLS() error {
 }
 
 // tlsConfig serves the captive-check cert to everything except the enrol
-// host: the enrol page is plain HTTP, and a browser trying https:// first
+// and console hosts: the enrol page is plain HTTP, and a browser trying https:// first
 // should fail the handshake and fall back to http:// at once rather than
 // show a warning for the wrong certificate.
 func (s *SpoofService) tlsConfig(cert tls.Certificate) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS10,
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if s.cfg.EnrolHost != "" && strings.EqualFold(hello.ServerName, s.cfg.EnrolHost) {
-				return nil, fmt.Errorf("%s is plain HTTP only", s.cfg.EnrolHost)
+			for _, host := range []string{s.cfg.EnrolHost, s.cfg.ConsoleHost} {
+				if host != "" && strings.EqualFold(hello.ServerName, host) {
+					return nil, fmt.Errorf("%s is plain HTTP only", host)
+				}
 			}
 			return &cert, nil
 		},
@@ -202,6 +238,13 @@ func selfSignedCert(host string) (tls.Certificate, error) {
 func (s *SpoofService) handle(w http.ResponseWriter, r *http.Request) {
 	// Enrol vhost (EnrolHost) — plain HTTP only (no cert), matched by Host header.
 	// Everything else, and ALL :443 traffic, falls through to the connman spoof.
+	// Console host — typed in the car: a redirect to the console.
+	if r.TLS == nil && s.cfg.ConsoleHost != "" && strings.EqualFold(hostWithoutPort(r.Host), s.cfg.ConsoleHost) {
+		to := s.consoleURL()
+		log.Printf("[SPOOF] %s → %s (client=%s)", s.cfg.ConsoleHost, to, r.RemoteAddr)
+		http.Redirect(w, r, to, http.StatusFound)
+		return
+	}
 	if r.TLS == nil && s.enrolEnabled() && hostWithoutPort(r.Host) == s.cfg.EnrolHost {
 		s.handleEnrol(w, r)
 		return

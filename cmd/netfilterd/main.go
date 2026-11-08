@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/iulianfsdro/rpi-network-filter/internal/config"
 	"github.com/iulianfsdro/rpi-network-filter/internal/database"
@@ -135,6 +136,11 @@ func main() {
 			log.Printf("[REMOTE] BLE funnel on boot failed (non-fatal): %v", err)
 		}
 	}()
+
+	// Keep the hotspot pointed at the Pi's tailnet (airgapp.net → the console
+	// under its tailnet name and real certificate). Tailscale may come up after
+	// the apply above, and its sign-in or address can change later.
+	go svc.WatchTailnet(context.Background(), time.Minute)
 
 	// V4.4 Phase 4: the Tesla background poller is gone. The Pi no
 	// longer holds a signing key, so it can't poll the car for

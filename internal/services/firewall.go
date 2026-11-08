@@ -15,10 +15,18 @@ import (
 )
 
 type FirewallService struct {
-	db   *sql.DB
-	exec *executor.Executor
-	cfg  config.Config
-	mu   sync.Mutex
+	db      *sql.DB
+	exec    *executor.Executor
+	cfg     config.Config
+	mu      sync.Mutex
+	tailnet Tailnet // the Pi's tailnet, once WatchTailnet has read it
+}
+
+// SetTailnet records the Pi's tailnet for the next Apply.
+func (s *FirewallService) SetTailnet(t Tailnet) {
+	s.mu.Lock()
+	s.tailnet = t
+	s.mu.Unlock()
 }
 
 func NewFirewallService(db *sql.DB, exec *executor.Executor, cfg config.Config) *FirewallService {
@@ -382,10 +390,21 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 	// The enrol host resolves to EnrolAddr: any hotspot device's web traffic to
 	// it lands on the Pi — HTTP on the enrol page, HTTPS on the responder that
 	// refuses the name, so a browser falls back to HTTP at once.
-	if s.cfg.EnrolHost != "" && ValidIPv4(s.cfg.EnrolAddr) {
+	// The console host shares that address (its HTTP redirects to the console).
+	if (s.cfg.EnrolHost != "" || s.cfg.ConsoleHost != "") && ValidIPv4(s.cfg.EnrolAddr) {
 		for _, port := range []int{80, 443} {
 			fmt.Fprintf(&b, "        iifname \"%s\" ip daddr %s tcp dport %d dnat to %s:%d\n",
 				s.cfg.LANInterface, s.cfg.EnrolAddr, port, s.cfg.LANGateway, port)
+		}
+	}
+	// The Pi's tailnet name resolves to TailnetAddr on the hotspot: the ports
+	// Tailscale serves under that name go to Tailscale on the Pi, which answers
+	// with the real certificate. Ahead of the per-device rules, which would
+	// send a filtered device's :443 to the SNI proxy.
+	if t := s.tailnet; t.Known() && ValidIPv4(s.cfg.TailnetAddr) {
+		for _, port := range tailnetPorts() {
+			fmt.Fprintf(&b, "        iifname \"%s\" ip daddr %s tcp dport %d dnat to %s:%d\n",
+				s.cfg.LANInterface, s.cfg.TailnetAddr, port, t.IPv4, port)
 		}
 	}
 	for _, mac := range snap.filtered {
@@ -406,13 +425,18 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 		fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s ip daddr != %s tcp dport 53 dnat to %s:53\n",
 			s.cfg.LANInterface, mac, s.cfg.LANGateway, s.cfg.LANGateway)
 	}
-	enrolMatch, enrolOK := dnsQNameMatch(s.cfg.EnrolHost)
+	// Open devices use public DNS, which can't answer the names the Pi answers
+	// itself on the hotspot: their queries for those names go to its dnsmasq.
+	var localMatches []string
+	for _, name := range localNames(s.cfg.EnrolHost, s.cfg.ConsoleHost, s.tailnet.Host) {
+		if m, ok := dnsQNameMatch(name); ok {
+			localMatches = append(localMatches, m)
+		}
+	}
 	for _, mac := range snap.open {
-		// Open devices use public DNS, which can't answer the enrol host: their
-		// queries for that one name go to the Pi's dnsmasq instead.
-		if enrolOK {
+		for _, m := range localMatches {
 			fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s udp dport 53 %s dnat to %s:53\n",
-				s.cfg.LANInterface, mac, enrolMatch, s.cfg.LANGateway)
+				s.cfg.LANInterface, mac, m, s.cfg.LANGateway)
 		}
 		fmt.Fprintf(&b, "        iifname \"%s\" ether saddr %s udp dport 53 dnat to %s:53\n",
 			s.cfg.LANInterface, mac, upstream)
@@ -454,6 +478,12 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 	fmt.Fprintf(&b, "        iifname \"%s\" tcp dport 443 accept\n", s.cfg.LANInterface)
 	fmt.Fprintf(&b, "        iifname \"%s\" tcp dport 8443 accept\n", s.cfg.LANInterface)
 	fmt.Fprintf(&b, "        iifname \"%s\" tcp dport %d accept\n", s.cfg.LANInterface, s.cfg.SNIProxyPort)
+	// The ports forwarded to Tailscale on the Pi (the console, the Funnel).
+	if t := s.tailnet; t.Known() && ValidIPv4(s.cfg.TailnetAddr) {
+		for _, port := range tailnetPorts() {
+			fmt.Fprintf(&b, "        iifname \"%s\" ip daddr %s tcp dport %d accept\n", s.cfg.LANInterface, t.IPv4, port)
+		}
+	}
 	// Tailscale: admin UI + SSH only.
 	b.WriteString("        iifname \"tailscale0\" tcp dport 22 accept\n")
 	b.WriteString("        iifname \"tailscale0\" tcp dport 8443 accept\n")

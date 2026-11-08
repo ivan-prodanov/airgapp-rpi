@@ -35,8 +35,18 @@ type Config struct {
 	// because the car's browser won't connect to a private one. TEST-NET-3 is
 	// never routed on the internet, so off the hotspot it goes nowhere.
 	EnrolAddr string `yaml:"enrol_addr"`
-	DryRun    bool   `yaml:"dry_run"`
-	LogLevel  string `yaml:"log_level"`
+	// ConsoleHost is the name typed in the car to open the console. On the
+	// hotspot it resolves to EnrolAddr like the enrol host, and the :80 spoof
+	// server answers it with a redirect to the console: Tailscale's address
+	// for it (real certificate) when the Pi is on a tailnet, else the Pi's own.
+	ConsoleHost string `yaml:"console_host"`
+	// TailnetAddr is what the Pi's own tailnet name resolves to on the
+	// hotspot: a second intercepted address whose console and Funnel ports
+	// are forwarded to Tailscale on the Pi. It must differ from EnrolAddr,
+	// whose :443 goes to the captive-check responder instead.
+	TailnetAddr string `yaml:"tailnet_addr"`
+	DryRun      bool   `yaml:"dry_run"`
+	LogLevel    string `yaml:"log_level"`
 }
 
 func Defaults() Config {
@@ -59,6 +69,8 @@ func Defaults() Config {
 		SNIProxyPort:   8444,
 		EnrolHost:      "airgapp.me",
 		EnrolAddr:      "203.0.113.80",
+		ConsoleHost:    "airgapp.net",
+		TailnetAddr:    "203.0.113.81",
 		DryRun:         false,
 		LogLevel:       "info",
 	}
@@ -94,6 +106,8 @@ func applyEnvOverrides(cfg *Config) {
 		"NETFILTER_LAN_INTERFACE":    &cfg.LANInterface,
 		"NETFILTER_ENROL_HOST":       &cfg.EnrolHost,
 		"NETFILTER_ENROL_ADDR":       &cfg.EnrolAddr,
+		"NETFILTER_CONSOLE_HOST":     &cfg.ConsoleHost,
+		"NETFILTER_TAILNET_ADDR":     &cfg.TailnetAddr,
 		"NETFILTER_LAN_SUBNET":       &cfg.LANSubnet,
 		"NETFILTER_LAN_GATEWAY":      &cfg.LANGateway,
 		"NETFILTER_DHCP_RANGE_START": &cfg.DHCPRangeStart,
