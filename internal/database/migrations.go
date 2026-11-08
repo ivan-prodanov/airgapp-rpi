@@ -82,9 +82,10 @@ var migrations = []string{
 		applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	-- No universal hotspot password: setup writes the chosen (or generated) one.
 	INSERT OR IGNORE INTO settings (key, value) VALUES
-		('ap_ssid', 'NetFilter'),
-		('ap_password', 'changeme123'),
+		('ap_ssid', 'Airgapp'),
+		('ap_password', ''),
 		('ap_channel', '6'),
 		('dns_upstream', '1.1.1.1,8.8.8.8');`,
 

@@ -241,3 +241,25 @@ func TestHotspotConfMode0600(t *testing.T) {
 		t.Fatalf("hostapd.conf mode %v, want 0600", fi.Mode().Perm())
 	}
 }
+
+// There is no universal hotspot password. With none stored (a fresh database
+// before setup, or a settings read that failed) the hotspot isn't rewritten
+// with a known one: Apply refuses and the current config stays as it is.
+func TestHotspotHasNoDefaultPassword(t *testing.T) {
+	db := migratedDB(t)
+	mustExec(t, db, `DELETE FROM settings WHERE key = 'ap_password'`)
+	s := NewHotspotService(db, executor.New(true))
+	s.confPath = filepath.Join(t.TempDir(), "hostapd.conf")
+	if err := os.WriteFile(s.confPath, []byte("current"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Apply(); err == nil {
+		t.Fatal("Apply wrote a hotspot config with no password set")
+	}
+	if b, _ := os.ReadFile(s.confPath); string(b) != "current" {
+		t.Fatalf("hostapd.conf was rewritten: %q", b)
+	}
+	if got := s.getSettings()["ap_ssid"]; got != "Airgapp" {
+		t.Fatalf("default network name %q, want Airgapp", got)
+	}
+}

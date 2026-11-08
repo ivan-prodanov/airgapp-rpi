@@ -783,3 +783,28 @@ func TestMigrateV31_FSDHostsInConnectivity(t *testing.T) {
 		}
 	}
 }
+
+// A fresh database names the hotspot Airgapp and holds no password: setup
+// writes the real one (chosen, or generated) before the hotspot starts.
+func TestMigrateSeedsNoUniversalHotspotPassword(t *testing.T) {
+	db := openMemory(t)
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	got := map[string]string{}
+	rows, err := db.Query(`SELECT key, value FROM settings WHERE key IN ('ap_ssid','ap_password')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			t.Fatal(err)
+		}
+		got[k] = v
+	}
+	if got["ap_ssid"] != "Airgapp" || got["ap_password"] != "" {
+		t.Fatalf("seeded %v, want ap_ssid=Airgapp and no password", got)
+	}
+}
