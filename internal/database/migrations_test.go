@@ -732,3 +732,36 @@ func TestMigrate_BacksUpBeforeUpgrading(t *testing.T) {
 		t.Fatalf("fresh database backed up: %v", m)
 	}
 }
+
+// v31: the operator's Tailscale filter (tailscale.com, made on the old page
+// without a group) belongs with the car's infrastructure: Car system. Only
+// the group moves; it stays theirs, as on or off as it was, with its domains.
+func TestMigrateV31_TailscaleToCarSystem(t *testing.T) {
+	db := openMemory(t)
+	migrateTo(t, db, 30)
+	if _, err := db.Exec(`INSERT INTO filters (name, description, is_system, enabled, grp) VALUES ('Tailscale', '', 0, 1, '')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO filter_domains (preset_id, domain, description) SELECT id, 'tailscale.com', 'tailscale' FROM filters WHERE name = 'Tailscale'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	exists, isSys, enabled, grp := filterRow(t, db, "Tailscale")
+	if !exists || grp != "System" || isSys != 0 || enabled != 1 {
+		t.Fatalf("Tailscale: exists %v grp %q is_system %d enabled %d, want System / 0 / 1", exists, grp, isSys, enabled)
+	}
+	if !filterDomainSet(t, db, "Tailscale")["tailscale.com"] {
+		t.Fatal("tailscale.com lost")
+	}
+
+	// Without such a filter, nothing happens.
+	fresh := openMemory(t)
+	if err := Migrate(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if exists, _, _, _ := filterRow(t, fresh, "Tailscale"); exists {
+		t.Fatal("v31 created a Tailscale filter")
+	}
+}

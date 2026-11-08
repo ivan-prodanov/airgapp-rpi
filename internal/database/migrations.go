@@ -1201,6 +1201,12 @@ var migrations = []string{
 		WHERE action = 'tesla.set_vin' AND instr(details, ' set VIN to ') > 0;
 	UPDATE audit_log SET details = substr(details, 1, instr(details, ' (vin=') - 1)
 		WHERE action = 'tesla.ble_session_open' AND instr(details, ' (vin=') > 0;`,
+
+	// v31: a Tailscale filter (tailscale.com, made on the old page, which had
+	// no groups) belongs with the car's infrastructure, so it moves to Car
+	// system. Only the group: it stays a user filter, on or off as it was.
+	// Without such a filter this does nothing.
+	`UPDATE filters SET grp = 'System' WHERE name = 'Tailscale' AND is_system = 0;`,
 }
 
 // localSeeds holds operator-private seed statements that must NOT be
