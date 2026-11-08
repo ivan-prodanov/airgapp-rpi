@@ -237,6 +237,8 @@ func mockEvent(n int64, perSec float64) (e kv, muted bool) {
 		action = "blocked"
 	case (r>>48)%100 < 12:
 		proto = "TCP"
+	case (r>>48)%100 >= 96: // let through, but the site never answered
+		action = "unreachable"
 	}
 	locked := domain != "" && services.IsAlwaysBlocked(domain)
 	cover := mockCover(domain)
@@ -255,8 +257,11 @@ func mockEvent(n int64, perSec float64) (e kv, muted bool) {
 		}
 	}
 	class := "allowed"
-	if action == "blocked" || action == "sinkholed" {
+	switch action {
+	case "blocked", "sinkholed":
 		class = "blocked"
+	case "unreachable":
+		class = "unreachable"
 	}
 	// Event feedSeed arrives as the preview starts; earlier ones before it.
 	at := startedAt.Add(time.Duration(float64(n-feedSeed) / max(perSec, 1) * float64(time.Second)))
@@ -318,7 +323,7 @@ func mockFeed(q url.Values) kv {
 		if muted {
 			continue
 		}
-		if (outcome == "allowed" || outcome == "blocked") && e["class"] != outcome {
+		if (outcome == "allowed" || outcome == "blocked" || outcome == "unreachable") && e["class"] != outcome {
 			continue
 		}
 		if proto != "" && proto != "ALL" && e["proto"] != proto {

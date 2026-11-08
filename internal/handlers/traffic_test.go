@@ -351,3 +351,13 @@ func TestTrafficFeed_SearchByDeviceName(t *testing.T) {
 		t.Fatalf("q=iphone: %v, want [%d]", ids(got), mine)
 	}
 }
+
+// An allowed connection whose site didn't answer gets its own class, so the
+// console shows "No answer" rather than calling it allowed or blocked.
+func TestVerdictClassUnreachable(t *testing.T) {
+	for action, want := range map[string]string{"allowed": "allowed", "resolved": "allowed", "blocked": "blocked", "sinkholed": "blocked", "unreachable": "unreachable"} {
+		if got := verdictClass(action); got != want {
+			t.Errorf("verdictClass(%q) = %q, want %q", action, got, want)
+		}
+	}
+}
