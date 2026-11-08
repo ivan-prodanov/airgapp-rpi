@@ -5,7 +5,6 @@
     <p class="eyebrow" data-rise>Raw event stream</p>
     <div class="phead" data-rise>
         <h1 class="h1">Traffic</h1>
-        <p class="sub">Every DNS query and connection verdict as it happens. <b>Blocked</b> traffic is stopped at the gate. Use <b>Allow</b> to add a domain to a filter, or <b>Mute</b> to drop its events from the monitor.</p>
     </div>
 
     <div class="toolbar" data-rise="1">
@@ -14,12 +13,15 @@
             <label class="chip"><input type="radio" name="outcome" value="all" :checked="outcome === 'all'" @change="setFilter({ outcome: 'all' })"><span>All</span></label>
             <label class="chip"><input type="radio" name="outcome" value="allowed" :checked="outcome === 'allowed'" @change="setFilter({ outcome: 'allowed' })"><span><i class="cd allowed" aria-hidden="true"></i>Allowed</span></label>
             <label class="chip"><input type="radio" name="outcome" value="blocked" :checked="outcome === 'blocked'" @change="setFilter({ outcome: 'blocked' })"><span><i class="cd blocked" aria-hidden="true"></i>Blocked</span></label>
+            <label class="chip"><input type="radio" name="outcome" value="unreachable" :checked="outcome === 'unreachable'" @change="setFilter({ outcome: 'unreachable' })"><span><i class="cd unreachable" aria-hidden="true"></i>No answer</span></label>
         </div>
-        <label class="psel" :class="proto === 'All' ? '' : 'on'">
-            <span class="vh">Protocol</span>
-            <span class="psel-face" aria-hidden="true"><span x-text="proto === 'All' ? 'Protocol' : proto">Protocol</span><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3.5l3 3 3-3"/></svg></span>
-            <select :value="proto" @change="setFilter({ proto: $event.target.value })"><option value="All">All protocols</option><option value="DNS">DNS</option><option value="TLS">TLS</option><option value="TCP">TCP</option><option value="UDP">UDP</option></select>
-        </label>
+        {{- /* Protocol: an in-page list, not a native <select> (the car's browser never shows a select's popup). */}}
+        <div class="psel" :class="{ on: proto !== 'All', open: pmenu }" @click.outside="pmenu = false" @keydown.escape.window="pmenu = false">
+            <button class="psel-face" type="button" aria-haspopup="listbox" :aria-expanded="pmenu ? 'true' : 'false'" aria-label="Protocol" @click="pmenu = !pmenu"><span x-text="proto === 'All' ? 'Protocol' : proto">Protocol</span><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.5l3 3 3-3"/></svg></button>
+            <div class="pmenu" role="listbox" aria-label="Protocol" x-show="pmenu" x-cloak>
+                <template x-for="p in PROTOS" :key="p"><button class="pmenu-i" type="button" role="option" :aria-selected="proto === p ? 'true' : 'false'" @click="pmenu = false; setFilter({ proto: p })" x-text="p === 'All' ? 'All protocols' : p"></button></template>
+            </div>
+        </div>
         <div class="search">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M11 11l3 3"/></svg>
             <label class="vh" for="q">Search traffic</label>
@@ -44,9 +46,9 @@
                             <div class="led-cell c-dom"><div class="dom" :title="r.domain || r.dst_ip"><span class="dom-h" x-show="domHead(r)" x-text="domHead(r)"></span><span class="dom-t" x-text="domTail(r)"></span></div><div class="domip" x-show="r.domain && r.dst_ip" x-text="'→ ' + r.dst_ip"></div></div>
                             <div class="led-cell tmono c-port" x-text="r.port"></div>
                             <div class="led-cell tmono c-proto" x-text="r.proto"></div>
-                            <div class="led-cell c-vd"><span class="vd" :class="r.class || 'other'" :title="how(r)"><span class="dot" aria-hidden="true"></span><span x-text="label(r)"></span></span></div>
+                            <div class="led-cell c-vd"><span class="vd" :class="r.class || 'other'" :title="how(r)"><span class="dot" aria-hidden="true"></span><span x-text="label(r)"></span></span><template x-if="r.class === 'blocked' && r.domain && !r.locked && nowAllowed(r)"><div class="vd-now">Allowed</div></template></div>
                             <div class="led-cell rev c-rev">
-                                <template x-if="r.class === 'blocked' && r.domain && !r.locked && coverOf(r)"><span class="mtag atag" :class="coverOf(r).enabled ? '' : 'pending'" x-text="coverOf(r).enabled ? 'Allowed · ' + coverOf(r).name : 'Pending · ' + coverOf(r).name + ' is off'"></span></template><template x-if="r.class === 'blocked' && r.domain && !r.locked && !coverOf(r)"><button class="rbtn allow" type="button" @click.stop="openAllow(r.domain)" :aria-label="'Allow ' + r.domain">Allow</button></template><template x-if="r.class === 'blocked' && r.domain && r.locked"><button class="rbtn locked" type="button" aria-disabled="true" @click.stop="explainLock(r)" title="Always blocked. Can't be allowed." :aria-label="'Allow ' + r.domain + ': unavailable, always blocked'"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="2.5" y="5.5" width="7" height="5" rx="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5"/></svg>Allow</button></template>
+                                <template x-if="r.class === 'blocked' && r.domain && !r.locked && !nowAllowed(r)"><button class="rbtn allow" type="button" @click.stop="openAllow(r.domain)" :aria-label="'Allow ' + r.domain">Allow</button></template><template x-if="r.class === 'blocked' && r.domain && r.locked"><button class="rbtn locked" type="button" aria-disabled="true" @click.stop="explainLock(r)" title="Always blocked. Can't be allowed." :aria-label="'Allow ' + r.domain + ': unavailable, always blocked'"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="2.5" y="5.5" width="7" height="5" rx="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5"/></svg>Allow</button></template>
                                 <template x-if="r.domain && !mutedBy(r)"><button class="rbtn" type="button" @click.stop="muteFromRow(r.domain)" :aria-label="'Mute ' + r.domain">Mute</button></template>
                                 <template x-if="r.domain && mutedBy(r)"><span class="mtag" :title="'Muted by ' + mutedBy(r)">Muted</span></template>
                             </div>
@@ -58,7 +60,7 @@
                                     <div><dt>Port</dt><dd x-text="r.port + ' · ' + r.proto"></dd></div>
                                     <div><dt>Verdict</dt><dd x-text="how(r)"></dd></div>
                                 </dl>
-                                <div class="c-acts"><template x-if="r.class === 'blocked' && r.domain && !r.locked && coverOf(r)"><span class="mtag atag" :class="coverOf(r).enabled ? '' : 'pending'" x-text="coverOf(r).enabled ? 'Allowed · ' + coverOf(r).name : 'Pending · ' + coverOf(r).name + ' is off'"></span></template><template x-if="r.class === 'blocked' && r.domain && !r.locked && !coverOf(r)"><button class="rbtn allow" type="button" @click="openAllow(r.domain)" :aria-label="'Allow ' + r.domain">Allow</button></template><template x-if="r.class === 'blocked' && r.domain && r.locked"><button class="rbtn locked" type="button" aria-disabled="true" @click="explainLock(r)" title="Always blocked. Can't be allowed." :aria-label="'Allow ' + r.domain + ': unavailable, always blocked'"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="2.5" y="5.5" width="7" height="5" rx="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5"/></svg>Allow</button></template><template x-if="r.domain && !mutedBy(r)"><button class="rbtn" type="button" @click="muteFromRow(r.domain)" :aria-label="'Mute ' + r.domain">Mute</button></template><template x-if="r.domain && mutedBy(r)"><span class="mtag">Muted by <b x-text="mutedBy(r)"></b></span></template></div>
+                                <div class="c-acts"><template x-if="r.class === 'blocked' && r.domain && !r.locked && nowAllowed(r)"><span class="mtag atag">Allowed</span></template><template x-if="r.class === 'blocked' && r.domain && !r.locked && !nowAllowed(r)"><button class="rbtn allow" type="button" @click="openAllow(r.domain)" :aria-label="'Allow ' + r.domain">Allow</button></template><template x-if="r.class === 'blocked' && r.domain && r.locked"><button class="rbtn locked" type="button" aria-disabled="true" @click="explainLock(r)" title="Always blocked. Can't be allowed." :aria-label="'Allow ' + r.domain + ': unavailable, always blocked'"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="2.5" y="5.5" width="7" height="5" rx="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5"/></svg>Allow</button></template><template x-if="r.domain && !mutedBy(r)"><button class="rbtn" type="button" @click="muteFromRow(r.domain)" :aria-label="'Mute ' + r.domain">Mute</button></template><template x-if="r.domain && mutedBy(r)"><span class="mtag">Muted by <b x-text="mutedBy(r)"></b></span></template></div>
                             </div></div>
                         </div>
                     </template>
@@ -124,12 +126,12 @@ function trafficApp() {
     const NAME = /^[A-Za-z0-9][A-Za-z0-9 _\-+\/]{0,63}$/;
     // A domain as the server normalises it: a pasted URL, a port or a *. prefix reduced to the host.
     const hostOf = q => String(q || '').trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split(/[\/?#]/)[0].replace(/:\d+$/, '').replace(/\.$/, '').replace(/^\*\./, '');
-    const HOW = { allowed: 'Passed the gate', resolved: 'Resolved by DNS', blocked: 'Dropped at the gate', sinkholed: 'Sinkholed by DNS' };
+    const HOW = { allowed: 'Passed the gate', resolved: 'Resolved by DNS', blocked: 'Dropped at the gate', sinkholed: 'Sinkholed by DNS', unreachable: 'Passed the gate; the site didn\'t answer' };
     return {
         CAP,
         rows: [], pending: [], lastId: 0, loaded: false,
         live: true, held: false, openId: null,
-        outcome: 'all', proto: 'All', query: '',
+        outcome: 'all', proto: 'All', query: '', pmenu: false, PROTOS: ['All', 'DNS', 'TLS', 'TCP', 'UDP'],
         muted: 0, failing: false, inflight: false, reloading: false, gen: 0,
         mutes: [], muteDraft: '', mstatus: null, freshMute: null,
         filters: [], allowed: [],
@@ -370,6 +372,11 @@ function trafficApp() {
 
         // ── Allowing. The server decides what can be allowed and says why not; the page adds
         // only what it knows from the filters list (already allowed, names).
+        // A blocked row whose domain a filter that's on now lists: it passes from now on.
+        nowAllowed(r) {
+            const c = this.coverOf(r);
+            return !!(c && c.enabled);
+        },
         coverOf(r) {
             const d = (r.domain || '').toLowerCase();
             const local = this.allowed.find(a => d === a.domain || d.endsWith('.' + a.domain));
@@ -455,9 +462,9 @@ function trafficApp() {
         // The registrable domain stays visible when space runs out; it says who is being contacted.
         domHead(r) { const p = (r.domain || '').split('.'); return p.length > 2 ? p.slice(0, -2).join('.') + '.' : ''; },
         domTail(r) { return r.domain ? r.domain.split('.').slice(-2).join('.') : r.dst_ip; },
-        label(r) { return r.class === 'allowed' ? 'Allowed' : r.class === 'blocked' ? 'Blocked' : (r.action ? r.action.charAt(0).toUpperCase() + r.action.slice(1) : '—'); },
+        label(r) { return r.class === 'allowed' ? 'Allowed' : r.class === 'blocked' ? 'Blocked' : r.class === 'unreachable' ? 'No answer' : (r.action ? r.action.charAt(0).toUpperCase() + r.action.slice(1) : '—'); },
         how(r) { return HOW[r.action] || r.action; },
-        accent(r) { return r.class === 'allowed' ? 'var(--safe)' : r.class === 'blocked' ? 'var(--danger)' : 'var(--line2)'; },
+        accent(r) { return r.class === 'allowed' ? 'var(--safe)' : r.class === 'blocked' ? 'var(--danger)' : r.class === 'unreachable' ? 'var(--watch)' : 'var(--line2)'; },
         fmtTime(ts) {
             if (!ts) return '—';
             const dt = new Date(ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z');
