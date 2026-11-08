@@ -28,6 +28,8 @@
             padding: 24px 16px;
             -webkit-text-size-adjust: 100%;
         }
+        /* Phone (and anything narrow or portrait): one column — heading, code, button.
+           .side dissolves so its children take their place in that column. */
         .card {
             width: 100%;
             max-width: 420px;
@@ -36,19 +38,29 @@
             border-radius: 18px;
             padding: 28px 24px 26px;
             text-align: center;
+            display: flex;
+            flex-direction: column;
         }
-        h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; letter-spacing: 0.1px; }
-        .sub { color: var(--mute); font-size: 13.5px; line-height: 1.5; margin: 0 0 22px; }
+        .side { display: contents; }
+        h1 { order: 1; font-size: 20px; font-weight: 600; margin: 0 0 6px; letter-spacing: 0.1px; }
+        .sub { order: 2; color: var(--mute); font-size: 13.5px; line-height: 1.5; margin: 0 0 22px; }
+        #qr { order: 3; }
+        #gen { order: 4; }
+        .meta { order: 5; }
+        .err { order: 6; }
+        .foot { order: 7; }
         /* Drawn like the console's System → Users code: white modules on the brand
            red, with the Airgapp mark in the middle (error correction H absorbs it). */
         .qr-wrap {
+            --qr: min(300px, 100%);
             position: relative;
             background: var(--red);
-            border-radius: 20px;
-            width: min(300px, 100%); aspect-ratio: 1;
-            padding: 17px;
+            border-radius: calc(var(--qr) * 0.067);
+            width: var(--qr); aspect-ratio: 1;
+            padding: calc(var(--qr) * 0.056);
             margin: 0 auto 18px;
             display: flex; align-items: center; justify-content: center;
+            flex: none;
         }
         .qr-wrap svg { width: 100%; height: 100%; display: block; }
         .qr-mark {
@@ -70,22 +82,51 @@
         .meta { margin-top: 14px; font-size: 13px; color: var(--mute); min-height: 18px; }
         .meta strong { color: var(--fg); font-variant-numeric: tabular-nums; }
         .err { color: #ff6b74; font-size: 13.5px; line-height: 1.5; margin-top: 14px; }
+        .err:empty { display: none; }
         .foot { margin-top: 20px; font-size: 11.5px; color: #6b6d72; line-height: 1.5; }
+
+        /* A landscape screen — the car's — is read from about a metre away: the code
+           takes most of the height, the words sit beside it, and everything scales
+           with the screen. Sized to fit without scrolling. */
+        @media (orientation: landscape) and (min-width: 900px) {
+            body { padding: 3vh 3vw; }
+            .card {
+                flex-direction: row;
+                align-items: center;
+                gap: clamp(36px, 4.5vw, 96px);
+                width: auto;
+                max-width: min(1500px, 94vw);
+                padding: clamp(28px, 4vh, 64px) clamp(32px, 4vw, 80px);
+                border-radius: clamp(18px, 1.6vw, 28px);
+                text-align: left;
+            }
+            .side { order: 4; display: flex; flex-direction: column; align-items: stretch; min-width: 0; max-width: 34em; }
+            .qr-wrap { --qr: min(70vh, 46vw); margin: 0; }
+            .qr-wrap.empty { font-size: clamp(18px, 1.6vw, 28px); text-align: center; padding: 8%; }
+            h1 { font-size: clamp(34px, 3.4vw, 64px); line-height: 1.1; margin-bottom: 0.4em; letter-spacing: -0.01em; }
+            .sub { font-size: clamp(20px, 1.7vw, 32px); line-height: 1.45; margin-bottom: 1.4em; }
+            button { font-size: clamp(22px, 1.9vw, 36px); padding: 0.75em 1.1em; border-radius: 0.55em; }
+            .meta { font-size: clamp(20px, 1.8vw, 34px); margin-top: 0.8em; min-height: 1.4em; }
+            .err { font-size: clamp(20px, 1.7vw, 30px); margin-top: 0.8em; }
+            .foot { font-size: clamp(15px, 1.15vw, 22px); margin-top: 1.6em; }
+        }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h1>Add this car to your phone</h1>
-        <p class="sub">Generate a one-time code, then scan it with Airgapp to connect your phone to this car's relay.</p>
+    <main class="card">
+        <div id="qr" class="qr-wrap empty">Your code appears here</div>
 
-        <div id="qr" class="qr-wrap empty">Tap below to generate a code</div>
+        <div class="side">
+            <h1>Add this car to your phone</h1>
+            <p class="sub">Generate a one-time code, then scan it with Airgapp to connect your phone to this car's relay.</p>
 
-        <button id="gen" onclick="generate()">Generate enrol code</button>
-        <div id="meta" class="meta"></div>
-        <div id="err" class="err"></div>
+            <button id="gen" onclick="generate()">Generate enrol code</button>
+            <div id="meta" class="meta"></div>
+            <div id="err" class="err"></div>
 
-        <p class="foot">The code lets a phone reach the relay. It can't unlock or drive the car — that still needs the phone's key to be paired at the car itself.</p>
-    </div>
+            <p class="foot">The code lets a phone reach the relay. It can't unlock or drive the car — that still needs the phone's key to be paired at the car itself.</p>
+        </div>
+    </main>
 
     <script>
         var countdownTimer = null;
@@ -122,7 +163,7 @@
                     meta.innerHTML = 'Code expired — generate a new one.';
                     var wrap = document.getElementById('qr');
                     wrap.classList.add('empty');
-                    wrap.innerHTML = 'Tap below to generate a code';
+                    wrap.innerHTML = 'Your code appears here';
                     document.getElementById('gen').textContent = 'Generate enrol code';
                     return;
                 }
