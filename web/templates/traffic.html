@@ -25,6 +25,7 @@
             <label class="vh" for="q">Search traffic</label>
             <input id="q" type="search" :placeholder="compact ? 'Search' : 'Search domain · client · IP'" x-model="query" @input.debounce.300ms="setFilter({})" autocomplete="off" autocapitalize="none" spellcheck="false">
         </div>
+        <button class="mutebtn" type="button" @click="openMuted()" aria-haspopup="dialog" :aria-label="'Muted domains: ' + mutes.length"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6h2.5l3.5-3v10L5 10H2.5z"/><path d="M11 6l3.5 4M14.5 6L11 10" stroke-linecap="round"/></svg><span class="mb-l">Muted</span><span class="mb-n" x-text="mutes.length"></span></button>
     </div>
 
     <div class="ledger" data-rise="2">
@@ -37,14 +38,17 @@
                 <div class="led-head" aria-hidden="true"><div>Time</div><div>Client</div><div>Domain</div><div>Port</div><div>Proto</div><div>Verdict</div><div></div></div>
                 <div class="led-body" x-ref="body">
                     <template x-for="r in rows" :key="r.id">
-                        <div class="led-row" :class="{ open: openId === r.id }" :style="'--accent:' + accent(r)" :data-id="r.id" @click="toggleOpen(r.id, $event)">
+                        <div class="led-row" :class="{ open: openId === r.id, muted: !!mutedBy(r) }" :style="'--accent:' + accent(r)" :data-id="r.id" @click="toggleOpen(r.id, $event)">
                             <div class="led-cell acc tmono c-time" x-text="fmtTime(r.time)"></div>
                             <div class="led-cell c-cli"><div class="cli" x-text="r.client"></div><div class="cliip" x-show="r.client !== r.client_ip" x-text="r.client_ip"></div></div>
                             <div class="led-cell c-dom"><div class="dom" :title="r.domain || r.dst_ip"><span class="dom-h" x-show="domHead(r)" x-text="domHead(r)"></span><span class="dom-t" x-text="domTail(r)"></span></div><div class="domip" x-show="r.domain && r.dst_ip" x-text="'→ ' + r.dst_ip"></div></div>
                             <div class="led-cell tmono c-port" x-text="r.port"></div>
                             <div class="led-cell tmono c-proto" x-text="r.proto"></div>
                             <div class="led-cell c-vd"><span class="vd" :class="r.class || 'other'" :title="how(r)"><span class="dot" aria-hidden="true"></span><span x-text="label(r)"></span></span></div>
-                            <div class="led-cell rev c-rev"></div>
+                            <div class="led-cell rev c-rev">
+                                <template x-if="r.domain && !mutedBy(r)"><button class="rbtn" type="button" @click.stop="muteFromRow(r.domain)" :aria-label="'Mute ' + r.domain">Mute</button></template>
+                                <template x-if="r.domain && mutedBy(r)"><span class="mtag" :title="'Muted by ' + mutedBy(r)">Muted</span></template>
+                            </div>
                             <button class="c-chev" type="button" :aria-expanded="openId === r.id ? 'true' : 'false'" :aria-label="'Details for ' + (r.domain || r.dst_ip)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5"/></svg></button>
                             <div class="c-fold"><div class="c-fold-in">
                                 <dl class="c-facts">
@@ -53,7 +57,7 @@
                                     <div><dt>Port</dt><dd x-text="r.port + ' · ' + r.proto"></dd></div>
                                     <div><dt>Verdict</dt><dd x-text="how(r)"></dd></div>
                                 </dl>
-                                <div class="c-acts"></div>
+                                <div class="c-acts"><template x-if="r.domain && !mutedBy(r)"><button class="rbtn" type="button" @click="muteFromRow(r.domain)" :aria-label="'Mute ' + r.domain">Mute</button></template><template x-if="r.domain && mutedBy(r)"><span class="mtag">Muted by <b x-text="mutedBy(r)"></b></span></template></div>
                             </div></div>
                         </div>
                     </template>
@@ -62,6 +66,25 @@
             </div>
         </div>
     </div>
+
+    <dialog class="ndlg mdlg" x-ref="mdlg" @click="if ($event.target === $refs.mdlg) $refs.mdlg.close()" aria-labelledby="mdlg-h">
+        <div class="ndlg-form">
+            <div class="ndlg-head"><h2 id="mdlg-h">Muted domains</h2><button class="ndlg-x" type="button" @click="$refs.mdlg.close()" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button></div>
+            <p>New events for these domains are dropped before they reach the monitor; firewall rules still apply. Muting <code>apple.com</code> also mutes every <code>*.apple.com</code>.</p>
+            <div class="madd" role="group" aria-label="Mute a domain">
+                <label class="vh" for="mute-in">Domain to mute</label>
+                <input id="mute-in" class="finput" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="e.g. apple.com" x-model="muteDraft" @input="mstatus = null" @keydown.enter.prevent="submitMute()" :aria-invalid="mstatus && mstatus.err ? 'true' : 'false'" aria-describedby="mute-status">
+                <button class="btnp" type="button" :disabled="!muteDraft.trim()" @click="submitMute()">Mute</button>
+            </div>
+            <div id="mute-status" class="mstatus" :class="{ err: mstatus && mstatus.err }" role="status" aria-live="polite"><span x-text="mstatus ? mstatus.text : ''"></span><template x-if="mstatus && mstatus.undo"><button type="button" @click="mstatus.undo()">Undo</button></template></div>
+            <ul class="mlist" aria-label="Muted domains" x-show="mutes.length">
+                <template x-for="m in mutes" :key="m.id">
+                    <li :class="{ fresh: freshMute === m.id }"><div class="mpat"><b x-text="m.pattern"></b><span x-text="muteNote(m)"></span></div><button class="mrm" type="button" @click="unmute(m)" :aria-label="'Unmute ' + m.pattern">Unmute</button></li>
+                </template>
+            </ul>
+            <p class="mempty" x-show="!mutes.length">Nothing muted yet.</p>
+        </div>
+    </dialog>
 </div>
 {{end}}
 
@@ -81,10 +104,12 @@ function trafficApp() {
         live: true, held: false, openId: null,
         outcome: 'all', proto: 'All', query: '',
         muted: 0, failing: false, inflight: false, gen: 0,
+        mutes: [], muteDraft: '', mstatus: null, freshMute: null,
         compact: matchMedia(COMPACT).matches, barH: 0, edgeAway: false,
 
         init() {
             this.reload();
+            this.loadMutes();
             this.onVis = () => { if (document.visibilityState === 'visible') { this.tick(); this.start(); } else this.stop(); };
             document.addEventListener('visibilitychange', this.onVis);
             this.start();
@@ -172,6 +197,7 @@ function trafficApp() {
             if (g !== this.gen) return;   // answered for a filter that's gone
             this.failing = false;
             this.lastId = Math.max(this.lastId, r.last_id || 0);
+            if ((r.muted || 0) !== this.mutes.length) this.loadMutes();   // changed elsewhere
             this.muted = r.muted || 0;
             const batch = (r.entries || []).filter(e => !this.rows.some(x => x.id === e.id) && !this.pending.some(x => x.id === e.id));
             if (!batch.length) return;
@@ -242,6 +268,71 @@ function trafficApp() {
             for (let i = 0; i < f.n && i < rows.length; i++) {
                 rows[i].animate([{ backgroundColor: 'rgba(175,199,212,.22)' }, { backgroundColor: 'rgba(175,199,212,0)' }], { duration: 1200, easing: 'cubic-bezier(.2,0,.38,.9)' });
             }
+        },
+
+        // ── Muting. Patterns are suffix matches, as at ingest; rows already logged stay, marked.
+        async loadMutes() {
+            try { this.mutes = (await api.get('/api/system/traffic/muted')) || []; } catch (e) { /* the toast said so */ }
+        },
+        mutedBy(r) {
+            const d = (r.domain || '').toLowerCase();
+            if (!d) return '';
+            const m = this.mutes.find(x => d === x.pattern || d.endsWith('.' + x.pattern));
+            return m ? m.pattern : '';
+        },
+        muteNote(m) {
+            const cover = this.mutes.find(o => o.id !== m.id && m.pattern.endsWith('.' + o.pattern));
+            if (cover) return 'covered by ' + cover.pattern;
+            const d = new Date(m.created_at);
+            return 'and subdomains · since ' + (isNaN(d) ? 'now' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }));
+        },
+        // POST without the global toast, so the server's reason shows where it applies.
+        async postMute(domain) {
+            const res = await fetch('/api/system/traffic/muted', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ domain }) });
+            if (res.status === 401) { window.location = '/login'; throw new Error('Signed out.'); }
+            let data = null;
+            try { data = await res.json(); } catch (e) { /* empty */ }
+            if (!res.ok) throw new Error((data && data.error) || 'Couldn\'t mute it. Try again.');
+            return data.id;
+        },
+        async deleteMute(id) { await api.delete('/api/system/traffic/muted/' + id); },
+        async muteFromRow(domain) {
+            let id;
+            try { id = await this.postMute(domain); } catch (e) { notify(e.message, 'error'); return; }
+            await this.loadMutes();
+            notify('Muted ' + domain + '. New events are dropped.', 'info', {
+                undo: async () => { try { await this.deleteMute(id); } catch (e) { /* toast said so */ } this.loadMutes(); },
+            });
+        },
+        openMuted() {
+            this.mstatus = null;
+            this.loadMutes();
+            this.$refs.mdlg.showModal();
+            if (!this.compact) this.$nextTick(() => document.getElementById('mute-in').focus());
+        },
+        async submitMute() {
+            const raw = this.muteDraft.trim();
+            if (!raw) return;
+            const host = raw.toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split(/[\/?#]/)[0].replace(/:\d+$/, '').replace(/\.$/, '').replace(/^\*\./, '');
+            if (this.mutes.some(m => m.pattern === host)) { this.mstatus = { err: true, text: host + ' is already muted.' }; return; }
+            let id;
+            try { id = await this.postMute(raw); } catch (e) { this.mstatus = { err: true, text: e.message }; return; }
+            await this.loadMutes();
+            const m = this.mutes.find(x => x.id === id);
+            const p = m ? m.pattern : host;
+            this.muteDraft = '';
+            this.freshMute = id;
+            setTimeout(() => { if (this.freshMute === id) this.freshMute = null; }, 1400);
+            this.mstatus = { text: 'Muted ' + p + ' and every *.' + p + '.' };
+        },
+        async unmute(m) {
+            try { await this.deleteMute(m.id); } catch (e) { return; }
+            await this.loadMutes();
+            this.mstatus = { text: 'Unmuted ' + m.pattern + '.', undo: async () => {
+                try { await this.postMute(m.pattern); } catch (e) { this.mstatus = { err: true, text: e.message }; return; }
+                await this.loadMutes();
+                this.mstatus = { text: 'Muted ' + m.pattern + ' again.' };
+            } };
         },
 
         // The registrable domain stays visible when space runs out; it says who is being contacted.

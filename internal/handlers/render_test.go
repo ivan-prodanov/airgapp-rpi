@@ -239,3 +239,13 @@ func TestTrafficPage(t *testing.T) {
 		}
 	}
 }
+
+// Muting: the toolbar's Muted button opens a native dialog named by its heading.
+func TestTrafficMuting(t *testing.T) {
+	body, _ := renderPage(NewRenderer(web.Content), "traffic.html", "traffic")
+	for _, want := range []string{`class="mutebtn"`, `aria-labelledby="mdlg-h"`, "Nothing muted yet.", "/api/system/traffic/muted"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("traffic page lacks %s", want)
+		}
+	}
+}
