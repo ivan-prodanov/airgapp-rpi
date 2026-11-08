@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# NetFilter Setup Script for Raspberry Pi 4 (Debian 13 / Trixie)
+# Airgapp setup for Raspberry Pi 4 (Debian 13 / Trixie)
 # WAN: USB LTE modem (eth1 / usb0 / enx*)
 # LAN: Built-in WiFi (wlan0) as hotspot
 #
@@ -9,6 +9,11 @@ set -euo pipefail
 #   scp netfilterd-arm64 pi@<ip>:/tmp/netfilterd
 #   scp -r deploy/*      pi@<ip>:/tmp/deploy/
 #   ssh pi@<ip> "sudo bash /tmp/deploy/setup.sh"
+#
+# Answers (deploy/answers.sh) come from the environment or are asked on the
+# terminal; first boot passes them from the card's answers.txt. Passwords left
+# empty are generated: printed here on a terminal, and written to
+# $AIRGAPP_CREDENTIALS_FILE when it is set.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BINARY_SRC="${NETFILTERD_BIN:-/tmp/netfilterd}"
 
 echo "================================================"
-echo "  NetFilter - RPi4 Network Filter Router Setup"
+echo "  Airgapp setup (Raspberry Pi 4)"
 echo "================================================"
 echo ""
 echo "WAN: USB LTE modem"
@@ -37,7 +42,7 @@ echo ""
 
 # --- Preflight ---------------------------------------------------------------
 
-for f in hostapd-base.conf dnsmasq-base.conf nftables-base.conf sysctl.conf \
+for f in answers.sh hostapd-base.conf dnsmasq-base.conf nftables-base.conf sysctl.conf \
          netfilterd.service nf-wlan0.service; do
     [[ -f "$SCRIPT_DIR/$f" ]] || error "Missing $SCRIPT_DIR/$f — scp the full deploy/ dir to /tmp/deploy/"
 done
@@ -46,49 +51,44 @@ done
 
 # --- WAN detect --------------------------------------------------------------
 
+# shellcheck source=answers.sh
+. "$SCRIPT_DIR/answers.sh"
+
 info "Detecting LTE modem interface..."
-WAN_IFACE=""
-for cand in eth1 usb0; do
-    if ip link show "$cand" &>/dev/null; then
-        WAN_IFACE="$cand"
-        break
-    fi
-done
+WAN_IFACE="${WAN_INTERFACE:-}"
+if [[ -z "$WAN_IFACE" ]]; then
+    for cand in eth1 usb0; do
+        if ip link show "$cand" &>/dev/null; then
+            WAN_IFACE="$cand"
+            break
+        fi
+    done
+fi
 if [[ -z "$WAN_IFACE" ]]; then
     WAN_IFACE="$(ip -o link show | awk -F': ' '/^[0-9]+: enx/ {print $2; exit}')"
 fi
 if [[ -z "$WAN_IFACE" ]]; then
     warn "LTE modem not detected."
-    read -rp "WAN interface name [eth1]: " WAN_IFACE
+    if [[ -t 0 ]]; then
+        read -rp "WAN interface name [eth1]: " WAN_IFACE
+    fi
     WAN_IFACE=${WAN_IFACE:-eth1}
 fi
 info "WAN interface: $WAN_IFACE"
 
-# --- Prompts -----------------------------------------------------------------
-
-read -rp "Hotspot SSID [NetFilter]: " AP_SSID
-AP_SSID=${AP_SSID:-NetFilter}
-
-read -rsp "Hotspot password [changeme123]: " AP_PASS; echo
-AP_PASS=${AP_PASS:-changeme123}
-if [[ ${#AP_PASS} -lt 8 ]]; then
-    error "WPA2 password must be at least 8 characters"
-fi
-
-read -rp "WiFi country code (ISO 3166-1, e.g. US, GB, DE) [GB]: " COUNTRY_CODE
-COUNTRY_CODE=${COUNTRY_CODE:-GB}
-COUNTRY_CODE="${COUNTRY_CODE^^}"
-
-# 5 GHz channel — UNII-1 (36-48) is allowed in nearly every region
-# without DFS. We default to 36 because Pi 4's WiFi and BLE share one
-# radio, and 5 GHz hostapd is the only way BLE scans (for V4's Tesla
-# integration) succeed reliably. 2.4 GHz works for non-BLE installs;
-# pick channel 6 if you have 2.4-GHz-only clients that matter.
-read -rp "Hotspot channel — 36 (5 GHz, recommended for V4/Tesla) or 6 (2.4 GHz, legacy) [36]: " AP_CHANNEL
-AP_CHANNEL=${AP_CHANNEL:-36}
-
-read -rsp "Admin web UI password: " ADMIN_PASS; echo
-[[ -z "$ADMIN_PASS" ]] && error "Admin password is required"
+# --- Answers -------------------------------------------------------------------
+#
+# Named answers (answers.sh): a question added later can't shift the others.
+# 5 GHz channel 36 by default — UNII-1 (36-48) is allowed in nearly every
+# region without DFS, and on a Pi 4 WiFi and BLE share one radio: 5 GHz
+# hostapd is what lets BLE scans (the Tesla integration) succeed. Pick 6
+# (2.4 GHz) only for 2.4-GHz-only clients that matter.
+resolve_answers || error "Fix the answer above and run setup again."
+AP_SSID="$WIFI_NAME"
+AP_PASS="$WIFI_PASSWORD"
+COUNTRY_CODE="$WIFI_COUNTRY"
+AP_CHANNEL="$WIFI_CHANNEL"
+ADMIN_PASS="$ADMIN_PASSWORD"
 
 # --- Packages ----------------------------------------------------------------
 
@@ -245,8 +245,8 @@ x509_extensions    = v3_req
 
 [dn]
 C  = US
-O  = NetFilter Appliance
-CN = netfilter.local
+O  = Airgapp
+CN = airgapp.local
 
 [v3_req]
 basicConstraints     = CA:TRUE
@@ -255,8 +255,8 @@ extendedKeyUsage     = serverAuth
 subjectAltName       = @alt_names
 
 [alt_names]
-DNS.1 = netfilter.local
-DNS.2 = netfilter
+DNS.1 = airgapp.local
+DNS.2 = airgapp
 IP.1  = 192.168.4.1
 IP.2  = 127.0.0.1
 CNF
@@ -308,14 +308,17 @@ info "Creating admin user..."
 # defaults — overwriting the SSID/password/channel/country the operator
 # just chose. Seed them now so the first Apply is a no-op.
 info "Seeding hotspot settings into netfilterd DB..."
-python3 <<PYSEED
-import sqlite3
+# Values travel in the environment, never pasted into the Python source: a
+# password with a quote or backslash in it can't break (or inject into) it.
+AP_SSID="$AP_SSID" AP_PASS="$AP_PASS" AP_CHANNEL="$AP_CHANNEL" COUNTRY_CODE="$COUNTRY_CODE" \
+python3 <<'PYSEED'
+import os, sqlite3
 c = sqlite3.connect("/var/lib/netfilterd/netfilter.db")
 for k, v in [
-    ("ap_ssid",     "${AP_SSID}"),
-    ("ap_password", "${AP_PASS}"),
-    ("ap_channel",  "${AP_CHANNEL}"),
-    ("ap_country",  "${COUNTRY_CODE}"),
+    ("ap_ssid",     os.environ["AP_SSID"]),
+    ("ap_password", os.environ["AP_PASS"]),
+    ("ap_channel",  os.environ["AP_CHANNEL"]),
+    ("ap_country",  os.environ["COUNTRY_CODE"]),
 ]:
     c.execute(
         "INSERT INTO settings (key, value) VALUES (?, ?) "
@@ -378,18 +381,28 @@ echo "================================================"
 echo "  Ready to bring up the hotspot"
 echo "================================================"
 echo ""
-echo "  Hotspot SSID:  ${AP_SSID}"
+echo "  Hotspot name:  ${AP_SSID}"
 echo "  Band:          ${AP_HWMODE} (channel ${AP_CHANNEL}, country ${COUNTRY_CODE})"
-echo "  Web UI:        https://192.168.4.1:8443"
+echo "  Console:       https://192.168.4.1:8443"
 echo "  Admin user:    admin"
+if [[ -n "${AIRGAPP_GENERATED:-}" ]]; then
+    if [[ -n "${AIRGAPP_CREDENTIALS_FILE:-}" ]]; then
+        echo "  Generated passwords are in ${AIRGAPP_CREDENTIALS_FILE}"
+    elif [[ -t 1 ]]; then
+        echo ""
+        echo "  Generated passwords (write them down; they aren't shown again):"
+        case "$AIRGAPP_GENERATED" in *WIFI_PASSWORD*) echo "    Hotspot password: ${AP_PASS}" ;; esac
+        case "$AIRGAPP_GENERATED" in *ADMIN_PASSWORD*) echo "    Admin password:   ${ADMIN_PASS}" ;; esac
+    fi
+fi
 echo ""
 echo "  WAN interface: ${WAN_IFACE}"
 echo "  LAN interface: wlan0 → 192.168.4.1/24 (hotspot)"
 echo ""
 if [[ "$AP_CHANNEL" -ge 36 ]]; then
 echo "  5 GHz: chosen so BLE has the 2.4 GHz radio to itself —"
-echo "         required for /garage (Tesla BLE control). All modern"
-echo "         clients (Tesla, iPhone, Mac, etc.) handle 5 GHz."
+echo "         the Tesla integration needs it. All modern clients"
+echo "         (Tesla, iPhone, Mac, etc.) handle 5 GHz."
 echo ""
 fi
 echo "  Heads-up: the final step will take wlan0 into AP mode."
@@ -397,12 +410,12 @@ echo "  If you're SSHed in over wlan0, your session will drop."
 echo "  The bring-up runs detached and continues on its own."
 echo ""
 echo "  Bring-up log:  ${BRINGUP_LOG}"
-echo "  After it settles, connect a device to the '${AP_SSID}' SSID"
+echo "  After it settles, join the '${AP_SSID}' Wi-Fi"
 echo "  and open https://192.168.4.1:8443"
 echo ""
-echo "  V4 next steps:"
-echo "    - /garage:        pair your Tesla over BLE (need the car nearby)"
-echo "    - /remote-access: paste a Tailscale auth key for off-LAN access"
+echo "  Next steps, in the console:"
+echo "    - System → Tailscale: sign in for access off the car's Wi-Fi"
+echo "    - System → Users:     add a phone for Airgapp"
 echo ""
 echo "================================================"
 

@@ -29,10 +29,10 @@ x509_extensions    = v3_req
 
 [dn]
 C  = US
-ST = NetFilter
-L  = NetFilter
-O  = NetFilter Appliance
-CN = netfilter.local
+ST = Airgapp
+L  = Airgapp
+O  = Airgapp
+CN = airgapp.local
 
 [v3_req]
 basicConstraints     = CA:TRUE
@@ -41,8 +41,8 @@ extendedKeyUsage     = serverAuth
 subjectAltName       = @alt_names
 
 [alt_names]
-DNS.1 = netfilter.local
-DNS.2 = netfilter
+DNS.1 = airgapp.local
+DNS.2 = airgapp
 IP.1  = 192.168.4.1
 IP.2  = 127.0.0.1
 CNF

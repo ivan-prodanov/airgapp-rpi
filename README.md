@@ -57,13 +57,13 @@ On top of that:
 
 The Pi self-provisions on first power-on from the SD card alone. You
 never need transitional ethernet or a separate WiFi link: plug in the
-LTE modem, power on, wait ~5 minutes, join the `NetFilter` hotspot.
+LTE modem, power on, wait ~5 minutes, join the `Airgapp` hotspot.
 
 ### 1. Flash Raspberry Pi OS Lite (64-bit, Trixie)
 
 Use Raspberry Pi Imager. **Customise** (gear icon):
 
-- hostname: `netfilter`
+- hostname: `airgapp`
 - user: `pi` + a password you remember
 - SSH: enabled (password or public key)
 - locale / timezone
@@ -86,10 +86,26 @@ From Git Bash in the repo root:
 scripts/prepare-sd.sh /e       # adjust drive letter
 ```
 
-Copies the binary + `deploy/` dir to `/boot/firmware/netfilter/`, writes
-default answers (SSID `NetFilter`, hotspot pw `changeme123`, country `US`,
-admin pw `netfilter` — edit `E:/netfilter/answers.txt` to override), and
-injects a provisioning hook into Imager's cloud-init `user-data`.
+Copies the binary + `deploy/` dir to `/boot/firmware/airgapp/`, writes
+`E:/airgapp/answers.txt`, and injects a setup hook into Imager's
+cloud-init `user-data`. The answers are named, and a blank one means the
+default:
+
+```
+WIFI_NAME=Airgapp
+WIFI_PASSWORD=          # blank: generated on first boot
+WIFI_COUNTRY=US         # set yours (e.g. GB, GR): it decides the legal channels
+WIFI_CHANNEL=36         # 36 = 5 GHz (recommended), or 1-14 for 2.4 GHz
+ADMIN_PASSWORD=         # blank: generated on first boot
+# WAN_INTERFACE=eth1    # only if the LTE modem isn't detected
+```
+
+There is no universal password. A blank `WIFI_PASSWORD` or
+`ADMIN_PASSWORD` is generated on first boot and written to
+`airgapp-credentials.txt` at the top of the card's boot partition. Put
+the card in a computer to read it, then delete it. (`deploy/answers.sh`
+reads these answers. `bash scripts/answers-test.sh` tests it, on any
+machine.)
 
 ### 4. Boot
 
@@ -100,9 +116,11 @@ brings up hostapd / dnsmasq / nftables / netfilterd.
 
 ### 5. Connect + log in
 
-1. Join the `NetFilter` SSID (default password `changeme123`).
-2. Open <https://192.168.4.1:8443> (accept the self-signed cert warning — it goes away after [step 6](#6-real-https-optional)).
-3. Log in as `admin` / `netfilter`. Change the password in Settings immediately.
+1. Read the generated passwords from `airgapp-credentials.txt` on the
+   card, unless you chose your own.
+2. Join the `Airgapp` Wi-Fi.
+3. Open <https://192.168.4.1:8443> (accept the self-signed cert warning — it goes away after [step 6](#6-real-https-optional)).
+4. Log in as `admin`.
 
 ### 6. Real HTTPS (optional but recommended)
 
@@ -188,6 +206,7 @@ internal/
     validate.go          Input-validation regex guards (injection)
 deploy/
   setup.sh               First-boot provisioning script
+  answers.sh             Install answers: named, defaults, generated passwords
   provision.sh           Orchestrates first-boot from /boot/firmware
   netfilter-provision.service
   hostapd-base.conf
@@ -380,8 +399,10 @@ scp -r deploy/*      pi@<pi-ip>:/tmp/deploy/
 ssh -t pi@<pi-ip> "sudo bash /tmp/deploy/setup.sh"
 ```
 
-`setup.sh` prompts for SSID, hotspot password, country code, and admin
-password. The final service bring-up is detached via `nohup` so an SSH
+`setup.sh` asks for the Wi-Fi name, Wi-Fi password, country code, channel
+and admin password. Press Enter on a password to have one generated: it's
+shown once at the end. Or set the answers beforehand as environment
+variables (`WIFI_NAME=…` etc., see above). The final service bring-up is detached via `nohup` so an SSH
 session over `wlan0` getting dropped when hostapd seizes the radio doesn't
 strand the provisioning mid-run.
 

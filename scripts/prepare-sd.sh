@@ -1,11 +1,11 @@
 #!/bin/bash
-# Stuff a freshly-flashed SD card's bootfs partition with NetFilter's
-# first-boot payload so the Pi self-provisions on first power-on.
+# Stuff a freshly-flashed SD card's bootfs partition with Airgapp's
+# first-boot payload so the Pi sets itself up on first power-on.
 #
 # Prerequisites:
 #   1. Flash "Raspberry Pi OS Lite (64-bit, Trixie)" with Raspberry Pi Imager.
 #      In Advanced Settings (gear icon):
-#        - hostname: netfilter
+#        - hostname: airgapp
 #        - set a user (e.g. pi / your password)
 #        - enable SSH (password or public-key)
 #        - set locale / timezone
@@ -40,27 +40,33 @@ BIN="$REPO_ROOT/netfilterd-arm64"
     exit 1
 }
 
-PAYLOAD="$BOOT/netfilter"
+PAYLOAD="$BOOT/airgapp"
 echo "Staging payload at $PAYLOAD"
-rm -rf "$PAYLOAD"
+rm -rf "$PAYLOAD" "$BOOT/netfilter"   # netfilter/: a payload from an older version of this script
 mkdir -p "$PAYLOAD/deploy"
 cp "$REPO_ROOT/deploy"/* "$PAYLOAD/deploy/"
 cp "$BIN" "$PAYLOAD/netfilterd"
 
-# Default answers for setup.sh prompts. Edit before flashing if you want
-# non-default SSID / passwords / country code.
+# Named answers (deploy/answers.sh). There is no universal password: the two
+# left empty are generated on first boot and written to
+# airgapp-credentials.txt on this card. Fill them in to choose your own.
 cat > "$PAYLOAD/answers.txt" <<'ANSWERS'
-NetFilter
-changeme123
-US
-netfilter
+# Airgapp first-boot answers. A blank value means the default; a blank
+# password is generated and written to airgapp-credentials.txt on this card.
+WIFI_NAME=Airgapp
+WIFI_PASSWORD=
+WIFI_COUNTRY=US
+WIFI_CHANNEL=36
+ADMIN_PASSWORD=
+# Only if the LTE modem isn't detected:
+# WAN_INTERFACE=eth1
 ANSWERS
 
-echo "  - SSID:           NetFilter"
-echo "  - hotspot pass:   changeme123"
-echo "  - country code:   US"
-echo "  - admin UI pass:  netfilter"
-echo "  Edit $PAYLOAD/answers.txt to override."
+echo "  - Wi-Fi name:      Airgapp"
+echo "  - Wi-Fi password:  generated on first boot"
+echo "  - country, channel: US, 36 (5 GHz)"
+echo "  - admin password:  generated on first boot"
+echo "  Edit $PAYLOAD/answers.txt to choose your own."
 
 # Hook into Imager's first-boot customization so our provisioning service
 # gets installed during the same first-boot that creates the user. Recent
@@ -78,8 +84,8 @@ if "netfilter-provision" in src:
     print("  already hooked; skipping")
     sys.exit(0)
 hook = (
-    "  - install -m 0755 /boot/firmware/netfilter/deploy/provision.sh /usr/local/sbin/netfilter-provision.sh\n"
-    "  - install -m 0644 /boot/firmware/netfilter/deploy/netfilter-provision.service /etc/systemd/system/netfilter-provision.service\n"
+    "  - install -m 0755 /boot/firmware/airgapp/deploy/provision.sh /usr/local/sbin/netfilter-provision.sh\n"
+    "  - install -m 0644 /boot/firmware/airgapp/deploy/netfilter-provision.service /etc/systemd/system/netfilter-provision.service\n"
     "  - systemctl enable netfilter-provision.service\n"
 )
 if "\nruncmd:\n" in src:
@@ -102,9 +108,9 @@ import sys, pathlib
 p = pathlib.Path(sys.argv[1])
 src = p.read_text()
 hook = (
-    "\n# --- NetFilter provisioning ---\n"
-    "install -m 0755 /boot/firmware/netfilter/deploy/provision.sh /usr/local/sbin/netfilter-provision.sh\n"
-    "install -m 0644 /boot/firmware/netfilter/deploy/netfilter-provision.service /etc/systemd/system/netfilter-provision.service\n"
+    "\n# --- Airgapp first-boot setup ---\n"
+    "install -m 0755 /boot/firmware/airgapp/deploy/provision.sh /usr/local/sbin/netfilter-provision.sh\n"
+    "install -m 0644 /boot/firmware/airgapp/deploy/netfilter-provision.service /etc/systemd/system/netfilter-provision.service\n"
     "systemctl enable netfilter-provision.service\n"
 )
 if "exit 0" in src:
@@ -133,8 +139,9 @@ echo "Next steps:"
 echo "  1. Eject the SD card."
 echo "  2. Insert into the Pi; plug in the USB LTE modem."
 echo "  3. Power on. First-boot takes ~3-5 minutes."
-echo "  4. Your laptop should see SSID 'NetFilter' — connect with password 'changeme123'."
-echo "  5. Browse https://192.168.4.1:8443 (admin / netfilter)."
+echo "  4. Put the card back in a computer to read airgapp-credentials.txt"
+echo "     (the generated Wi-Fi and admin passwords), unless you chose your own."
+echo "  5. Join the 'Airgapp' Wi-Fi and open https://192.168.4.1:8443 (user: admin)."
 echo ""
 echo "Troubleshooting: after first boot, log in via the Imager user and run"
 echo "  sudo cat /var/log/netfilter-provision.log"
