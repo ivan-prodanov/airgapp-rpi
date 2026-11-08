@@ -39,15 +39,24 @@
         }
         h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; letter-spacing: 0.1px; }
         .sub { color: var(--mute); font-size: 13.5px; line-height: 1.5; margin: 0 0 22px; }
+        /* Drawn like the console's System → Users code: white modules on the brand
+           red, with the Airgapp mark in the middle (error correction H absorbs it). */
         .qr-wrap {
+            position: relative;
             background: var(--red);
-            border-radius: 14px;
-            width: 268px; height: 268px;
+            border-radius: 20px;
+            width: min(300px, 100%); aspect-ratio: 1;
+            padding: 17px;
             margin: 0 auto 18px;
             display: flex; align-items: center; justify-content: center;
-            overflow: hidden;
         }
-        .qr-wrap svg { width: 240px; height: 240px; display: block; }
+        .qr-wrap svg { width: 100%; height: 100%; display: block; }
+        .qr-mark {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 22.4%; height: 22.4%;
+            background: var(--red); border-radius: 20%; padding: 1.7%;
+        }
+        .qr-mark img { display: block; width: 100%; height: 100%; border-radius: 16%; }
         .qr-wrap.empty { background: #1f2024; color: var(--mute); font-size: 13px; padding: 20px; }
         button {
             appearance: none; border: none; cursor: pointer;
@@ -86,16 +95,21 @@
             return m + ':' + (s < 10 ? '0' : '') + s;
         }
 
+        // Same drawing as System → Users: one white path over the red box, a
+        // two-module quiet zone, and the Airgapp mark on top. Level H error
+        // correction keeps the code readable under the mark.
         function renderQr(enrolUrl) {
-            var qr = qrcode(0, 'H'); // high error-correction
+            var qr = qrcode(0, 'H');
             qr.addData(enrolUrl);
             qr.make();
-            var svg = qr.createSvgTag({ cellSize: 6, margin: 1, scalable: true })
-                .replace('fill="white"', 'fill="#e02434"')
-                .replace('fill="black"', 'fill="#ffffff"');
+            var n = qr.getModuleCount(), m = 2, d = '';
+            for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) if (qr.isDark(r, c)) d += 'M' + (c + m) + ' ' + (r + m) + 'h1v1h-1z';
+            var size = n + 2 * m;
             var wrap = document.getElementById('qr');
             wrap.classList.remove('empty');
-            wrap.innerHTML = svg;
+            wrap.innerHTML = '<svg viewBox="0 0 ' + size + ' ' + size + '" shape-rendering="crispEdges" role="img" aria-label="Enrol code">' +
+                '<path d="' + d + '" fill="#ffffff"/></svg>' +
+                '<div class="qr-mark"><img src="/airgapp-icon.png" alt=""></div>';
         }
 
         function startCountdown(sec) {
