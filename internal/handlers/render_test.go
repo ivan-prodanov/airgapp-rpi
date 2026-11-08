@@ -223,3 +223,19 @@ func TestRenderEveryPage(t *testing.T) {
 		}
 	}
 }
+
+// The Gap traffic page: toolbar, the ledger with its live-edge sentinel — no
+// table, no client-side deny list, no paged API, no clear-log confirm.
+func TestTrafficPage(t *testing.T) {
+	body, _ := renderPage(NewRenderer(web.Content), "traffic.html", "traffic")
+	for _, want := range []string{`class="ledger"`, `class="toolbar"`, `name="outcome"`, `id="q"`, `class="led-edge"`, "No traffic matches this filter.", "/api/traffic/feed"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("traffic page lacks %s", want)
+		}
+	}
+	for _, gone := range []string{"<table", "protectedDeny", "/api/system/traffic?", "confirmClear"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("traffic page still contains %q", gone)
+		}
+	}
+}
