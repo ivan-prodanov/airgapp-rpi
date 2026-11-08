@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 )
 
 var migrations = []string{
@@ -1210,12 +1211,37 @@ var migrations = []string{
 // the versioned migrations, so it applies to a fresh or migrated DB.
 var localSeeds []string
 
+// backupBeforeUpgrade keeps the database as it was, next to it as
+// <file>.v<N>.bak, before newer migrations run: they can't be undone (v27
+// drops a column the older binary reads), so rolling back means restoring
+// this copy. Once per version; a failure is logged, not fatal.
+func backupBeforeUpgrade(db *sql.DB, from int) {
+	var seq int
+	var name, file string
+	if err := db.QueryRow("PRAGMA database_list").Scan(&seq, &name, &file); err != nil || file == "" {
+		return // in-memory
+	}
+	bak := fmt.Sprintf("%s.v%d.bak", file, from)
+	if _, err := os.Stat(bak); err == nil {
+		return
+	}
+	if _, err := db.Exec("VACUUM INTO ?", bak); err != nil {
+		log.Printf("[DB] WARN couldn't back up the v%d database before upgrading: %v", from, err)
+		return
+	}
+	log.Printf("[DB] Backed up the v%d database to %s before upgrading", from, bak)
+}
+
 func Migrate(db *sql.DB) error {
 	var currentVersion int
 	row := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version")
 	if err := row.Scan(&currentVersion); err != nil {
 		// Table might not exist yet — that's fine, start from 0
 		currentVersion = 0
+	}
+
+	if currentVersion > 0 && currentVersion < len(migrations) {
+		backupBeforeUpgrade(db, currentVersion)
 	}
 
 	for i := currentVersion; i < len(migrations); i++ {

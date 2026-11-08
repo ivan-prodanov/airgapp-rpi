@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -685,5 +686,49 @@ func TestMigrateV30_ScrubsVINs(t *testing.T) {
 	want := []string{"owner set the VIN", "owner opened BLE session abc123", "owner closed BLE session abc123"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("details %q, want %q", got, want)
+	}
+}
+
+// The upgrade can't be undone (v27 drops a column the old binary reads), so
+// the database as it was is kept next to it before the first new migration.
+func TestMigrate_BacksUpBeforeUpgrading(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "netfilter.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	migrateTo(t, db, 26)
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	bak, err := sql.Open("sqlite", path+".v26.bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bak.Close()
+	var v int
+	if err := bak.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&v); err != nil || v != 26 {
+		t.Fatalf("backup at version %d (%v), want 26", v, err)
+	}
+	if !hasColumn(t, bak, "filter_domains", "enabled") {
+		t.Fatal("backup lacks the v26 schema")
+	}
+	// Nothing to upgrade, nothing backed up; a fresh database isn't backed up either.
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	matches, _ := filepath.Glob(path + ".v*.bak")
+	if len(matches) != 1 {
+		t.Fatalf("backups %v, want only the v26 one", matches)
+	}
+	fresh := filepath.Join(t.TempDir(), "fresh.db")
+	fdb, _ := sql.Open("sqlite", fresh)
+	defer fdb.Close()
+	if err := Migrate(fdb); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := filepath.Glob(fresh + ".v*.bak"); len(m) != 0 {
+		t.Fatalf("fresh database backed up: %v", m)
 	}
 }
