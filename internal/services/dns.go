@@ -18,10 +18,18 @@ import (
 // resolve; everything else is sinkholed. This is the extra-defense DNS
 // layer behind the SNI proxy (the primary :443 gate).
 type DNSService struct {
-	db   *sql.DB
-	exec *executor.Executor
-	cfg  config.Config
-	mu   sync.Mutex
+	db      *sql.DB
+	exec    *executor.Executor
+	cfg     config.Config
+	mu      sync.Mutex
+	tailnet Tailnet // the Pi's tailnet, once WatchTailnet has read it
+}
+
+// SetTailnet records the Pi's tailnet for the next Apply.
+func (s *DNSService) SetTailnet(t Tailnet) {
+	s.mu.Lock()
+	s.tailnet = t
+	s.mu.Unlock()
 }
 
 func NewDNSService(db *sql.DB, exec *executor.Executor, cfg config.Config) *DNSService {
@@ -229,13 +237,26 @@ func (s *DNSService) config() (string, error) {
 	// connect to a private address). More specific than address=/#/0.0.0.0,
 	// so it wins. local= answers every other type (AAAA, HTTPS) with an empty
 	// NODATA instead of REFUSED.
+	addr := s.cfg.EnrolAddr
+	if !ValidIPv4(addr) {
+		addr = s.cfg.LANGateway
+	}
 	if s.cfg.EnrolHost != "" {
-		addr := s.cfg.EnrolAddr
-		if !ValidIPv4(addr) {
-			addr = s.cfg.LANGateway
-		}
 		conf += fmt.Sprintf("\n# Self-service enrol QR page\naddress=/%s/%s\nlocal=/%s/\n",
 			s.cfg.EnrolHost, addr, s.cfg.EnrolHost)
+	}
+	// The console's name, typed in the car: the same intercepted address, where
+	// the :80 spoof server redirects it to the console.
+	if s.cfg.ConsoleHost != "" {
+		conf += fmt.Sprintf("\n# The console, typed in the car\naddress=/%s/%s\nlocal=/%s/\n",
+			s.cfg.ConsoleHost, addr, s.cfg.ConsoleHost)
+	}
+	// The Pi's own tailnet name: the second intercepted address, whose console
+	// and Funnel ports the firewall forwards to Tailscale on the Pi. Without it
+	// the name would resolve to Tailscale's Funnel servers (only /api/ble).
+	if t := s.tailnet; t.Known() && ValidIPv4(s.cfg.TailnetAddr) {
+		conf += fmt.Sprintf("\n# The Pi's tailnet name: its console and Funnel, served by Tailscale on the Pi\naddress=/%s/%s\nlocal=/%s/\n",
+			t.Host, s.cfg.TailnetAddr, t.Host)
 	}
 	return conf, nil
 }

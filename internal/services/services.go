@@ -26,12 +26,14 @@ type Services struct {
 	BLESession *BLESessionService
 	LockWatch  *LockWatchService
 	Remote     *RemoteService
+
+	cfg config.Config
 }
 
 func New(db *sql.DB, exec *executor.Executor, cfg config.Config) *Services {
 	audit := NewAuditService(db)
 	trafficLog := NewTrafficLogService(db)
-	trafficLog.SetLocalNames([]string{cfg.EnrolHost})
+	trafficLog.SetLocalNames(localNames(cfg.EnrolHost, cfg.ConsoleHost))
 	filter := NewFilterService(db)
 	network := NewNetworkService(db, cfg)
 	tesla := NewTeslaService(db, audit)
@@ -60,6 +62,7 @@ func New(db *sql.DB, exec *executor.Executor, cfg config.Config) *Services {
 		BLESession: bleSession,
 		LockWatch:  lockWatch,
 		Remote:     NewRemoteService(),
+		cfg:        cfg,
 	}
 }
 
