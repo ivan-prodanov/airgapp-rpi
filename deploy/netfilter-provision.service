@@ -1,5 +1,5 @@
 [Unit]
-Description=NetFilter first-boot provisioning
+Description=Airgapp first-boot setup
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=!/var/lib/netfilter-provisioned

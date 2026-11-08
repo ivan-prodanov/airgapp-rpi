@@ -1,5 +1,5 @@
 [Unit]
-Description=NetFilter - RPi Network Filter Router
+Description=Airgapp (netfilterd): the car hotspot gate and console
 After=network.target hostapd.service dnsmasq.service nftables.service
 Wants=hostapd.service dnsmasq.service nftables.service
 
