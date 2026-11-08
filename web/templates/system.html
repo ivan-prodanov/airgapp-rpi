@@ -184,7 +184,7 @@
             </template>
             <template x-if="qr && (!onPhone || qrView === 'qr')">
                 <div class="q-sub">
-                    <div class="qr"><svg :viewBox="qr.box" shape-rendering="crispEdges" role="img" :aria-label="'QR code for ' + (qrUser ? qrUser.name : '')"><path :d="qr.path" fill="#ffffff"/></svg><div class="qr-mark"><img src="/static/img/airgapp-icon.png" alt=""></div></div>
+                    <div class="qr"><svg :view-box.camel="qr.box" shape-rendering="crispEdges" role="img" :aria-label="'QR code for ' + (qrUser ? qrUser.name : '')"><path :d="qr.path" fill="#ffffff"/></svg><div class="qr-mark"><img src="/static/img/airgapp-icon.png" alt=""></div></div>
                     <p class="q-note">Scan with a phone that has Airgapp installed</p>
                 </div>
             </template>
