@@ -350,7 +350,7 @@ func (s *FirewallService) generateConfig(rules []models.FirewallRule, snap devic
 	//  and the operator later flips it to Open — DHCP option changes only
 	//  land on the next lease, which can be hours away; this DNAT makes
 	//  Open take effect immediately on every status flip.
-	upstream := splitUpstreams(s.cfg.DNSUpstream)[0]
+	upstream := upstreamsFrom(s.db, s.cfg.DNSUpstream)[0]
 	b.WriteString("table ip nat {\n")
 	b.WriteString("    chain prerouting {\n")
 	b.WriteString("        type nat hook prerouting priority dstnat; policy accept;\n")

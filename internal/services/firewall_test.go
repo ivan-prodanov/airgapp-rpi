@@ -334,3 +334,14 @@ func TestGenerateConfig_FilterPorts(t *testing.T) {
 		}
 	}
 }
+
+// An Open device's DNS is redirected to the first resolver saved in settings.
+func TestFirewallOpenDNATUsesSettingsUpstream(t *testing.T) {
+	db := memDB(t)
+	mustExec(t, db, `INSERT INTO settings (key, value) VALUES ('dns_upstream','9.9.9.9') ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+	s := &FirewallService{db: db, cfg: config.Config{LANInterface: "wlan0", WANInterface: "eth1", LANGateway: "192.168.4.1", SNIProxyPort: 8444, DNSUpstream: "1.1.1.1"}}
+	out := s.generateConfig(nil, deviceSnapshot{open: []string{"aa:bb:cc:dd:ee:ff"}})
+	if !strings.Contains(out, "dnat to 9.9.9.9") || strings.Contains(out, "dnat to 1.1.1.1") {
+		t.Fatalf("Open DNAT does not use the settings upstream:\n%s", out)
+	}
+}

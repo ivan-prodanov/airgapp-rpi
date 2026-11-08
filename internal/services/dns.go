@@ -211,22 +211,18 @@ func buildDNSConfig(upstreams, allowedDomains, openMACs []string) string {
 	return b.String()
 }
 
-// Apply writes /etc/dnsmasq.d/netfilter-dns.conf from buildDNSConfig and
-// restarts dnsmasq (restart, not reload — SIGHUP does not re-read
-// /etc/dnsmasq.d/*.conf).
-func (s *DNSService) Apply() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// config is the dnsmasq config Apply writes: the allow-list through the
+// resolvers saved in settings, the Open devices' DNS, and the enrol host.
+func (s *DNSService) config() (string, error) {
 	domains, err := s.allowedDomains()
 	if err != nil {
-		return fmt.Errorf("query allow-list domains: %w", err)
+		return "", fmt.Errorf("query allow-list domains: %w", err)
 	}
 	openMACs, err := s.openDeviceMACs()
 	if err != nil {
-		return fmt.Errorf("query open devices: %w", err)
+		return "", fmt.Errorf("query open devices: %w", err)
 	}
-	conf := buildDNSConfig(splitUpstreams(s.cfg.DNSUpstream), domains, openMACs)
+	conf := buildDNSConfig(upstreamsFrom(s.db, s.cfg.DNSUpstream), domains, openMACs)
 
 	// Self-service enrol page: a made-up LAN-only host → the Pi. More specific
 	// than address=/#/0.0.0.0, so it wins; never a real TLD and never published
@@ -234,6 +230,20 @@ func (s *DNSService) Apply() error {
 	if s.cfg.EnrolHost != "" {
 		conf += fmt.Sprintf("\n# Self-service enrol QR page (LAN-only vanity host)\naddress=/%s/%s\n",
 			s.cfg.EnrolHost, s.cfg.LANGateway)
+	}
+	return conf, nil
+}
+
+// Apply writes /etc/dnsmasq.d/netfilter-dns.conf from buildDNSConfig and
+// restarts dnsmasq (restart, not reload — SIGHUP does not re-read
+// /etc/dnsmasq.d/*.conf).
+func (s *DNSService) Apply() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	conf, err := s.config()
+	if err != nil {
+		return err
 	}
 
 	const confPath = "/etc/dnsmasq.d/netfilter-dns.conf"
@@ -248,7 +258,7 @@ func (s *DNSService) Apply() error {
 		return fmt.Errorf("restart dnsmasq: %w", err)
 	}
 
-	log.Printf("[DNS] default-deny config applied: %d allow-listed domains, %d open devices", len(domains), len(openMACs))
+	log.Printf("[DNS] default-deny config applied (%d lines)", strings.Count(conf, "\n"))
 	return nil
 }
 
@@ -302,6 +312,27 @@ func (s *DNSService) openDeviceMACs() ([]string, error) {
 		}
 	}
 	return out, rows.Err()
+}
+
+// upstreamsFrom returns the resolvers saved on the System page (the
+// dns_upstream setting), keeping only valid IPv4 addresses; with none usable,
+// the config file's upstreams.
+func upstreamsFrom(db *sql.DB, fallback string) []string {
+	if db != nil {
+		var v string
+		if err := db.QueryRow(`SELECT value FROM settings WHERE key = 'dns_upstream'`).Scan(&v); err == nil {
+			var out []string
+			for _, u := range SplitUpstreams(v) {
+				if ValidIPv4(u) {
+					out = append(out, u)
+				}
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	return splitUpstreams(fallback)
 }
 
 func splitUpstreams(csv string) []string {

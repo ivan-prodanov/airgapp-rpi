@@ -74,3 +74,43 @@ func TestAllowedDomainsFollowFilter(t *testing.T) {
 		t.Error("domain leaked while its filter is off")
 	}
 }
+
+// The resolvers saved on the System page are the ones dnsmasq uses, for allowed
+// domains and for the DNS handed to Open devices.
+func TestDNSUpstreamFromSettings(t *testing.T) {
+	db := memDB(t)
+	fID := freshFilter(t, db, "TestFilter")
+	mustExec(t, db, `INSERT INTO filter_domains (preset_id, domain) VALUES (?,'live.example.com')`, fID)
+	mustExec(t, db, `INSERT INTO devices (mac_address, status) VALUES ('aa:bb:cc:dd:ee:01','open')`)
+	mustExec(t, db, `INSERT INTO settings (key, value) VALUES ('dns_upstream','9.9.9.9,149.112.112.112') ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+	s := NewDNSService(db, executor.New(true), config.Config{DNSUpstream: "1.1.1.1"})
+	conf, err := s.config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"server=/live.example.com/9.9.9.9", "server=/live.example.com/149.112.112.112", "dhcp-option=tag:open,6,9.9.9.9,149.112.112.112"} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("config lacks %q", want)
+		}
+	}
+	if strings.Contains(conf, "1.1.1.1") {
+		t.Error("config still uses the config-file upstream")
+	}
+}
+
+// A setting with nothing usable in it never reaches dnsmasq: the config file's
+// upstreams stand in.
+func TestDNSUpstreamFallsBack(t *testing.T) {
+	db := memDB(t)
+	mustExec(t, db, `INSERT INTO settings (key, value) VALUES ('dns_upstream','not-an-ip, ') ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+	if got := upstreamsFrom(db, "1.1.1.1,8.8.8.8"); strings.Join(got, ",") != "1.1.1.1,8.8.8.8" {
+		t.Fatalf("upstreams %v, want the fallback", got)
+	}
+	mustExec(t, db, `UPDATE settings SET value = '9.9.9.9,bogus' WHERE key = 'dns_upstream'`)
+	if got := upstreamsFrom(db, "1.1.1.1"); strings.Join(got, ",") != "9.9.9.9" {
+		t.Fatalf("upstreams %v, want the valid entry only", got)
+	}
+	if got := upstreamsFrom(nil, ""); strings.Join(got, ",") != "1.1.1.1" {
+		t.Fatalf("upstreams %v, want the last-resort default", got)
+	}
+}
