@@ -1,10 +1,23 @@
-# rpi-network-filter
+# Airgapp box
 
-A Raspberry Pi 4 network-filter appliance. It runs a WiFi hotspot with a
-default-deny firewall and a web-based management UI, so every outbound
-packet from every device on the hotspot has to be explicitly allowed.
-Designed for IoT containment, locking down a Tesla to a minimum set of
-endpoints, or anywhere you want fine-grained outbound control.
+The box half of [Airgapp](https://airgapp.net): a Raspberry Pi 4 that
+stands between your Tesla and the internet. The car goes online through
+the box's Wi-Fi hotspot and reaches only what you let through. Maps,
+music and Superchargers keep working; telemetry, camera clips and
+firmware pushes stop at the box. The app on your phone reaches the car
+through the box, so it keeps working while the car is gated.
+
+Try the box's console first, with pretend data, at
+[demo.airgapp.net](https://demo.airgapp.net). Then build one: the
+[requirements](#requirements) and the
+[quick start](#quick-start--zero-network-first-boot) below take you from
+a blank microSD card to a gated car.
+
+Under the hood it's a general network-filter appliance: a Wi-Fi hotspot
+with a default-deny firewall and a web console, so every outbound packet
+from every device on the hotspot has to be explicitly allowed. That makes
+it just as useful for IoT containment, or anywhere you want fine-grained
+outbound control.
 
 ```
 [Client devices] --WiFi--> [RPi4 hotspot] --NAT--> [LTE modem / WAN] --> Internet
